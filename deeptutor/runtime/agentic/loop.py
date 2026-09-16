@@ -33,6 +33,7 @@ from deeptutor.runtime.agentic.labels import LABEL_UNKNOWN, find_inline_labels
 from deeptutor.runtime.agentic.messages import (
     assistant_message,
     assistant_message_with_tool_calls,
+    rejected_nimi_tool_results,
 )
 from deeptutor.runtime.agentic.tool_dispatch import DispatchOutcome
 from deeptutor.runtime.agentic.usage import UsageTracker
@@ -191,6 +192,7 @@ async def run_agentic_loop(
     stream_body_live: bool = False,
     eager_sub_trace: bool = False,
     implicit_think_label: str | None = None,
+    initial_tool_choice: dict[str, Any] | str | None = None,
 ) -> LoopOutcome:
     """Run a label-driven LLM loop until a terminal label fires or the
     iteration budget is exhausted.
@@ -234,7 +236,14 @@ async def run_agentic_loop(
             client=client,
             model=model,
             messages=messages,
-            completion_kwargs=completion_kwargs,
+            completion_kwargs={
+                **completion_kwargs,
+                **(
+                    {"tool_choice": initial_tool_choice}
+                    if iteration == 0 and initial_tool_choice is not None
+                    else {}
+                ),
+            },
             tool_schemas=tool_schemas,
             allowed_labels=protocol.allowed,
             final_labels=protocol.final,
@@ -308,6 +317,7 @@ async def run_agentic_loop(
                     step.tool_calls,
                     reasoning_content=step.reasoning_content or None,
                     thinking_blocks=list(step.thinking_blocks) or None,
+                    nimi_state=step.nimi_state,
                 )
             )
             outcome = await host.dispatch_tools(
@@ -343,6 +353,7 @@ async def run_agentic_loop(
                         step.text,
                         reasoning_content=step.reasoning_content or None,
                         thinking_blocks=list(step.thinking_blocks) or None,
+                        nimi_state=step.nimi_state,
                     )
                 )
             # Optional hook for capabilities that attach side-effects to
@@ -399,6 +410,8 @@ def _protocol_violation(
     """Classify a labeled-step result against the protocol; return a
     violation key (matching the host's repair-message vocabulary) or
     ``None`` if compliant."""
+    if step.finish_reason in {"length", "max_tokens", "max_output_tokens"}:
+        return "output_truncated"
     if step.label == LABEL_UNKNOWN:
         return "missing_label"
     if find_inline_labels(step.text, allowed_labels=protocol.allowed):
@@ -451,7 +464,13 @@ def _append_repair_messages(
     provider rejects a history that lost it.
     """
     clipped = str(step.text or "").strip()
-    if clipped:
+    correction = (
+        "Your previous output reached its token limit. Return a complete, concise response "
+        "using the required action label and format; do not present an unfinished result as final."
+        if violation == "output_truncated"
+        else host.protocol_repair_message(violation)
+    )
+    if clipped or step.nimi_state:
         if len(clipped) > _REPAIR_PREVIEW_CHARS:
             clipped = clipped[:_REPAIR_PREVIEW_CHARS].rstrip() + "\n...[truncated]"
         messages.append(
@@ -459,9 +478,11 @@ def _append_repair_messages(
                 clipped,
                 reasoning_content=step.reasoning_content or None,
                 thinking_blocks=list(step.thinking_blocks) or None,
+                nimi_state=step.nimi_state,
             )
         )
-    messages.append({"role": "user", "content": host.protocol_repair_message(violation)})
+        messages.extend(rejected_nimi_tool_results(step.nimi_state, correction))
+    messages.append({"role": "user", "content": correction})
 
 
 # Re-export ``Awaitable`` here so consumers needn't import it just to type

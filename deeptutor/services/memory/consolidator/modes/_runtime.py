@@ -161,6 +161,22 @@ async def call_llm(
             )
         return response
     except Exception as exc:  # noqa: BLE001
+        if getattr(exc, "provider", None) == "nimi":
+            if on_event is not None:
+                await on_event(
+                    {
+                        "stage": "llm_io_end",
+                        "turn": turn,
+                        "chunk_index": chunk_index,
+                        "label": label,
+                        "response": "",
+                        "error": str(exc),
+                        "model": model_label,
+                    }
+                )
+            # A failed/interrupted Nimi step cannot be replayed as a different
+            # execution path or represented by a successful empty memory edit.
+            raise
         # Some providers still do not implement streaming. Fall back to the
         # non-streaming path so memory jobs remain usable.
         logger.warning("consolidator streaming LLM call failed; falling back: %s", exc)

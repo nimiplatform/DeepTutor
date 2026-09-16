@@ -60,7 +60,8 @@ _QUESTION_PROMISE_RE = re.compile(
     # …and the same announcement with the noun left out: "再试一道，把这套
     # 判别规则用起来" never says 题 at all, which is exactly how two real
     # turns slipped past this guard and left the learner staring at a colon.
-    r"再(?:试|来|做)一(?:道|个)|来实战|练一?练|上手试|"
+    r"再(?:试|来|做)一(?:道|个)|(?:给你|请你做|换)一(?:道|个)(?:新|题|练习)|"
+    r"来实战|练一?练|上手试|"
     r"\bhere(?:\u2019s| is|'s) (?:a|the|this) question\b|"
     r"\btry (?:this|the following|a|another) (?:question|one)\b|"
     r"\blet(?:\u2019s|'s) (?:see|test|check) (?:if|whether|how|what) you\b",
@@ -365,7 +366,7 @@ class MasteryLoopCapability:
         skip = context.metadata.get("mastery_card_skip")
         if not isinstance(skip, dict) or not skip.get("skipped"):
             return ""
-        return (
+        instruction = (
             "[Mastery] The learner declined the open question and the engine has "
             "already dropped it — do not call mastery_skip_question, and do not "
             "pose that same question again. Nothing was graded and no mastery "
@@ -374,6 +375,15 @@ class MasteryLoopCapability:
             "mastery_status.next — with a different question when you are ready "
             "to ask one."
         )
+        if skip.get("question_prompt"):
+            instruction += (
+                f"\nSkipped question [{skip.get('question_id', '')}]: {skip['question_prompt']}"
+            )
+        if isinstance(skip.get("choice_options"), dict):
+            instruction += "\nIts options: " + "; ".join(
+                f"{key}: {value}" for key, value in skip["choice_options"].items()
+            )
+        return instruction
 
     def _grade_seed(self, context: UnifiedContext) -> str:
         grade = context.metadata.get("mastery_card_grade")
@@ -391,6 +401,21 @@ class MasteryLoopCapability:
             "explanation the question was registered with, so do not restate the "
             "answer key and do not call mastery_grade for it again.",
         ]
+        # The visible card is separate from assistant prose in stored history.
+        # Ground feedback in this exact graded question, not a prior example
+        # that happened to use the same option letter.
+        question = str(grade.get("question_prompt") or "").strip()
+        options = grade.get("choice_options") or {}
+        if question:
+            lines.append(f"Graded question [{grade.get('question_id', '')}]: {question}")
+        if isinstance(options, dict) and options:
+            lines.append(
+                "Its options: " + "; ".join(f"{key}: {value}" for key, value in options.items())
+            )
+        if result.get("correct_body"):
+            lines.append(f"Verified correct answer: {result['correct_body']}")
+        if result.get("explanation"):
+            lines.append(f"Registered explanation: {result['explanation']}")
         if grade.get("mastered"):
             lines.append(
                 "This cleared the objective's gate. Say what the attempt showed, "

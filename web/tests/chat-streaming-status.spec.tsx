@@ -8,6 +8,22 @@ import { initI18n } from "@/i18n/init";
 initI18n("en");
 
 describe("chat activity status", () => {
+  it.each([
+    ["cancelled", "Stopped"],
+    ["failed", "Failed"],
+  ])("does not label a %s turn as completed when partial text was saved", (status, label) => {
+    render(<StreamingStatus
+      events={[
+        { type: "content", source: "chat", stage: "responding", content: "Partial answer", timestamp: 1, metadata: {} },
+        { type: "done", source: "chat", stage: "responding", content: "", timestamp: 2, metadata: { status } },
+      ] as StreamEvent[]}
+      isStreaming={false}
+      content="Partial answer"
+    />);
+    expect(screen.getByRole("status")).toHaveTextContent(label);
+    expect(screen.getByRole("status")).not.toHaveTextContent("Done");
+  });
+
   it("keeps answer streaming inside the existing exploration surface", () => {
     const events = [
       {

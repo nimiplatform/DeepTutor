@@ -1,0 +1,28 @@
+app_id: org.nimiplatform.deeptutor
+display_name: DeepTutor
+version: 1.6.8
+profile: standalone
+manifest_role: submitted-input
+metadata:
+  summary: A learning workspace for studying documents, solving problems and writing notes, using Nimi for AI models.
+  icon: assets/nimi-app-icon.png
+  readme: README.md
+app_access:
+  - runtime.consume
+capability_contract_refs:
+  - text.generate
+  - text.embed
+required_standardized_feature_refs: []
+storage_policy:
+  kind: app-owned-os-storage
+  os_storage_disclosure:
+    - path_pattern: ~/Library/Application Support/Nimi/Local App Hosts/v1/*/workspace/**
+      purpose: Development Host workspace for learning sessions, uploaded materials, retrieval indexes, notebooks and App settings
+      expected_size_band: 100 MiB–20 GiB, depending on imported materials
+    - path_pattern: ~/Library/Application Support/org.nimiplatform.deeptutor/**
+      purpose: Installed App profile and workspace containing browser cache, learning sessions, uploaded materials, retrieval indexes, notebooks and App settings
+      expected_size_band: 100 MiB–20 GiB, depending on imported materials
+local_development:
+  electron:
+    renderer_origin: http://127.0.0.1:1467
+    host_source_directory: electron

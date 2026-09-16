@@ -123,6 +123,7 @@ export interface SessionSearchPage {
 }
 
 export interface ActiveTurnSummary {
+  lease_active?: boolean;
   id: string;
   turn_id: string;
   session_id: string;

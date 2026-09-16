@@ -134,6 +134,67 @@ def _make_host(
     ), parent_block
 
 
+@pytest.mark.asyncio
+async def test_evidence_settlement_is_bounded_and_cannot_fake_a_completed_block(monkeypatch):
+    pipeline = _make_pipeline(monkeypatch)
+    pipeline.kb_name = "paper"
+    monkeypatch.setattr(pipeline, "_use_native_block_tools", lambda: True)
+    monkeypatch.setattr(pipeline, "_block_tool_names", lambda: ["rag"])
+    monkeypatch.setattr(pipeline, "_build_block_tool_schemas", lambda names: [{"name": "rag"}])
+    queue = DynamicTopicQueue("research-test")
+    queue.add_block("Table 3", "Check actual numbers")
+    host, block = _make_host(pipeline, queue, StreamBus())
+    calls = []
+
+    async def settle(**kwargs):
+        calls.append(kwargs)
+        assert kwargs["max_iterations"] == 3
+        assert kwargs["initial_messages"][-1]["role"] == "assistant"
+        assert await host.force_finalize(
+            messages=kwargs["initial_messages"], start_iteration=7
+        ) == ("", False, 0)
+        return SimpleNamespace(final_text="", completed=False, iterations=3)
+
+    async def forbidden_synthesis(**kwargs):
+        raise AssertionError("Missing evidence cannot be replaced with a tool-less synthesis")
+
+    monkeypatch.setattr("deeptutor.agents.research.pipeline.run_agentic_loop", settle)
+    monkeypatch.setattr(pipeline, "_force_finish_block", forbidden_synthesis)
+    result = await host.force_finalize(
+        messages=[{"role": "assistant", "content": "I need evidence."}], start_iteration=4
+    )
+    assert result == ("", False, 3) and len(calls) == 1
+    host._tool_rounds_used = 1
+    assert await host.validate_terminal(LABEL_FINISH, "Uncited claims") == "finish_without_tool"
+
+
+@pytest.mark.asyncio
+async def test_failed_retrieval_is_not_registered_as_a_citation(monkeypatch):
+    pipeline = _make_pipeline(monkeypatch)
+    queue = DynamicTopicQueue("failed-source")
+    queue.add_block("Evidence", "Read the source")
+    host, block = _make_host(pipeline, queue, StreamBus())
+
+    async def forbidden_summary(**kwargs):
+        raise AssertionError("A tool error is not source material")
+
+    monkeypatch.setattr(pipeline, "_summarise_tool_result", forbidden_summary)
+    await host._summarise_and_record(
+        [{"id": "failed-call", "name": "rag", "arguments": {"query": "Table 3"}}],
+        DispatchOutcome(
+            tool_messages=[
+                {
+                    "role": "tool",
+                    "tool_call_id": "failed-call",
+                    "content": "Knowledge base unavailable",
+                    "is_error": True,
+                }
+            ]
+        ),
+    )
+    assert not block.tool_traces and not host._citations.calls
+
+
 def _make_pipeline_with_registry(
     monkeypatch: pytest.MonkeyPatch,
     *,

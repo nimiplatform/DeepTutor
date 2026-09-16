@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from llama_index.core.schema import NodeWithScore, TextNode
+from llama_index.core.storage.docstore import SimpleDocumentStore
 import pytest
 
 from deeptutor.services.rag.pipelines.llamaindex import rerank as rerank_module
@@ -128,7 +130,8 @@ def test_retrieve_nodes_expands_candidates_only_when_reranker_is_configured(
         lambda: RetrievalConfig(profile="vector"),
     )
 
-    unchanged = retriever_module.retrieve_nodes(object(), tmp_path, "probe", top_k=2)
+    index = SimpleNamespace(docstore=SimpleDocumentStore())
+    unchanged = retriever_module.retrieve_nodes(index, tmp_path, "probe", top_k=2)
 
     assert captured["candidate_top_k"] == 2
     assert [result.node_id for result in unchanged] == ["first", "second"]
@@ -153,7 +156,7 @@ def test_retrieve_nodes_expands_candidates_only_when_reranker_is_configured(
         lambda: RetrievalConfig(profile="vector", reranker_model="fake-reranker", rerank_top_k=9),
     )
 
-    reranked = retriever_module.retrieve_nodes(object(), tmp_path, "probe", top_k=2)
+    reranked = retriever_module.retrieve_nodes(index, tmp_path, "probe", top_k=2)
 
     assert captured["candidate_top_k"] == 9
     assert rerank_calls == [

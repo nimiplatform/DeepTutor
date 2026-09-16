@@ -25,6 +25,8 @@ import asyncio
 import logging
 from typing import Any
 
+from deeptutor.services.llm.exceptions import LLMError
+
 from ..models import BlockType, SourceAnchor, SourceChunk
 from ._llm_writer import llm_json, llm_text
 from ._prompts import get_book_prompt, load_book_prompts
@@ -86,7 +88,10 @@ class SectionGenerator(BlockGenerator):
         rag = await optional_rag_lookup(
             query=f"{chapter_title}: {focus_topic}",
             ctx=ctx,
+            refresh=True,
         )
+        if ctx.rag_enabled and ctx.primary_kb and not rag.text.strip():
+            raise GenerationFailure("Selected knowledge base returned no usable section evidence.")
 
         # ── Pass 1: outline ───────────────────────────────────────────
         outline = await self._make_outline(
@@ -118,6 +123,7 @@ class SectionGenerator(BlockGenerator):
                 outline_intro=outline.get("intro", ""),
                 sub=sub,
                 chunks=relevant_chunks,
+                retrieved_evidence=rag.text,
             )
             for sub in subs
         ]
@@ -188,9 +194,7 @@ class SectionGenerator(BlockGenerator):
         prompts = load_book_prompts("section", ctx.language)
         none_label = _none_label(ctx.language)
         obj_block = "\n".join(f"- {o}" for o in objectives) or none_label
-        rag_section = (
-            f"\n[Relevant source evidence]\n{_clip(rag_context, 1800)}\n" if rag_context else ""
-        )
+        rag_section = f"\n[Relevant source evidence]\n{rag_context}\n" if rag_context else ""
         user_prompt = get_book_prompt(prompts, "outline_user").format(
             chapter_title=chapter_title,
             chapter_summary=chapter_summary or none_label,
@@ -208,8 +212,9 @@ class SectionGenerator(BlockGenerator):
                 temperature=0.4,
                 language=ctx.language,
                 expected_key="subsections",
-                reasoning_effort="none",
             )
+        except LLMError:
+            raise
         except Exception as exc:
             logger.warning(f"SectionGenerator outline LLM failed: {exc}")
             return _fallback_outline(focus_topic, objectives, target_words, ctx.language)
@@ -264,6 +269,7 @@ class SectionGenerator(BlockGenerator):
         outline_intro: str,
         sub: dict[str, Any],
         chunks: list[SourceChunk],
+        retrieved_evidence: str = "",
     ) -> str:
         heading = sub.get("heading") or ""
         role = sub.get("role") or "core"
@@ -283,9 +289,9 @@ class SectionGenerator(BlockGenerator):
         if not slice_chunks:
             slice_chunks = chunks[:2]
 
-        evidence_block = ""
-        if slice_chunks:
-            evidence_block = "\n".join(f"- {_clip(c.text or '', 320)}" for c in slice_chunks)
+        evidence_block = retrieved_evidence
+        if not evidence_block and slice_chunks:
+            evidence_block = "\n\n".join(c.text or "" for c in slice_chunks)
 
         prompts = load_book_prompts("section", ctx.language)
         none_label = _none_label(ctx.language)
@@ -308,8 +314,9 @@ class SectionGenerator(BlockGenerator):
                 max_tokens=_subsection_token_budget(target_words),
                 temperature=0.5,
                 language=ctx.language,
-                reasoning_effort="none",
             )
+        except LLMError:
+            raise
         except Exception as exc:
             logger.warning(f"SectionGenerator subsection LLM failed: {exc}")
             raise GenerationFailure("LLM failed to generate visible subsection content.") from exc

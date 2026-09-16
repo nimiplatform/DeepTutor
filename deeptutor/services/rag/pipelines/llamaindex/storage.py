@@ -86,20 +86,28 @@ def resolve_add_storage_plan(kb_dir: Path, signature: EmbeddingSignature | None)
 
 
 def create_index(
-    documents: list[Any], storage_dir: Path, *, show_progress: bool | None = None
+    documents: list[Any],
+    storage_dir: Path,
+    *,
+    show_progress: bool | None = None,
+    embedding_model=None,
 ) -> int:
     index, count = ingestion.create_index_from_documents(
-        documents, storage_dir, show_progress=show_progress
+        documents, storage_dir, show_progress=show_progress, embedding_model=embedding_model
     )
     retrievers.persist_bm25_retriever(index, storage_dir, top_k=20)
     return count
 
 
-def insert_documents(existing_storage: Path, storage_dir: Path, documents: list[Any]) -> int:
+def insert_documents(
+    existing_storage: Path, storage_dir: Path, documents: list[Any], *, embedding_model=None
+) -> int:
     index = vector_store.load_index(existing_storage)
     _validate_persisted_embeddings(index, existing_storage)
     if hasattr(index, "insert_nodes"):
-        count = ingestion.insert_documents_into_index(index, documents)
+        count = ingestion.insert_documents_into_index(
+            index, documents, embedding_model=embedding_model
+        )
     else:
         # Some tests use a tiny fake index that only implements insert().
         for document in documents:

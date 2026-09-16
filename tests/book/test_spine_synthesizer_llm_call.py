@@ -18,6 +18,14 @@ from deeptutor.agents.base_agent import BaseAgent
 from deeptutor.book.agents.spine_synthesizer import SpineSynthesizer
 
 
+@pytest.fixture(autouse=True)
+def isolated_runtime_settings(monkeypatch, tmp_path):
+    from deeptutor.services.setup import init_user_directories
+
+    monkeypatch.setenv("DEEPTUTOR_HOME", str(tmp_path))
+    init_user_directories(tmp_path)
+
+
 @pytest.mark.asyncio
 async def test_call_json_goes_through_call_llm_with_its_stage(
     monkeypatch: pytest.MonkeyPatch,
@@ -45,7 +53,7 @@ async def test_call_json_goes_through_call_llm_with_its_stage(
 
 
 @pytest.mark.asyncio
-async def test_call_json_returns_an_empty_payload_when_the_call_fails(
+async def test_call_json_preserves_failure_instead_of_creating_a_placeholder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _boom(self: BaseAgent, **_kwargs: Any) -> str:
@@ -53,13 +61,12 @@ async def test_call_json_returns_an_empty_payload_when_the_call_fails(
 
     monkeypatch.setattr(BaseAgent, "call_llm", _boom)
 
-    payload = await SpineSynthesizer()._call_json(
-        system_prompt="Design a spine.",
-        user_prompt="About linear algebra.",
-        stage="spine_draft",
-    )
-
-    assert payload == {}
+    with pytest.raises(RuntimeError, match="provider down"):
+        await SpineSynthesizer()._call_json(
+            system_prompt="Design a spine.",
+            user_prompt="About linear algebra.",
+            stage="spine_draft",
+        )
 
 
 @pytest.mark.asyncio
@@ -72,7 +79,7 @@ async def test_call_json_retries_at_low_effort_when_reasoning_ate_the_budget(
     as its answer; on the spine prompt it can spend the lot and return nothing
     to parse. That used to reach ``_materialise`` as ``{}`` and collapse a
     whole book into one placeholder "Overview" chapter (#1316). The second
-    attempt asks for the same JSON with thinking turned down.
+    attempt asks for the same JSON with unchanged model settings.
     """
     efforts: list[str | None] = []
 
@@ -91,7 +98,7 @@ async def test_call_json_retries_at_low_effort_when_reasoning_ate_the_budget(
         expected_key="chapters",
     )
 
-    assert efforts == [None, "low"]
+    assert efforts == [None, None]
     assert len(payload["chapters"]) == 2
 
 
@@ -123,7 +130,7 @@ async def test_call_json_retries_when_the_payload_lost_its_chapters(
         expected_key="chapters",
     )
 
-    assert calls == [None, "low"]
+    assert calls == [None, None]
     assert payload["chapters"] == [{"title": "Vectors"}]
 
 

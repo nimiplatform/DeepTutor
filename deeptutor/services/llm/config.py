@@ -197,7 +197,7 @@ def _get_llm_config_from_resolver() -> LLMConfig:
         raise LLMConfigError(
             "No active LLM model is configured. Please set it in Settings > Catalog."
         )
-    if not resolved.effective_url and resolved.provider_mode != "oauth":
+    if not resolved.effective_url and resolved.provider_mode not in {"oauth", "nimi"}:
         raise LLMConfigError(
             "No effective LLM endpoint resolved. Please configure base_url or provider defaults."
         )

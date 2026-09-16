@@ -14,7 +14,14 @@ deeptutor/services/rag/eg_only_for_analysis/
 /docs/
 /site/
 .claude
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/nimi-app-lifecycle/
+.nimi/local/
+dist-electron/
+dist-electron-package/
+dist-python/
 
 # LaTeX build artifacts
 *.aux
@@ -89,6 +96,7 @@ web/.next-*/
 # PDF.js decoder files are copied from node_modules for local/dev and release
 # builds; they are dependency-generated assets, not source files.
 web/public/pdfjs/
+web/public/nimi-ui.css
 # Per-process TypeScript configs used by isolated build/typecheck wrappers
 web/tsconfig.deeptutor-*.json
 # Temporary Next.js dist roots created by isolated build/test runs

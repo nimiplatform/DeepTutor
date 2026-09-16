@@ -79,6 +79,7 @@ async def test_failed_block_marks_result_partial() -> None:
         return ResearchedBlock(block=block, knowledge=f"knowledge for {block.block_id}")
 
     async def fake_write_report(self, *, topic, blocks, citations, stream, client):
+        assert [b.block.block_id for b in blocks] == ["block_2"]
         return "REPORT_OK"
 
     pipeline._research_block = types.MethodType(fake_research_block, pipeline)
@@ -114,3 +115,24 @@ async def test_all_blocks_complete_is_not_partial() -> None:
     assert meta["partial"] is False
     assert meta["failed_block_count"] == 0
     assert meta["failed_block_titles"] == []
+
+
+async def test_all_failed_blocks_preserve_failure_and_never_generate_a_report():
+    from deeptutor.nimi.transport import NimiRequestError
+
+    pipeline = _make_pipeline()
+    failure = NimiRequestError(
+        {"message": "Nimi output invalid", "reasonCode": "ai-output-invalid", "traceId": "trace-1"}
+    )
+
+    async def fail(self, **kwargs):
+        raise failure
+
+    async def report(self, **kwargs):
+        raise AssertionError("No completed evidence may not turn into a generated report")
+
+    pipeline._research_block = types.MethodType(fail, pipeline)
+    pipeline._write_report = types.MethodType(report, pipeline)
+    with pytest.raises(NimiRequestError) as raised:
+        await _run(pipeline)
+    assert raised.value is failure

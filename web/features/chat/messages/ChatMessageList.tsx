@@ -95,12 +95,16 @@ import { useConnectedAgentKinds } from "@/hooks/useConnectedAgentKinds";
 import {
   authoritativeResearchReport,
   isConfirmedResearchFollowup,
+  confirmedResearchOutline,
+  researchFollowupIndices,
   researchFollowupStatus,
 } from "@/lib/deep-research-report";
 
 const MathAnimatorViewer = dynamic(
   () => import("@/components/math-animator/MathAnimatorViewer"),
-  { ssr: false },
+  {
+    ssr: false,
+  },
 );
 const QuizViewer = dynamic(() => import("@/components/quiz/QuizViewer"), {
   ssr: false,
@@ -108,11 +112,15 @@ const QuizViewer = dynamic(() => import("@/components/quiz/QuizViewer"), {
 
 const ResearchOutlineEditor = dynamic(
   () => import("@/components/research/ResearchOutlineEditor"),
-  { ssr: false },
+  {
+    ssr: false,
+  },
 );
 const VisualizationViewer = dynamic(
   () => import("@/components/visualize/VisualizationViewer"),
-  { ssr: false },
+  {
+    ssr: false,
+  },
 );
 
 interface ChatMessageItem {
@@ -417,6 +425,10 @@ export const AssistantMessage = memo(function AssistantMessage({
   ) => void | boolean | Promise<void | boolean>;
 }) {
   const events = useMemo(() => msg.events ?? [], [msg.events]);
+  const activityEvents = useMemo(() => {
+    const turnId = [...events].reverse().find((event) => event.turn_id)?.turn_id;
+    return turnId ? events.filter((event) => !event.turn_id || event.turn_id === turnId) : events;
+  }, [events]);
   const readingMaterialId = researchRequestSnapshot?.readingMaterialId;
   const readingMaterialRevision =
     researchRequestSnapshot?.readingMaterialRevision;
@@ -430,7 +442,9 @@ export const AssistantMessage = memo(function AssistantMessage({
     const meta = resultEvent.metadata as Record<string, unknown> | undefined;
     if (!meta?.outline_preview) return null;
     return {
-      sub_topics: (meta.sub_topics ?? []) as Array<{
+      sub_topics: (confirmedResearchOutline(msg.events) ??
+        meta.sub_topics ??
+        []) as Array<{
         title: string;
         overview: string;
       }>,
@@ -440,7 +454,7 @@ export const AssistantMessage = memo(function AssistantMessage({
         unknown
       > | null,
     };
-  }, [msg.capability, resultEvent]);
+  }, [msg.capability, msg.events, resultEvent]);
 
   const quizQuestions = useMemo(() => {
     if (msg.capability !== "deep_question") return null;
@@ -624,7 +638,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           the exploring trace nested beneath it — expanded while DeepTutor is
           still working, collapsed once it settles into the final answer. */}
       <AssistantActivity
-        events={events}
+        events={activityEvents}
         traceEvents={headerTraceEvents}
         isStreaming={isStreaming}
         content={msg.content}
@@ -637,8 +651,8 @@ export const AssistantMessage = memo(function AssistantMessage({
         // it, so the header stays openable and the click can fetch it.
         hasStoredTrace={Boolean(
           msg.trace?.turn_id &&
-            (msg.trace?.truncated ||
-              (msg.trace?.total ?? 0) > (msg.events?.length ?? 0)),
+          (msg.trace?.truncated ||
+            (msg.trace?.total ?? 0) > (msg.events?.length ?? 0)),
         )}
         className="mb-3"
         onTraceToggle={
@@ -666,6 +680,7 @@ export const AssistantMessage = memo(function AssistantMessage({
             />
           ) : null}
           <ResearchOutlineEditor
+            key={JSON.stringify(outlinePreview.sub_topics)}
             outline={outlinePreview.sub_topics}
             topic={outlinePreview.topic}
             onConfirm={(items) =>
@@ -797,12 +812,14 @@ function CostFooter({
   cost,
   tokens,
   calls,
+  estimated = false,
 }: {
-  cost: number;
+  cost: number | null;
   tokens: number;
   calls: number;
+  estimated?: boolean;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const formatCost = (usd: number) => {
     if (usd < 0.01) return `$${usd.toFixed(4)}`;
     return `$${usd.toFixed(2)}`;
@@ -814,9 +831,16 @@ function CostFooter({
   return (
     <div className="flex items-center gap-1.5 text-[11px] text-[var(--muted-foreground)]/70">
       <Coins size={11} strokeWidth={1.5} className="shrink-0" />
-      <span>{formatCost(cost)}</span>
+      <span>
+        {cost === null
+          ? i18n.language.startsWith("zh")
+            ? "费用未知"
+            : "Cost unavailable"
+          : formatCost(cost)}
+      </span>
       <span className="opacity-50">·</span>
       <span>
+        {estimated ? "≈" : ""}
         {formatTokens(tokens)} {t("tokens")}
       </span>
       <span className="opacity-50">·</span>
@@ -1554,7 +1578,7 @@ export const ChatMessageList = memo(function ChatMessageList({
   const deepResearchMergeMap = useMemo(() => {
     const map = new Map<
       number,
-      { mergedEvents: StreamEvent[]; mergedContent: string }
+      { mergedEvents: StreamEvent[]; mergedContent: string; trace?: MessageTraceMetadata; messageId?: number }
     >();
     const followupIndices = new Set<number>();
     for (let i = 0; i < visibleMessages.length; i++) {
@@ -1564,13 +1588,9 @@ export const ChatMessageList = memo(function ChatMessageList({
       const resultEv = msg.events?.find((e) => e.type === "result");
       const meta = resultEv?.metadata as Record<string, unknown> | undefined;
       if (!meta?.outline_preview) continue;
-      const nextResearchAssistantIdx = visibleMessages
-        .slice(i + 1)
-        .findIndex(
-          (m) => m.role === "assistant" && m.capability === "deep_research",
-        );
-      if (nextResearchAssistantIdx === -1) continue;
-      const absoluteFollowupIdx = i + 1 + nextResearchAssistantIdx;
+      const candidates = researchFollowupIndices(visibleMessages, i);
+      const absoluteFollowupIdx = candidates.at(-1);
+      if (absoluteFollowupIdx === undefined) continue;
       const followup = visibleMessages[absoluteFollowupIdx];
       if (!isConfirmedResearchFollowup(followup.events)) continue;
       const mergedEvents = [...(msg.events ?? []), ...(followup.events ?? [])];
@@ -1578,8 +1598,8 @@ export const ChatMessageList = memo(function ChatMessageList({
         followup.events,
         followup.content || msg.content,
       );
-      map.set(i, { mergedEvents, mergedContent });
-      followupIndices.add(absoluteFollowupIdx);
+      map.set(i, { mergedEvents, mergedContent, trace: followup.trace, messageId: followup.id });
+      candidates.forEach((index) => followupIndices.add(index));
     }
     return { mergedByParent: map, followupIndices };
   }, [visibleMessages]);
@@ -1607,11 +1627,11 @@ export const ChatMessageList = memo(function ChatMessageList({
       const resultEv = msg.events?.find((e) => e.type === "result");
       const meta = resultEv?.metadata as Record<string, unknown> | undefined;
       if (!meta?.outline_preview) continue;
-      const followup = visibleMessages
-        .slice(i + 1)
-        .find(
-          (m) => m.role === "assistant" && m.capability === "deep_research",
-        );
+      const followupIndex = researchFollowupIndices(visibleMessages, i).at(-1);
+      const followup =
+        followupIndex === undefined
+          ? undefined
+          : visibleMessages[followupIndex];
       if (followup && isConfirmedResearchFollowup(followup.events)) {
         map.set(i, researchFollowupStatus(followup.events));
       } else {
@@ -1647,6 +1667,8 @@ export const ChatMessageList = memo(function ChatMessageList({
         const effectiveMsg: ChatMessageItem = merged
           ? {
               ...msg,
+              id: merged.messageId,
+              trace: merged.trace,
               events: merged.mergedEvents,
               content: merged.mergedContent,
             }
@@ -1764,7 +1786,9 @@ export const ChatMessageList = memo(function ChatMessageList({
             Record<string, unknown> | undefined;
           const cs = meta?.cost_summary as
             | {
-                total_cost_usd?: number;
+                total_cost_usd?: number | null;
+                cost_kind?: string;
+                usage_kind?: string;
                 total_tokens?: number;
                 total_calls?: number;
               }
@@ -1875,9 +1899,15 @@ export const ChatMessageList = memo(function ChatMessageList({
                 {costSummary && (
                   <div className="ml-auto">
                     <CostFooter
-                      cost={costSummary.total_cost_usd ?? 0}
+                      cost={
+                        costSummary.cost_kind === "actual" ||
+                        costSummary.cost_kind === "estimated"
+                          ? (costSummary.total_cost_usd ?? null)
+                          : null
+                      }
                       tokens={costSummary.total_tokens ?? 0}
                       calls={costSummary.total_calls ?? 0}
+                      estimated={costSummary.usage_kind !== "actual"}
                     />
                   </div>
                 )}

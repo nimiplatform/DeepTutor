@@ -2,7 +2,7 @@
 
 import { useTranslation } from "react-i18next";
 
-import { ServiceConfigEditor } from "@/components/settings/ServiceConfigEditor";
+import { NimiModelSettings } from "@/components/settings/NimiModelSettings";
 import { SettingsPageHeader } from "@/components/settings/shared";
 
 export default function LlmSettingsPage() {
@@ -15,7 +15,7 @@ export default function LlmSettingsPage() {
           "Configure language model profiles. The active model is used for chat and most agent reasoning.",
         )}
       />
-      <ServiceConfigEditor service="llm" />
+      <NimiModelSettings capability="text.generate" />
     </div>
   );
 }

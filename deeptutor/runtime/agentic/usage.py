@@ -90,7 +90,12 @@ class UsageTracker:
                 self.completion_tokens / 1000.0
             ) * pricing.get("output", 0.0)
         return {
-            "total_cost_usd": cost_usd,
+            "total_cost_usd": None if self.model == "text.generate" else cost_usd,
+            **(
+                {"cost_kind": "unknown", "usage_kind": "estimated"}
+                if self.model == "text.generate"
+                else {}
+            ),
             "total_tokens": self.total_tokens,
             "total_calls": self.calls,
             "prompt_tokens": self.prompt_tokens,

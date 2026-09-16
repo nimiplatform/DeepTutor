@@ -10,6 +10,7 @@ from typing import Any
 from ..models import BlockType, SourceAnchor
 from ._llm_writer import llm_text
 from ._prompts import get_book_prompt, load_book_prompts
+from ._rag_helpers import optional_rag_lookup
 from .base import BlockContext, BlockGenerator, GenerationFailure
 
 _VARIANT_LABELS = {
@@ -44,20 +45,31 @@ class CalloutGenerator(BlockGenerator):
             variant=variant,
             label=label,
         )
+        rag = await optional_rag_lookup(
+            query=f"{chapter_title}: {chapter_summary}", ctx=ctx, refresh=True
+        )
+        if ctx.rag_enabled and ctx.primary_kb and not rag.text.strip():
+            raise GenerationFailure("Selected knowledge base returned no usable callout evidence.")
+        if rag.text:
+            user_prompt += (
+                "\n[Source evidence]\n"
+                + rag.text
+                + "\nUse only claims supported by this evidence; cite its page labels. "
+                "Distinguish measured results from explanation and inference."
+            )
         body = await llm_text(
             user_prompt=user_prompt,
             system_prompt=get_book_prompt(prompts, "system"),
             max_tokens=250,
             temperature=0.5,
             language=ctx.language,
-            reasoning_effort="none",
         )
         if not body.strip():
             raise GenerationFailure("LLM returned no visible callout content.")
         return (
             {"variant": variant, "label": label, "body": body},
-            [],
-            {},
+            rag.anchors,
+            {"used_rag": rag.used},
         )
 
 

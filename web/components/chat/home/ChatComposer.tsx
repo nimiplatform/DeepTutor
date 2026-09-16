@@ -52,7 +52,7 @@ import type { SelectedReadingReference } from "@/lib/reading-references";
 import AgentSelector from "./AgentSelector";
 import ContextBudgetChip, { type ContextBudget } from "./ContextBudgetChip";
 import KnowledgeSelector from "./KnowledgeSelector";
-import ModelSelector from "./ModelSelector";
+import { NimiModelButton } from "@/components/settings/NimiModelSettings";
 import PersonaSelector from "./PersonaSelector";
 
 type SpaceSelectionCounts = {
@@ -981,7 +981,7 @@ export default memo(function ChatComposer({
                               type="button"
                               aria-haspopup="menu"
                               aria-expanded={moreCapsOpen}
-                              onClick={() => setMoreCapsOpen((open) => !open)}
+                              onClick={() => setMoreCapsOpen(true)}
                               className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left transition-colors ${
                                 moreCapsOpen
                                   ? "bg-[var(--muted)]/45"
@@ -1138,15 +1138,7 @@ export default memo(function ChatComposer({
                     onOpenChange={onPersonaSelectorOpenChange}
                   />
                 ) : null}
-                <ModelSelector
-                  options={llmOptions}
-                  activeDefault={activeLLMDefault}
-                  value={llmSelection}
-                  loading={llmOptionsLoading}
-                  error={llmOptionsError}
-                  onChange={onSelectLLM}
-                  onRefresh={onRefreshLLMOptions}
-                />
+                <NimiModelButton />
                 {contextBudget ? (
                   <ContextBudgetChip budget={contextBudget} />
                 ) : null}

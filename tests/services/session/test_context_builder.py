@@ -318,6 +318,15 @@ class TestBuildHistory:
 
 
 class TestSelectRecentMessages:
+    def test_oversized_completed_report_is_summarized_instead_of_starving_new_evidence(self):
+        builder = ContextBuilder(store=MagicMock())
+        messages = [
+            {"id": 1, "role": "user", "content": "Research the paper"},
+            {"id": 2, "role": "assistant", "content": "Long report evidence. " * 300},
+        ]
+        older, recent = builder._select_recent_messages(messages, recent_budget=100)
+        assert older == messages and recent == []
+
     def test_selects_from_end(self) -> None:
         builder = ContextBuilder(store=MagicMock())
         messages = [

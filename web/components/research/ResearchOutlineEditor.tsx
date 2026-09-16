@@ -79,7 +79,7 @@ export default function ResearchOutlineEditor({
   }, [items, onConfirm]);
 
   const validItems = locked
-    ? initialOutline.filter((i) => i.title.trim())
+    ? (localConfirmed ? items : initialOutline).filter((i) => i.title.trim())
     : items;
 
   const statusLabel = (() => {

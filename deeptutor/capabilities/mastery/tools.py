@@ -1117,6 +1117,8 @@ class MasteryGradeTool(BaseTool):
             "knowledge_point_id": pending.knowledge_point_id,
             "question_id": pending.question_id,
             "mastery": round(display_mastery(progress, kp), 3) if kp else 0.0,
+            "question_prompt": pending.prompt,
+            "choice_options": dict(choice_options),
             "threshold": round(gate_threshold(kp.type), 3) if kp else 0.0,
             # Which gate that number is being read against. Without it a
             # qualitative objective reports mastery 1.0 / threshold 1.0 /
@@ -1282,6 +1284,10 @@ class MasterySkipQuestionTool(BaseTool):
             "skipped": skipped,
             "path_revision": progress.version,
             "question_id": interaction.interaction_id if interaction is not None else "",
+            "question_prompt": interaction.question.prompt if interaction is not None else "",
+            "choice_options": dict(interaction.question.choice_map)
+            if interaction is not None
+            else {},
             "next": next_objective(progress).to_dict(),
             "instruction": (
                 "The question was abandoned without an attempt or mastery credit. "

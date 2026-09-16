@@ -185,6 +185,15 @@ export default function BookCreator({
   const [editProposal, setEditProposal] = useState<BookProposal | null>(null);
   const [formCollapsed, setFormCollapsed] = useState(false);
   const lastSeenProposalIdRef = useRef<string | null>(null);
+  const restoredBookIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!book || restoredBookIdRef.current === book.id) return;
+    restoredBookIdRef.current = book.id;
+    setSelectedKbs(new Set(book.knowledge_bases));
+    setLanguage(book.language);
+    setDepth(book.depth ?? "standard");
+  }, [book]);
 
   // Auto-collapse the form once the proposal first arrives (never overwrites
   // a manual expand later because we only fire on identity change).

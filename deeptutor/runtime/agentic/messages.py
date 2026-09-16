@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+
+def rejected_nimi_tool_results(state: dict[str, Any] | None, reason: str) -> list[dict[str, Any]]:
+    """Close real calls rejected by the App protocol without executing them.
+
+    The original ordered output/continuity remains on the assistant message.
+    These are explicit App refusal results, not successful tool callbacks.
+    """
+    return [
+        {
+            "role": "tool",
+            "tool_call_id": item["toolCall"]["id"],
+            "is_error": True,
+            "content": json.dumps(
+                {"status": "rejected", "executed": False, "reason": reason}, ensure_ascii=False
+            ),
+        }
+        for item in (state or {}).get("output_items", [])
+        if item.get("type") == "tool-call"
+    ]
 
 
 def assistant_message_with_tool_calls(
@@ -11,6 +32,7 @@ def assistant_message_with_tool_calls(
     *,
     reasoning_content: str | None = None,
     thinking_blocks: list[dict[str, Any]] | None = None,
+    nimi_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the assistant message that precedes tool result messages.
 
@@ -52,6 +74,8 @@ def assistant_message_with_tool_calls(
         message["reasoning_content"] = reasoning_content
     if thinking_blocks:
         message["thinking_blocks"] = thinking_blocks
+    if nimi_state is not None:
+        message["_provider_response_state"] = {"nimi_state": nimi_state}
     return message
 
 
@@ -60,6 +84,7 @@ def assistant_message(
     *,
     reasoning_content: str | None = None,
     thinking_blocks: list[dict[str, Any]] | None = None,
+    nimi_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a plain assistant turn, carrying its reasoning when there was any.
 
@@ -73,7 +98,9 @@ def assistant_message(
         message["reasoning_content"] = reasoning_content
     if thinking_blocks:
         message["thinking_blocks"] = thinking_blocks
+    if nimi_state is not None:
+        message["_provider_response_state"] = {"nimi_state": nimi_state}
     return message
 
 
-__all__ = ["assistant_message", "assistant_message_with_tool_calls"]
+__all__ = ["assistant_message", "assistant_message_with_tool_calls", "rejected_nimi_tool_results"]

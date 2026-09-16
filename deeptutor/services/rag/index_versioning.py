@@ -53,6 +53,7 @@ class EmbeddingSignature:
     base_url: str
     api_version: str
     role_semantics: str = ""
+    space_id: str = ""
 
     def hash(self) -> str:
         """Short hex digest used as the stable signature."""

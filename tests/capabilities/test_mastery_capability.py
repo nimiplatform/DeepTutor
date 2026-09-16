@@ -137,6 +137,16 @@ def test_announced_but_unposed_question_is_redirected():
     assert "SAME round" in instruction
 
 
+def test_skipped_question_followup_cannot_promise_an_absent_card():
+    context = _context()
+    context.metadata["mastery_card_skip"] = {"skipped": True}
+    instruction = MasteryLoopCapability().finish_instruction(
+        context,
+        "现在给你一道新的，先在心里走一遍「常数项定同异号、一次项定正负」，再选。",
+    )
+    assert instruction is not None and "mastery_quiz" in instruction
+
+
 def test_runtime_grading_also_frees_the_review_to_finish():
     """A ruling the runtime made counts as this turn having graded.
 
@@ -173,6 +183,9 @@ def test_seed_hands_the_tutor_a_ruling_it_did_not_have_to_make():
     context.metadata["mastery_card_grade"] = {
         "is_correct": True,
         "mastered": False,
+        "question_id": "q-1",
+        "question_prompt": "Solve x²−5x+4=0",
+        "choice_options": {"A": "1 and 4", "B": "-1 and -4"},
         "result": {"question_id": "q-1", "learner_answer": "C", "explanation": "why"},
     }
 
@@ -182,6 +195,9 @@ def test_seed_hands_the_tutor_a_ruling_it_did_not_have_to_make():
     assert "correct" in seed
     assert "do not call mastery_grade" in seed
     assert "mastery_quiz" in seed
+    assert "Solve x²−5x+4=0" in seed
+    assert "B: -1 and -4" in seed
+    assert "Registered explanation: why" in seed
 
 
 def test_seed_is_silent_when_the_turn_graded_nothing():

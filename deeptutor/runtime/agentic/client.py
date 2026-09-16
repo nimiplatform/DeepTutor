@@ -11,15 +11,13 @@ import asyncio
 from collections import OrderedDict
 from collections.abc import Callable
 import contextlib
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import hashlib
 import inspect
 import json
 import threading
 from types import SimpleNamespace
 from typing import Any
-
-from openai import AsyncAzureOpenAI, AsyncOpenAI
 
 from deeptutor.services.config import load_system_settings
 from deeptutor.services.keypool import KeyPool, primary_api_key
@@ -28,10 +26,6 @@ from deeptutor.services.llm.capabilities import catalog_capability_override
 from deeptutor.services.llm.exceptions import (
     LLMProviderError,
     LLMProviderTransportError,
-)
-from deeptutor.services.llm.openai_http_client import (
-    openai_sdk_client_kwargs,
-    sanitize_invalid_ssl_env,
 )
 from deeptutor.services.llm.reasoning_params import (
     build_openai_compatible_reasoning_kwargs,
@@ -121,65 +115,15 @@ def _client_cache_key(
 
 
 def _build_openai_client(
-    config: LLMClientConfig,
-    *,
-    disable_ssl_verify: bool,
-    sdk_max_retries: int | None = None,
+    config: LLMClientConfig, *, disable_ssl_verify: bool, sdk_max_retries: int | None = None
 ) -> Any:
-    # A stale SSL_CERT_FILE (common with cloned conda envs) makes httpx's
-    # create_ssl_context raise FileNotFoundError mid-__init__, aborting client
-    # construction. Drop broken CA paths first so TLS uses its default CA config.
-    sanitize_invalid_ssl_env()
-    if isinstance(config.api_key, list):
-        keys = [str(key).strip() for key in config.api_key if str(key or "").strip()]
-        clients = {
-            key: _build_openai_client(
-                replace(config, api_key=key),
-                disable_ssl_verify=disable_ssl_verify,
-                sdk_max_retries=0,
-            )
-            for key in keys
-        }
-        return _KeyRotatingClient(KeyPool(keys), clients)
-    spec = find_by_name(config.binding)
-    backend = effective_backend(spec, config.api_format)
-    wire_api = wire_api_for_provider(config.wire_api, spec)
-    if wire_api == "responses":
-        from deeptutor.services.llm.provider_core import OpenAICompatProvider
+    """Keep the loop's client shape while routing model execution through Nimi."""
+    from deeptutor.nimi.llm import NimiLLMProvider
+    from deeptutor.services.llm.exceptions import LLMConfigError
 
-        responses_provider = OpenAICompatProvider(
-            api_key=config.api_key,
-            api_base=config.base_url or (spec.default_api_base if spec else None),
-            default_model=config.model or "gpt-4o-mini",
-            extra_headers=config.extra_headers,
-            spec=spec,
-            provider_name=config.binding,
-            wire_api="responses",
-        )
-        return _ProviderOpenAIAdapter(responses_provider)
-    if spec and wire_api != "chat_completions":
-        native_adapter = _build_native_provider_adapter(config, spec, backend)
-        if native_adapter is not None:
-            return native_adapter
-
-    # Same constructor recipe as the services-layer provider, so headers, the
-    # SDK retry budget and the TLS bypass cannot drift between the two paths.
-    sdk_kwargs = openai_sdk_client_kwargs(
-        api_key=config.api_key or "sk-no-key-required",
-        base_url=config.base_url or None,
-        extra_headers=config.extra_headers,
-        spec=spec,
-        disable_ssl_verify=disable_ssl_verify,
-        sdk_max_retries=sdk_max_retries,
-    )
-    if config.binding == "azure_openai" or (config.binding == "openai" and config.api_version):
-        sdk_kwargs.pop("base_url", None)
-        return AsyncAzureOpenAI(
-            azure_endpoint=config.base_url,
-            api_version=config.api_version,
-            **sdk_kwargs,
-        )
-    return AsyncOpenAI(**sdk_kwargs)
+    if config.binding != "nimi" or config.model not in {None, "text.generate"}:
+        raise LLMConfigError("Configure AI through Nimi App AIConfig.")
+    return _ProviderOpenAIAdapter(NimiLLMProvider())
 
 
 class _KeyRotatingCompletions:
@@ -520,6 +464,8 @@ class _ProviderOpenAIStream:
     async def close(self) -> None:
         if self._task and not self._task.done():
             self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
 
     def _raise_for_error_response(self, response: Any) -> None:
         """Turn an error-shaped response back into the exception it describes.
@@ -761,6 +707,8 @@ def can_use_native_tool_calling(
        To opt a cloud provider out, add its binding to
        ``_NATIVE_TOOL_BLOCKED_BINDINGS``.
     """
+    if binding == "nimi":
+        return True
     declared = catalog_capability_override(binding, model, "supports_tools")
     if declared is not None:
         return declared

@@ -97,6 +97,8 @@ quiz = "deeptutor.reading.quiz:ReadingQuizExtension"
 translation = "deeptutor.reading.translation:TranslationExtension"
 
 [project.optional-dependencies]
+# Bundle the existing Python business backend for the supervised Nimi Host.
+nimi-host = ["pyinstaller>=6.0,<7.0"]
 # Compatibility extra for source installs and older docs. These packages are
 # already included in the public `deeptutor` wheel; the local CLI-only project
 # under `packaging/deeptutor-cli` uses the same list without Web assets/server deps.

@@ -49,6 +49,7 @@ from deeptutor.runtime.agentic.tool_dispatch import DispatchOutcome
 from deeptutor.runtime.agentic.usage import message_content_chars, record_streamed_usage
 from deeptutor.runtime.stream_bus import StreamBus
 from deeptutor.services.llm import (
+    LLMProviderError,
     LLMProviderTransportError,
     LLMReasoningBudgetExhausted,
     clean_thinking_tags,
@@ -147,6 +148,7 @@ class AgentLoopState:
 @dataclass(slots=True)
 class LLMCallResult:
     text: str
+    nimi_state: dict[str, Any] | None = None
     visible_text: str = ""
     response_output_items: list[dict[str, Any]] = field(default_factory=list)
     reasoning_content: str = ""
@@ -187,8 +189,11 @@ def _provider_response_state(
     response_output_items: list[dict[str, Any]],
     reasoning_content: str,
     thinking_blocks: list[dict[str, Any]] | None = None,
+    nimi_state: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     state: dict[str, Any] = {}
+    if nimi_state is not None:
+        state["nimi_state"] = nimi_state
     if response_output_items:
         state["responses_output_items"] = response_output_items
     if reasoning_content:
@@ -204,6 +209,7 @@ def _assistant_round_message(result: LLMCallResult) -> dict[str, Any]:
         result.response_output_items,
         result.reasoning_content,
         result.thinking_blocks,
+        result.nimi_state,
     )
     if state is not None:
         message["_provider_response_state"] = state
@@ -301,6 +307,7 @@ class AgentLoop:
                 kb_seed=seed_block,
                 include_tool_manifest=bool(self.tool_schemas),
             )
+            self._initial_message_count = len(messages)
             outcome = await self._run_loop(
                 messages=messages,
                 state=state,
@@ -398,8 +405,12 @@ class AgentLoop:
                 # (nothing gathered yet) propagates as before. Once a failed
                 # stream emitted output, however, replay is unsafe: a second
                 # completion would mix new prose with the visible partial one.
-                if state.rounds == 0 or (
-                    isinstance(exc, LLMProviderTransportError) and exc.partial_response
+                # Nimi failures carry admission/session/terminal semantics.
+                # A second request must not hide them or cross a changed scope.
+                if (
+                    self.pipeline.binding == "nimi"
+                    or state.rounds == 0
+                    or (isinstance(exc, LLMProviderTransportError) and exc.partial_response)
                 ):
                     raise
                 logger.warning(
@@ -616,6 +627,7 @@ class AgentLoop:
                         result.response_output_items,
                         result.reasoning_content,
                         result.thinking_blocks,
+                        result.nimi_state,
                     ),
                 )
 
@@ -641,6 +653,7 @@ class AgentLoop:
                 result.response_output_items,
                 result.reasoning_content,
                 result.thinking_blocks,
+                result.nimi_state,
             )
             if provider_state is not None:
                 assistant["_provider_response_state"] = provider_state
@@ -670,10 +683,8 @@ class AgentLoop:
                 # ``role=tool`` message; the next round sees them in-protocol.
                 continue
 
-            checkpoint_boundary = self._fold_context_checkpoint(
-                messages=messages,
-                dispatch=dispatch,
-                checkpoint_boundary=checkpoint_boundary,
+            checkpoint_boundary = self._fold_context_checkpoints(
+                messages, dispatch, checkpoint_boundary
             )
 
             final_override = self.pipeline._capability_final_text_override(self.context, "")
@@ -726,24 +737,37 @@ class AgentLoop:
             return
         messages.append({"role": "user", "content": instruction})
 
-    def _fold_context_checkpoint(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        dispatch: DispatchOutcome,
-        checkpoint_boundary: int,
+    @staticmethod
+    def _fold_context_checkpoints(
+        messages: list[dict[str, Any]], dispatch: DispatchOutcome, boundary: int
     ) -> int:
-        summary = _last_context_checkpoint_summary(dispatch)
-        if not summary:
-            return checkpoint_boundary
-        prefix = messages[:checkpoint_boundary]
-        prefix.append(
-            {
-                "role": "system",
-                "content": f"[Context checkpoint]\n{summary}",
-            }
-        )
-        messages[:] = prefix
+        """Summarize completed-step tool data without pruning model state.
+
+        A new system message is not a continuation message. Deleting completed
+        rounds also loses ordered calls and opaque reasoning continuity. Keep
+        those records, fold bulky intermediate tool data into the checkpoint,
+        and retain the ordinary context guard and bounded round budget.
+        """
+        checkpoints = []
+        for message in dispatch.tool_messages:
+            metadata = dispatch.tool_metadata_by_id.get(message.get("tool_call_id")) or {}
+            checkpoint = metadata.get("_context_checkpoint")
+            if isinstance(checkpoint, dict) and (
+                summary := str(checkpoint.get("summary") or "").strip()
+            ):
+                message["content"] = (
+                    f"{message.get('content') or ''}\n\n[Context checkpoint]\n{summary}"
+                )
+                checkpoints.append(message["tool_call_id"])
+        if not checkpoints:
+            return boundary
+        for message in messages[boundary:]:
+            if message.get("role") == "tool" and message.get("tool_call_id") not in checkpoints:
+                message["content"] = (
+                    "[Completed-step tool result summarized in checkpoint result(s): "
+                    + ", ".join(checkpoints)
+                    + ". Original result retained in the activity history.]"
+                )
         return len(messages)
 
     async def _forced_finish(
@@ -787,21 +811,14 @@ class AgentLoop:
                 max_tokens=self.pipeline.loop_max_tokens,
                 tool_schemas=None,  # tools disabled so the model must finish
             )
-        except LLMProviderTransportError:
-            # Preserve the structured retryable error. Treating an unavailable
-            # provider as a successful empty answer hides the real failure and
-            # prevents callers from offering an accurate retry action.
-            raise
         except Exception as exc:
-            # The salvage call itself failed (e.g. the provider is still
-            # returning unusable data). Don't bubble up and lose the turn —
-            # emit the graceful fallback answer instead.
+            # Existing tool artefacts stay persisted. A failed model step is
+            # never a completed answer, including a failed salvage request.
             logger.warning("forced-finish LLM call failed: %s", exc)
-            return await self._finalize_finish(
-                "",
-                continued_answer_parts=continued_answer_parts,
-            )
+            raise
         state.rounds += 1
+        if _finish_was_truncated(result.finish_reason) and result.text.strip():
+            raise LLMProviderError("The final answer reached its output limit before completing.")
         # Two readings of one scene, at different precisions. The budget
         # check fires only when this round demonstrably hit its cap — that is
         # a configuration the user can act on (lower the effort, split the
@@ -839,6 +856,7 @@ class AgentLoop:
                 result.response_output_items,
                 result.reasoning_content,
                 result.thinking_blocks,
+                result.nimi_state,
             ),
         )
 
@@ -949,7 +967,48 @@ class AgentLoop:
         defer_visible_output: bool = False,
         tool_choice: str | None = None,
     ) -> LLMCallResult:
-        await self.pipeline._guard_context_window(messages, self.stream)
+        from deeptutor.services.llm.exceptions import AppContextBudgetExceeded
+
+        snapshot = LLMRequestSnapshot(
+            messages=list(messages),
+            tool_schemas=list(tool_schemas or []),
+            output_token_limit=max_tokens,
+        )
+        self._last_request = snapshot
+        try:
+            if self.pipeline.binding == "nimi":
+                await self.pipeline._guard_context_window(messages, self.stream, request=snapshot)
+            else:
+                await self.pipeline._guard_context_window(messages, self.stream)
+        except AppContextBudgetExceeded as exc:
+            latest_assistant = max(
+                (i for i, m in enumerate(messages) if m.get("role") == "assistant"), default=-1
+            )
+            estimate = self.pipeline._estimate_messages_tokens
+            initial_count = getattr(self, "_initial_message_count", 0)
+            await self.stream.progress(
+                str(exc),
+                source=self.source,
+                stage=self.stage,
+                metadata={
+                    "trace_kind": "warning",
+                    "error_code": exc.error_code,
+                    "app_working_total_budget": exc.budget,
+                    "estimated_total_tokens": exc.used,
+                    "output_token_limit": max_tokens,
+                    "initial_context_tokens": estimate(messages[:initial_count]),
+                    "old_history_tokens": estimate(self.context.conversation_history),
+                    "current_tool_evidence_tokens": estimate(
+                        [
+                            m
+                            for i, m in enumerate(messages)
+                            if i > latest_assistant and m.get("role") == "tool"
+                        ]
+                    ),
+                    "context_budget": self.pipeline.measure_context_budget(snapshot),
+                },
+            )
+            raise
         stage = self.stage
         call_id = new_call_id(f"{self.source}-{stage}")
         trace_meta = build_trace_metadata(
@@ -997,21 +1056,6 @@ class AgentLoop:
                 else "auto"
             )
         forced_tool_choice = isinstance(kwargs.get("tool_choice"), dict)
-        # What this request actually carried, pinned now: the loop keeps
-        # appending to ``messages`` and the deferred loader keeps appending to
-        # ``tool_schemas``, so the turn's context budget is read off the last
-        # snapshot rather than off the lists' end state.
-        #
-        # The forced-finish round deliberately ships no ``tools`` so the model
-        # must answer. That absence is a loop mechanic, not a turn that ran
-        # without tools, so the last non-empty schema list stands — otherwise a
-        # turn that spent eight rounds calling tools would report zero tokens
-        # for the schemas that sat in its window the whole time.
-        carried = list(tool_schemas or [])
-        if not carried and self._last_request is not None:
-            carried = self._last_request.tool_schemas
-        self._last_request = LLMRequestSnapshot(messages=list(messages), tool_schemas=carried)
-
         chunk_meta = merge_trace_metadata(trace_meta, {"trace_kind": "llm_chunk"})
 
         for attempt in range(len(_PROVIDER_RETRY_DELAYS) + 1):
@@ -1023,6 +1067,7 @@ class AgentLoop:
             reasoning_parts: list[str] = []
             response_output_items: list[dict[str, Any]] = []
             thinking_blocks: list[dict[str, Any]] = []
+            nimi_state = None
             tool_acc = ToolCallAccumulator()
             # ``ask_user``'s arguments are the card the reader is waiting on,
             # so they are previewed as they stream. Deferred rounds are the
@@ -1155,6 +1200,8 @@ class AgentLoop:
                         finish_reason = str(choice.finish_reason)
                     provider_fields = getattr(choice, "provider_specific_fields", None)
                     if isinstance(provider_fields, dict):
+                        if provider_fields.get("nimi_state") is not None:
+                            nimi_state = provider_fields["nimi_state"]
                         # A native-provider adapter reports in-flight tool
                         # arguments here; a plain OpenAI-compatible stream
                         # reports them as ``delta.tool_calls`` fragments,
@@ -1265,6 +1312,10 @@ class AgentLoop:
                                     arguments=str(part.get("arguments") or ""),
                                 )
             except Exception as exc:
+                if self.pipeline.binding == "nimi":
+                    # Preserve typed failures; transport message heuristics do
+                    # not authorize replay of an interrupted Nimi model step.
+                    raise
                 if not is_transient_transport_error(exc):
                     raise
                 can_retry = not output_emitted and attempt < len(_PROVIDER_RETRY_DELAYS)
@@ -1520,6 +1571,7 @@ class AgentLoop:
             text=text,
             visible_text=visible_text,
             response_output_items=response_output_items,
+            nimi_state=nimi_state,
             reasoning_content="".join(reasoning_parts),
             tool_calls=tool_calls,
             thinking_blocks=thinking_blocks,
@@ -1567,6 +1619,8 @@ class AgentLoop:
         try:
             return await self.client.chat.completions.create(**kwargs)
         except Exception as exc:
+            if self.pipeline.binding == "nimi":
+                raise
             if kwargs.get("tools") and is_tool_schema_unsupported(exc):
                 # Capture the provider's raw rejection body. Without it there is
                 # no way to tell *which* parameter/shape a new model family
@@ -1653,20 +1707,6 @@ async def _single_chunk_stream(response: Any) -> Any:
         ],
         usage=getattr(response, "usage", None),
     )
-
-
-def _last_context_checkpoint_summary(dispatch: DispatchOutcome) -> str:
-    summary = ""
-    for tool_message in dispatch.tool_messages:
-        tool_call_id = str(tool_message.get("tool_call_id") or "")
-        metadata = dispatch.tool_metadata_by_id.get(tool_call_id) or {}
-        checkpoint = metadata.get("_context_checkpoint")
-        if not isinstance(checkpoint, dict):
-            continue
-        candidate = str(checkpoint.get("summary") or "").strip()
-        if candidate:
-            summary = candidate
-    return summary
 
 
 __all__ = [

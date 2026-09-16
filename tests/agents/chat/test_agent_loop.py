@@ -19,7 +19,11 @@ from deeptutor.core.stream import StreamEvent, StreamEventType
 from deeptutor.core.tool_protocol import ToolResult
 from deeptutor.core.trace import ANSWER_BEARING_CALL_KINDS
 from deeptutor.runtime.stream_bus import StreamBus
-from deeptutor.services.llm import LLMProviderTransportError, LLMReasoningBudgetExhausted
+from deeptutor.services.llm import (
+    LLMProviderError,
+    LLMProviderTransportError,
+    LLMReasoningBudgetExhausted,
+)
 
 
 async def _collect_bus_events(bus: StreamBus) -> tuple[list[StreamEvent], asyncio.Task[Any]]:
@@ -162,7 +166,8 @@ class _Registry:
 
 
 @pytest.fixture(autouse=True)
-def _fake_llm_config(monkeypatch: pytest.MonkeyPatch) -> None:
+def _fake_llm_config(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("DEEPTUTOR_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setattr(
         "deeptutor.agents.loop.pipeline.get_llm_config",
         lambda: SimpleNamespace(
@@ -1370,7 +1375,8 @@ async def test_forced_tool_round_keeps_inline_reasoning_in_the_trace(
                         }
                     ]
                 ),
-            ]
+            ],
+            [_llm_chunk(content="问题已准备。")],
         ]
     )
     pipeline = AgenticChatPipeline(language="zh")
@@ -1999,7 +2005,62 @@ async def test_forced_finish_transport_failure_remains_structured(
 
 
 @pytest.mark.asyncio
-async def test_context_checkpoint_folds_completed_tool_rounds(
+@pytest.mark.parametrize("partial", [False, True])
+async def test_nimi_typed_failure_is_neither_retried_nor_completed(monkeypatch, partial):
+    failure = LLMProviderError(
+        "Nimi execution interrupted",
+        provider="nimi",
+        details={"reasonCode": "AI_TEXT_OUTPUT_INCOMPLETE"},
+    )
+    client = _ScriptedChatClient(
+        [
+            [
+                _llm_chunk(
+                    tool_calls=[
+                        {"id": "call-1", "name": "web_search", "arguments": '{"query":"q"}'}
+                    ]
+                )
+            ]
+        ]
+    )
+    create = client.chat.completions.create
+
+    async def fail_after_tool(**kwargs):
+        if client.call_count == 0:
+            return await create(**kwargs)
+        client.call_count += 1
+        if not partial:
+            raise failure
+
+        async def broken_stream():
+            yield _llm_chunk(content="A partial answer")
+            raise failure
+
+        return broken_stream()
+
+    client.chat.completions.create = fail_after_tool
+    pipeline = AgenticChatPipeline(language="en")
+    pipeline.binding = "nimi"
+    pipeline.model = "text.generate"
+    pipeline.registry = _Registry()
+    monkeypatch.setattr(pipeline, "_compose_enabled_tools", lambda _: ["web_search"])
+    monkeypatch.setattr(pipeline, "_build_openai_client", lambda: client)
+    bus = StreamBus()
+    events, consumer = await _collect_bus_events(bus)
+    try:
+        with pytest.raises(LLMProviderError) as raised:
+            await pipeline.run(UnifiedContext(session_id="s1", user_message="Find"), bus)
+    finally:
+        await bus.close()
+        await consumer
+    assert raised.value is failure
+    assert client.call_count == 2
+    assert not any(event.type == StreamEventType.RESULT for event in events)
+    assert len(pipeline.registry.executed) == 1
+
+
+@pytest.mark.asyncio
+async def test_context_checkpoint_preserves_calls_results_and_message_roles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _CheckpointRegistry(_Registry):
@@ -2059,19 +2120,24 @@ async def test_context_checkpoint_folds_completed_tool_rounds(
     assert client.call_count == 3
     second_round = client.calls[1]["messages"]
     assert any(
-        m.get("role") == "system" and "checkpoint: step one" in str(m.get("content"))
+        m.get("role") == "tool"
+        and m.get("tool_call_id") == "call-1"
+        and "checkpoint: step one" in str(m.get("content"))
         for m in second_round
     )
-    assert not any(m.get("role") == "tool" for m in second_round)
-    assert not any("Searching step one." in str(m.get("content")) for m in second_round)
+    assert any("Searching step one." in str(m.get("content")) for m in second_round)
     third_round = client.calls[2]["messages"]
     checkpoint_text = "\n".join(
-        str(m.get("content") or "") for m in third_round if m.get("role") == "system"
+        str(m.get("content") or "") for m in third_round if m.get("role") == "tool"
     )
     assert "checkpoint: step one" in checkpoint_text
     assert "checkpoint: step two" in checkpoint_text
-    assert not any(m.get("role") == "tool" for m in third_round)
-    assert not any("noisy tool result" in str(m.get("content")) for m in third_round)
+    assert [m["tool_call_id"] for m in third_round if m.get("role") == "tool"] == [
+        "call-1",
+        "call-2",
+    ]
+    assert not any(m.get("role") == "system" for m in third_round[1:])
+    assert any("noisy tool result" in str(m.get("content")) for m in third_round)
     result = _result(events)
     assert result.metadata["response"] == "Final from checkpoints."
 
@@ -2927,7 +2993,8 @@ async def test_ask_user_card_is_previewed_while_its_arguments_stream(
                     _llm_chunk(tool_calls=[{"id": "ask-1", "name": "ask_user", "arguments": chunk}])
                     for chunk in chunks
                 ),
-            ]
+            ],
+            [_llm_chunk(content="Question prepared.")],
         ]
     )
     pipeline = AgenticChatPipeline(language="en")
@@ -2995,7 +3062,8 @@ async def test_native_adapter_tool_argument_previews_reach_the_card(
                         {"id": "ask-1|item-9", "name": "ask_user", "arguments": accumulated[-1]}
                     ]
                 ),
-            ]
+            ],
+            [_llm_chunk(content="Question prepared.")],
         ]
     )
     pipeline = AgenticChatPipeline(language="en")

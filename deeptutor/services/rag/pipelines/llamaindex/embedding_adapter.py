@@ -19,6 +19,7 @@ from .config import chunk_geometry
 def _config_fingerprint(config: EmbeddingConfig) -> tuple[Any, ...]:
     """Return the settings fields that affect LlamaIndex embedding behavior."""
     return (
+        getattr(config, "space_id", None),
         getattr(config, "binding", None),
         getattr(config, "model", None),
         getattr(config, "dim", None),
@@ -37,6 +38,7 @@ class CustomEmbedding(BaseEmbedding):
     _binding: Any = PrivateAttr(default=None)
     _model: Any = PrivateAttr(default=None)
     _fingerprint: Any = PrivateAttr(default=None)
+    _captured_config: Any = PrivateAttr(default=None)
 
     def __init__(self, **kwargs):
         progress_cb = kwargs.pop("progress_callback", None)
@@ -49,6 +51,7 @@ class CustomEmbedding(BaseEmbedding):
             if embedding_config is not None
             else get_embedding_client()
         )
+        self._captured_config = embedding_config
         self._bind_client(client)
 
     def _bind_client(self, client: Any) -> None:
@@ -66,6 +69,7 @@ class CustomEmbedding(BaseEmbedding):
 
     def refresh_client(self, config: EmbeddingConfig | None = None) -> Any:
         """Refresh the cached client if settings changed while the pipeline lived."""
+        config = config or self._captured_config
         client = get_embedding_client(config) if config is not None else get_embedding_client()
         if client is not self._client:
             self._bind_client(client)

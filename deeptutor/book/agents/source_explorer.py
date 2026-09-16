@@ -427,7 +427,12 @@ class SourceExplorer(BaseAgent):
 
         async def _one_query(kb: str, query: str) -> list[SourceChunk]:
             try:
-                result = await rag_search(query=query, kb_name=kb)
+                result = await rag_search(
+                    query=query,
+                    kb_name=kb,
+                    top_k=self.chunks_per_query,
+                    include_source_content=True,
+                )
             except Exception as exc:
                 logger.debug(f"rag_search({kb}, {query!r}) failed: {exc}")
                 return []
@@ -439,11 +444,14 @@ class SourceExplorer(BaseAgent):
 
             answer = str(result.get("answer") or result.get("content") or "").strip()
             out: list[SourceChunk] = []
-            for idx, src in enumerate(sources[: self.chunks_per_query]):
+            # The retriever owns ranking and caption-adjacent context. Cutting
+            # its result again here can detach a table from its caption.
+            for idx, src in enumerate(sources):
                 if not isinstance(src, dict):
                     continue
                 ref = (
-                    src.get("id")
+                    src.get("chunk_id")
+                    or src.get("id")
                     or src.get("doc_id")
                     or src.get("path")
                     or src.get("source")
@@ -461,7 +469,7 @@ class SourceExplorer(BaseAgent):
                         kb_name=kb,
                         source="kb",
                         ref=str(ref)[:200],
-                        text=_clip(str(text), 1200),
+                        text=str(text).strip(),
                         score=score_f,
                         query=query,
                     )

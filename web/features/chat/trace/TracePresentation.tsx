@@ -1583,7 +1583,17 @@ export function StreamingStatus({
     modeLabel = t("{{name}} Reflecting…", { name });
   else if (mode === "responded") modeLabel = t("DeepTutor responded.");
 
+  const terminalStatus = !isStreaming
+    ? [...events].reverse().find((event) =>
+        (event.type === "done" || event.type === "error") &&
+        typeof event.metadata?.status === "string",
+      )?.metadata?.status
+    : undefined;
+  const terminalLabel = terminalStatus === "cancelled"
+    ? t("Stopped")
+    : terminalStatus === "failed" ? t("Failed") : undefined;
   const label =
+    terminalLabel ??
     getExploreContextStatusLabel(events, t, Boolean(isStreaming)) ??
     getDeepResearchStatusLabel(events, t, Boolean(isStreaming)) ??
     getReasoningProgressStatusLabel(events, t, Boolean(isStreaming)) ??

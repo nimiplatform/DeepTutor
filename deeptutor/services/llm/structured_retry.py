@@ -1,31 +1,8 @@
-"""One retry for a structured call a reasoning model failed to answer.
+"""One bounded retry for unusable structured output, preserving AIConfig.
 
-This is the project's single rule for that failure. Any step that asks a
-model for a whole structured payload in one shot should route through it
-rather than growing its own retry, because every such step has the same
-two indistinguishable outcomes and the same escape hatch.
-
-A reasoning model pays for its hidden tokens out of the same ``max_tokens``
-budget as its visible answer. When a prompt is large and the requested payload
-is a whole JSON object — a book proposal, a spine, a page plan — the thinking
-phase can consume the budget before a single character of JSON is emitted. The
-provider does not raise: it returns a truncated body, or none at all, and
-``parse_json_response`` hands back the caller's fallback. Every Book stage then
-degrades silently — most visibly the spine, which collapses to one placeholder
-"Overview" chapter (#1316).
-
-The escape hatch is to ask the same model for the same thing with its thinking
-turned down, which frees the budget for the answer — at
-:data:`~deeptutor.services.llm.reasoning_params.RETRY_REASONING_EFFORT`, which
-is where the choice of level and its reason live.
-
-The streaming half of the same rule lives in
-:class:`~deeptutor.runtime.agentic.labeled_step.LabeledStepResult`, whose
-``reasoning_only`` flag reports the same starvation for a step that emits
-labelled text rather than a payload: a round that produced reasoning, no
-visible text and no tool calls. Two detectors, one disease — a budget spent
-on hidden tokens — and one remedy, which is to ask again with thinking
-turned down.
+The historical helper names remain the callers' internal seam. A retry does
+not lower reasoning, switch models, or catch a failed model call. Only a
+successful response with unusable structure is eligible for another attempt.
 """
 
 from __future__ import annotations
@@ -33,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from deeptutor.services.llm.reasoning_params import RETRY_REASONING_EFFORT
 from deeptutor.utils.json_parser import parse_json_response
 
 
@@ -52,7 +28,7 @@ async def payload_with_reasoning_retry(
     is_usable: Callable[[Any], bool],
     logger_instance: Any = None,
 ) -> Any:
-    """Run ``run`` for a parsed payload, retrying once at low reasoning effort.
+    """Run ``run`` for a parsed payload, retrying once with the same settings.
 
     ``run`` receives the ``reasoning_effort`` to use (``None`` on the first
     attempt = whatever the model is configured for) and returns the raw
@@ -70,7 +46,7 @@ async def payload_with_reasoning_retry(
         return first
 
     retried = parse_json_response(
-        await run(RETRY_REASONING_EFFORT),
+        await run(None),
         logger_instance=logger_instance,
         fallback=None,
     )

@@ -3389,12 +3389,12 @@ async def reindex_knowledge_base(
         kb_dir = kb_base_dir / kb_name
         signature_hash = kb_provider
         if provider_uses_embedding_versions(kb_provider):
-            from deeptutor.services.rag.embedding_signature import signature_from_embedding_config
+            from deeptutor.services.rag.embedding_signature import current_nimi_embedding_signature
             from deeptutor.services.rag.index_versioning import (
                 find_matching_version,
             )
 
-            signature = signature_from_embedding_config()
+            signature = await current_nimi_embedding_signature()
             if signature is None:
                 raise HTTPException(
                     status_code=409,
@@ -3413,6 +3413,7 @@ async def reindex_knowledge_base(
                 and matching_valid
                 and not force_reindex
             ):
+                manager.update_kb_status(name=kb_name, status="ready")
                 return {
                     "message": (
                         f"Knowledge base '{kb_name}' already has an index for the "

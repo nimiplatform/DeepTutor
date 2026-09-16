@@ -65,34 +65,14 @@ def task_service_configured(catalog: dict[str, Any] | None = None) -> bool:
 
 @contextmanager
 def task_llm_scope() -> Iterator[LLMConfig | None]:
-    """Install the task model for the duration of the block.
+    """Auxiliary work inherits the current Nimi App text configuration."""
+    if task_service_configured():
+        from deeptutor.services.llm.exceptions import LLMConfigError
 
-    Yields the config that was installed, or ``None`` when the task service is
-    empty and the call inherits — which callers can log but never have to
-    branch on.
-    """
-    if not task_service_configured():
-        yield None
-        return
-
-    from deeptutor.services.config.provider_runtime import resolve_llm_runtime_config
-    from deeptutor.services.llm import config as llm_config_module
-
-    from .runtime import llm_config_from_resolved
-
-    try:
-        config = llm_config_from_resolved(resolve_llm_runtime_config(service_name=TASK_SERVICE))
-        token = llm_config_module.set_scoped_llm_config(config)
-    except Exception:
-        # Configured but unusable. Inheriting is strictly better than not
-        # writing a title at all.
-        logger.debug("Task model activation failed — inheriting", exc_info=True)
-        yield None
-        return
-    try:
-        yield config
-    finally:
-        llm_config_module.reset_scoped_llm_config(token)
+        raise LLMConfigError(
+            "Independent task model profiles are not mapped to Nimi. Clear the legacy task selection and configure the App model in Nimi."
+        )
+    yield None
 
 
 __all__ = ["TASK_SERVICE", "task_llm_scope", "task_service_configured"]

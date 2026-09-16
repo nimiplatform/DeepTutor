@@ -157,14 +157,15 @@ class _ContextSummaryAgent(BaseAgent):
 class ContextBuilder:
     """Construct history against a bounded plan plus optional summary trace.
 
-    The budget is a planning target, not destructive truncation: the newest
-    non-empty message is retained even when that single message exceeds it.
+    Oversized completed assistant turns are summarized before starting a new
+    turn, leaving room for the current request and fresh evidence. Original
+    messages remain in the store; a summary watermark advances only on success.
     """
 
     def __init__(
         self,
         store: SessionStoreProtocol,
-        history_budget_ratio: float = 0.35,
+        history_budget_ratio: float | None = None,
         summary_target_ratio: float = 0.40,
     ) -> None:
         self.store = store
@@ -172,6 +173,10 @@ class ContextBuilder:
         self.summary_target_ratio = summary_target_ratio
 
     def _effective_context_window(self, llm_config: LLMConfig) -> int:
+        if getattr(llm_config, "binding", None) == "nimi":
+            from deeptutor.agents.loop.context_budget import resolve_nimi_working_budget
+
+            return resolve_nimi_working_budget(llm_config)
         return resolve_effective_context_window(
             context_window=getattr(llm_config, "context_window", None),
             model=str(getattr(llm_config, "model", "") or ""),
@@ -180,7 +185,10 @@ class ContextBuilder:
 
     def _history_budget(self, llm_config: LLMConfig) -> int:
         effective_context_window = self._effective_context_window(llm_config)
-        ratio_budget = max(256, int(effective_context_window * self.history_budget_ratio))
+        ratio = self.history_budget_ratio
+        if ratio is None:
+            ratio = 0.20 if getattr(llm_config, "binding", None) == "nimi" else 0.35
+        ratio_budget = max(256, int(effective_context_window * ratio))
         return min(ratio_budget, MAX_HISTORY_PLAN_TOKENS)
 
     def _summary_budget(self, budget: int, llm_config: LLMConfig | None = None) -> int:
@@ -250,6 +258,11 @@ class ContextBuilder:
             clarification = extract_ask_user_clarifications(item)
             tokens = count_tokens(f"{content}\n{clarification}" if clarification else content)
             tokens += _provider_response_state_tokens(item)
+            if not selected and tokens > recent_budget and item.get("role") == "assistant":
+                # Keeping an entire long report here can occupy the working
+                # set indefinitely and starve every subsequent tool result.
+                # Fold this completed turn into the normal rolling summary.
+                break
             if selected and total + tokens > recent_budget:
                 break
             selected.insert(0, item)

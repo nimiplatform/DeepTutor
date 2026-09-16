@@ -2,7 +2,7 @@
 
 import { useTranslation } from "react-i18next";
 
-import { ConnectionsEditor } from "@/components/settings/ConnectionsEditor";
+import { NimiModelSettings } from "@/components/settings/NimiModelSettings";
 import { SettingsPageHeader } from "@/components/settings/shared";
 
 export default function ConnectionsSettingsPage() {
@@ -12,10 +12,10 @@ export default function ConnectionsSettingsPage() {
       <SettingsPageHeader
         title={t("Connections")}
         description={t(
-          "One vendor credential, supplying every model service that can use it. Services can still hold their own key instead.",
+          "Text and retrieval models are managed by Nimi for this app. Configure search credentials in Search settings.",
         )}
       />
-      <ConnectionsEditor />
+      <NimiModelSettings />
     </div>
   );
 }

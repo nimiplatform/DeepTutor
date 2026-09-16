@@ -18,6 +18,7 @@ import SessionList from "@/components/SessionList";
 import { useSidebarDrawer } from "@/components/layout/AppShell";
 import { useDevice } from "@/hooks/useDevice";
 import { VersionBadge } from "@/components/sidebar/VersionBadge";
+import NimiConnectionControl from "@/components/settings/NimiConnectionControl";
 import type {
   SessionOrganizationPatch,
   SessionSummary,
@@ -275,6 +276,7 @@ export function SidebarShell({
               </Link>
             );
           })}
+          <NimiConnectionControl collapsed />
           {renderedFooter}
           <a
             href={DOCS_URL}
@@ -422,6 +424,7 @@ export function SidebarShell({
             </Link>
           );
         })}
+        <NimiConnectionControl />
         {renderedFooter}
         <div className="mt-0.5 flex items-center gap-0.5">
           <VersionBadge />

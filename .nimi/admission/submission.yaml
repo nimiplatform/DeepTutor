@@ -1,0 +1,39 @@
+app_id: org.nimiplatform.deeptutor
+display_name: DeepTutor
+version: 1.6.8
+profile: standalone
+npm_package_name: nimiapp-deeptutor
+cargo_package_name: nimiapp-deeptutor-shell
+tauri_identifier: ai.nimi.apps.org.nimiplatform.deeptutor
+package_author: DeepTutor contributors
+submission_role: developer-submitted-input
+capability_contract_refs:
+  - text.generate
+  - text.embed
+required_standardized_feature_refs: []
+storage_policy:
+  kind: app-owned-os-storage
+  os_storage_disclosure:
+    - path_pattern: ~/Library/Application Support/Nimi/Local App Hosts/v1/*/workspace/**
+      purpose: Development Host workspace for learning sessions, uploaded materials, retrieval indexes, notebooks and App settings
+      expected_size_band: 100 MiB–20 GiB, depending on imported materials
+    - path_pattern: ~/Library/Application Support/org.nimiplatform.deeptutor/**
+      purpose: Installed App profile and workspace containing browser cache, learning sessions, uploaded materials, retrieval indexes, notebooks and App settings
+      expected_size_band: 100 MiB–20 GiB, depending on imported materials
+support_manifest:
+  diagnostics_bundle_fields:
+    - app_version
+    - runtime_status
+  redaction_rules:
+    - credentials
+  user_visible_issue_categories:
+    - startup
+    - runtime
+  escalation_path: README.md#support
+  kill_switch_visibility: visible
+  recovery_instructions: Restart the App from Nimi. If the problem persists, reinstall the current admitted release.
+review_inputs:
+  manifest: nimi.app.yaml
+  build_profile: .nimi/config/build-profile.yaml
+  scaffold_boundary: .nimi/contracts/scaffold-boundary.yaml
+admission_truth: platform-owned-after-review

@@ -6,6 +6,9 @@ import { useTranslation } from "react-i18next";
 export type ContextBudgetSegment = { key: string; tokens: number };
 
 export type ContextBudget = {
+  budget_kind?: string;
+  tokens_estimated?: boolean;
+  opaque_model_tokens?: number | null;
   window: number;
   window_estimated?: boolean;
   used_tokens: number;
@@ -219,7 +222,7 @@ export default function ContextBudgetChip({
       segment.tokens > 0,
   );
 
-  const estimatedWindow = budget.window_estimated === true;
+  const estimatedWindow = budget.window_estimated === true || budget.tokens_estimated === true;
   const heuristicCounter = budget.counter === "heuristic";
   const deferredCount = budget.deferred_tool_count ?? 0;
   const hasNotes = estimatedWindow || heuristicCounter || deferredCount > 0;

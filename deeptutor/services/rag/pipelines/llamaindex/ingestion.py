@@ -18,7 +18,7 @@ from . import vector_store
 from .config import should_show_progress, vector_index_config_from_settings
 
 
-def build_ingestion_pipeline() -> IngestionPipeline:
+def build_ingestion_pipeline(embedding_model=None) -> IngestionPipeline:
     """Create the default DeepTutor ingestion pipeline.
 
     The embedding step uses ``Settings.embed_model``, which is configured by
@@ -32,7 +32,7 @@ def build_ingestion_pipeline() -> IngestionPipeline:
                 chunk_size=Settings.chunk_size,
                 chunk_overlap=Settings.chunk_overlap,
             ),
-            Settings.embed_model,
+            embedding_model if embedding_model is not None else Settings.embed_model,
         ],
     )
 
@@ -61,7 +61,9 @@ def _has_precomputed_embedding(document: Any) -> bool:
         return True
 
 
-def documents_to_nodes(documents: list[Any], *, show_progress: bool | None = None) -> list[Any]:
+def documents_to_nodes(
+    documents: list[Any], *, show_progress: bool | None = None, embedding_model=None
+) -> list[Any]:
     """Convert LlamaIndex documents into embedded nodes.
 
     Pre-embedded nodes, such as ImageNode instances produced by the document
@@ -81,14 +83,18 @@ def documents_to_nodes(documents: list[Any], *, show_progress: bool | None = Non
 
     nodes: list[Any] = []
     if text_documents:
-        pipeline = build_ingestion_pipeline()
+        pipeline = build_ingestion_pipeline(embedding_model)
         nodes.extend(pipeline.run(documents=text_documents, show_progress=show_progress))
     nodes.extend(preembedded_nodes)
     return nodes
 
 
 def create_index_from_documents(
-    documents: list[Any], storage_dir: Path, *, show_progress: bool | None = None
+    documents: list[Any],
+    storage_dir: Path,
+    *,
+    show_progress: bool | None = None,
+    embedding_model=None,
 ) -> tuple[VectorStoreIndex, int]:
     """Create and persist a VectorStoreIndex from documents.
 
@@ -97,22 +103,29 @@ def create_index_from_documents(
     """
     if show_progress is None:
         show_progress = should_show_progress()
-    nodes = documents_to_nodes(documents, show_progress=show_progress)
+    nodes = documents_to_nodes(
+        documents, show_progress=show_progress, embedding_model=embedding_model
+    )
     storage_context = vector_store.storage_context_for_nodes(
         nodes, vector_index_config_from_settings()
     )
     index = VectorStoreIndex(
-        nodes=nodes, storage_context=storage_context, show_progress=show_progress
+        nodes=nodes,
+        storage_context=storage_context,
+        show_progress=show_progress,
+        embed_model=embedding_model,
     )
     index.storage_context.persist(persist_dir=str(storage_dir))
     return index, len(documents)
 
 
 def insert_documents_into_index(
-    index: Any, documents: list[Any], *, show_progress: bool | None = None
+    index: Any, documents: list[Any], *, show_progress: bool | None = None, embedding_model=None
 ) -> int:
     """Transform documents once, then insert nodes into an existing index."""
-    nodes = documents_to_nodes(documents, show_progress=show_progress)
+    nodes = documents_to_nodes(
+        documents, show_progress=show_progress, embedding_model=embedding_model
+    )
     index.insert_nodes(nodes)
     return len(documents)
 

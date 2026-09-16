@@ -8,9 +8,8 @@ the loop, using the shared built-in tools (rag / exec / geogebra / …).
 
 The active session id is injected server-side by the pipeline as
 ``_solve_session_id``; the model never supplies it. ``solve_finish_step`` emits
-a ``_context_checkpoint`` so the loop folds the just-finished step's tool
-chatter into a one-line summary — the loop-native equivalent of the old
-pipeline's per-step message reset.
+a ``_context_checkpoint`` so the loop retains the just-finished step's
+summary with its tool result and preserves the model's continuation state.
 """
 
 from __future__ import annotations
@@ -193,8 +192,7 @@ class SolveFinishStepTool(BaseTool):
                 else "Work the next step, then call solve_finish_step again."
             ),
         }
-        # The checkpoint summary persists this step's outcome while the loop
-        # folds its intermediate tool messages away (see AgentLoop).
+        # The summary accompanies this result; prior model state stays intact.
         checkpoint = f"[{step.id}] {step.goal} — done. {summary}".strip()
         return _json_result(
             payload,

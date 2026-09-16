@@ -1,0 +1,10 @@
+build_profile_ref: electron-pnpm
+profile_role: developer-workflow-input
+test_command: pnpm run test:app
+build_command: pnpm run build:electron:production
+targets:
+  macos-aarch64:
+    os: macos
+    arch: arm64
+    payload_path: dist-electron-package/deeptutor-shell-darwin-arm64
+    runtime_entry: payload/deeptutor-shell.app/Contents/MacOS/deeptutor-shell

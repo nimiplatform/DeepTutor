@@ -120,7 +120,7 @@ export const bookApi = {
    */
   estimateBasis: (depth: BookDepth = "standard") =>
     request<{ depth: string; basis: EstimateBasis }>(
-      `/estimate-basis?depth=${encodeURIComponent(depth)}`,
+      `/books/estimate-basis?depth=${encodeURIComponent(depth)}`,
     ),
   /**
    * Load a book.

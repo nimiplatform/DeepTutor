@@ -10,9 +10,12 @@ outline_system: |
     ],
     "key_takeaway": "<= 40 words crisp takeaway"
   }
-  Rules: 3-5 subsections; total target 1500-2500 words; concise headings;
+  Rules: size the subsection count and lengths to the requested total word target; concise headings;
   align with the chapter's learning objectives; do NOT write the body —
   only the plan.
+  When evidence is supplied, ground factual premises in it. Do not invent experimental
+  conditions from typical settings. Check each table row against its headers rather
+  than applying one baseline value to every row. State missing evidence explicitly.
 
 outline_user: |
   Chapter: {chapter_title}
@@ -33,6 +36,9 @@ subsection_system: |
   title; do not wrap output in JSON or code fences. Return only polished
   reader-facing prose; omit planning notes, word budgets, draft comments, and
   self-talk.
+  Cite the actual source page labels and distinguish measurements, author explanations
+  and your inferences. An unverified premise in the outline is not evidence. Check
+  formula dimensions and table values; never fill evidence gaps from prior knowledge.
 
 subsection_user: |
   Chapter: {chapter_title}

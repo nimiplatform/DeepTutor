@@ -22,6 +22,7 @@ from deeptutor.services.provider_registry import (
 from .capabilities import supports_response_format, supports_vision
 from .config import LLMConfig, get_llm_config
 from .error_mapping import map_error
+from .exceptions import LLMProviderError
 from .multimodal import prepare_multimodal_messages
 from .provider_core.base import LLMProvider
 from .provider_factory import build_isolated_provider, get_runtime_provider
@@ -154,106 +155,30 @@ def _matching_current_config(
 
 
 def _resolve_call_config(
-    *,
-    model: str | None,
-    api_key: str | list[str] | None,
-    base_url: str | None,
-    api_version: str | None,
-    binding: str | None,
-    extra_headers: dict[str, str] | None,
-    reasoning_effort: str | None,
+    *, model, api_key, base_url, api_version, binding, extra_headers, reasoning_effort
 ) -> tuple[LLMConfig, Any]:
-    if model and api_key is not None and (base_url is not None or binding is not None):
-        current = _matching_current_config(
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            api_version=api_version,
-            binding=binding,
-        )
-        merged_headers = dict(current.extra_headers or {}) if current is not None else {}
-        if extra_headers:
-            merged_headers.update(extra_headers)
-        resolved_reasoning_effort = (
-            reasoning_effort
-            if reasoning_effort is not None
-            else current.reasoning_effort
-            if current is not None
-            else None
-        )
-        provider_spec = _resolve_provider_spec(
-            binding=binding,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            fallback=binding or "openai",
-        )
-        provider_name = (
-            provider_spec.name
-            if provider_spec is not None
-            else canonical_provider_name(binding) or binding or "openai"
-        )
-        provider_mode = provider_spec.mode if provider_spec is not None else "standard"
-        config = LLMConfig(
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            effective_url=base_url,
-            binding=provider_name,
-            provider_name=provider_name,
-            provider_mode=provider_mode,
-            api_version=api_version,
-            extra_headers=merged_headers,
-            wire_api=current.wire_api if current is not None else "auto",
-            api_format=current.api_format if current is not None else "auto",
-            reasoning_effort=resolved_reasoning_effort,
-        )
-        return config, provider_spec
+    from .exceptions import LLMConfigError
 
+    if (
+        model not in {None, "text.generate"}
+        or binding not in {None, "nimi"}
+        or api_key
+        or base_url
+        or api_version
+        or extra_headers
+    ):
+        raise LLMConfigError(
+            "Provider credentials and model overrides are configured in Nimi App AIConfig."
+        )
     current = get_llm_config()
-    merged_headers = dict(getattr(current, "extra_headers", None) or {})
-    if extra_headers:
-        merged_headers.update(extra_headers)
-
-    resolved_model = model or current.model
-    resolved_api_key = current.api_key if api_key is None else api_key
-    resolved_base_url = base_url if base_url is not None else current.base_url
-    resolved_effective_url = base_url if base_url is not None else current.effective_url
-    resolved_api_version = api_version if api_version is not None else current.api_version
-    binding_hint = binding or current.provider_name or current.binding
-    provider_spec = _resolve_provider_spec(
-        binding=binding_hint,
-        model=resolved_model,
-        api_key=resolved_api_key,
-        base_url=resolved_effective_url,
-        fallback=current.provider_name or current.binding,
-    )
-    provider_name = provider_spec.name if provider_spec is not None else current.provider_name
-    provider_mode = provider_spec.mode if provider_spec is not None else current.provider_mode
-    resolved_binding = provider_name or binding_hint or current.binding or "openai"
-
-    config = current.model_copy(
-        update={
-            "model": resolved_model,
-            "api_key": resolved_api_key,
-            "base_url": resolved_base_url,
-            "effective_url": resolved_effective_url,
-            "binding": resolved_binding,
-            "provider_name": provider_name or resolved_binding,
-            "provider_mode": provider_mode,
-            "api_version": resolved_api_version,
-            "extra_headers": merged_headers,
-            "wire_api": current.wire_api,
-            "api_format": current.api_format,
-            "reasoning_effort": (
-                reasoning_effort if reasoning_effort is not None else current.reasoning_effort
-            ),
-        }
-    )
-    return config, provider_spec
+    return current.model_copy(
+        update={"reasoning_effort": reasoning_effort or current.reasoning_effort}
+    ), None
 
 
 def _capability_binding(config: LLMConfig, provider_spec: Any) -> str:
+    if config.binding == "nimi":
+        return "nimi"
     backend = effective_backend(provider_spec, config.api_format)
     if backend == "anthropic":
         return "anthropic"
@@ -394,6 +319,11 @@ async def _complete_with_resolved_config(
     except Exception as exc:
         raise map_error(exc, provider=config.provider_name) from exc
 
+    if config.binding == "nimi" and response.finish_reason != "stop":
+        raise LLMProviderError(
+            "The model stopped before completing the requested result. Please retry or reduce the requested scope.",
+            provider="nimi",
+        )
     if response.finish_reason == "error":
         raise map_error(
             RuntimeError(response.content or "LLM request failed"), provider=config.provider_name
@@ -611,6 +541,11 @@ async def stream(
                 allow_image_fallback=image_fallback_enabled,
                 **extra_kwargs,
             )
+            if config.binding == "nimi" and response.finish_reason != "stop":
+                raise LLMProviderError(
+                    "The model stopped before completing the requested result. Please retry or reduce the requested scope.",
+                    provider="nimi",
+                )
             if in_think_block:
                 in_think_block = False
                 await queue.put("</think>")

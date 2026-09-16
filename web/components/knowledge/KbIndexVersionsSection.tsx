@@ -517,6 +517,8 @@ function IndexVersionRow({
               ? t("Stale (matches active config but storage is empty)")
               : isLegacy
                 ? t("Legacy index format")
+                : !activeSignature && version.ready
+                  ? t("Stored index")
                 : t("Inactive version")
         }
       >

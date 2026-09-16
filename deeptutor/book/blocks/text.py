@@ -67,7 +67,6 @@ class TextGenerator(BlockGenerator):
             max_tokens=1400,
             temperature=0.45,
             language=ctx.language,
-            reasoning_effort="none",
         )
         if not body.strip():
             raise GenerationFailure("LLM returned no visible text content.")
@@ -109,7 +108,6 @@ async def generate_bridge_text(
         max_tokens=300,
         temperature=0.5,
         language=language,
-        reasoning_effort="none",
     )
     return body.strip()
 

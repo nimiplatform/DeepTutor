@@ -1,0 +1,8 @@
+app_id: org.nimiplatform.deeptutor
+display_name: DeepTutor
+version: 1.6.8
+npm_package_name: nimiapp-deeptutor
+cargo_package_name: nimiapp-deeptutor-shell
+tauri_identifier: ai.nimi.apps.org.nimiplatform.deeptutor
+package_author: DeepTutor contributors
+identity_role: scaffold-generated-authoring-input

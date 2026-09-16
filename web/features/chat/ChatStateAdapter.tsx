@@ -317,7 +317,7 @@ type Action =
     }
   | { type: "POP_LAST_ASSISTANT"; key: string }
   | { type: "RESTORE_ASSISTANT"; key: string; message: MessageItem }
-  | { type: "STREAM_START"; key: string }
+  | { type: "STREAM_START"; key: string; capability?: string }
   | { type: "STREAM_TOUCH"; key: string }
   | { type: "STREAM_EVENT"; key: string; event: StreamEvent }
   | {
@@ -692,7 +692,7 @@ function reducer(state: ProviderState, action: Action): ProviderState {
                 content: "",
                 rawContent: "",
                 events: [],
-                capability: session.activeCapability || "",
+                capability: action.capability ?? session.activeCapability ?? "",
                 parentMessageId: tip?.id ?? null,
               },
             ],
@@ -913,6 +913,10 @@ function reducer(state: ProviderState, action: Action): ProviderState {
               action.masteryPathId !== undefined
                 ? action.masteryPathId
                 : existing.masteryPathId,
+            masterySessionMode:
+              action.masterySessionMode !== undefined
+                ? action.masterySessionMode
+                : existing.masterySessionMode,
             courseId:
               action.courseId !== undefined
                 ? action.courseId
@@ -1439,6 +1443,7 @@ export function ChatStateAdapterProvider({
   // assistant message if the server rejects the request (e.g. ``regenerate_busy``
   // or ``nothing_to_regenerate``). Keyed by session entry key.
   const pendingRegenerateRef = useRef<Map<string, MessageItem>>(new Map());
+  const pendingCancelRef = useRef<Set<string>>(new Set());
   const traceCacheRef = useRef<TraceCache>(new TraceCache());
   const traceRequestsRef = useRef<Map<string, AbortController>>(new Map());
   // Forward-declared so ``handleRunnerEvent`` (created above
@@ -1565,6 +1570,9 @@ export function ChatStateAdapterProvider({
           event.turn_id ||
           null;
         if (sessionId) {
+          if (turnId && pendingCancelRef.current.delete(effectiveKey)) {
+            runner?.client.send({ type: "cancel_turn", turn_id: turnId });
+          }
           dispatch({
             type: "BIND_SERVER_SESSION",
             key: effectiveKey,
@@ -1621,6 +1629,9 @@ export function ChatStateAdapterProvider({
         return;
       }
       if (event.type === "done") {
+        // Preserve the server's terminal verdict in live history as well as
+        // after a reload. A cancelled turn can contain valid partial text.
+        dispatch({ type: "STREAM_EVENT", key: effectiveKey, event });
         const status = String(
           (event.metadata as { status?: string } | undefined)?.status ||
             "completed",
@@ -1978,6 +1989,7 @@ export function ChatStateAdapterProvider({
         Number(session.updated_at) > 0 ? Number(session.updated_at) * 1000 : 0,
         Date.now(),
         readStoredChatResponseTimeout() * 1000,
+        activeTurn?.lease_active === true,
       );
       dispatch({
         type: options?.revalidate ? "REVALIDATE_SESSION" : "LOAD_SESSION",
@@ -2329,7 +2341,7 @@ export function ChatStateAdapterProvider({
           parentMessageId: localParentId,
         });
       }
-      dispatch({ type: "STREAM_START", key });
+      dispatch({ type: "STREAM_START", key, capability: effectiveCapability ?? "" });
       const {
         _persist_user_message: legacyPersistUserMessage,
         _course_id: _legacyCourseId,
@@ -2421,18 +2433,17 @@ export function ChatStateAdapterProvider({
     const session = currentState.sessions[key];
     if (!session) return;
     const turnId = session.activeTurnId;
-    const runner = runnersRef.current.get(key);
-    if (runner?.client.connected) {
-      if (turnId) {
-        runner.client.send({ type: "cancel_turn", turn_id: turnId });
-      }
-      runner.client.disconnect();
-      runnersRef.current.delete(key);
+    if (!session.isStreaming) return;
+    const runner = ensureRunner(key);
+    if (turnId) {
+      // The existing transport queues this acknowledged command across a
+      // reconnect. Stay subscribed until the backend confirms cancellation.
+      runner.client.send({ type: "cancel_turn", turn_id: turnId });
+    } else {
+      // A very early Stop can precede the start acknowledgement and turn id.
+      pendingCancelRef.current.add(key);
     }
-    if (session.isStreaming) {
-      dispatch({ type: "STREAM_END", key, status: "cancelled" });
-    }
-  }, []);
+  }, [ensureRunner]);
 
   const submitUserReply = useCallback(
     async (

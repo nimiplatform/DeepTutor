@@ -1,13 +1,7 @@
-"""The project's one rule for a structured call a reasoning model starved.
+"""Structured retries preserve the configured Nimi model settings.
 
-A reasoning model pays for hidden tokens out of the same ``max_tokens`` as its
-answer, so a one-shot structured call can come back empty with no error —
-Book's spine collapsing to a single "Overview" chapter (#1316), the quiz plan
-emitting zero templates (#1318), a research topic decomposing to one
-sub-topic. The remedy is always the same: ask again with thinking turned down.
-
-These tests pin the two things that make it safe to share: the retry actually
-happens, and deciding "the model answered" stays with the caller.
+Only a successful but unusable payload can reach the bounded second call.
+Callers retain their own definition of a usable business result.
 """
 
 from __future__ import annotations
@@ -16,7 +10,6 @@ from typing import Any
 
 import pytest
 
-from deeptutor.services.llm.reasoning_params import RETRY_REASONING_EFFORT
 from deeptutor.services.llm.structured_retry import (
     json_payload_is_usable,
     json_with_reasoning_retry,
@@ -45,11 +38,11 @@ async def test_a_usable_first_answer_is_not_paid_for_twice() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_starved_answer_is_retried_with_thinking_turned_down() -> None:
+async def test_unusable_output_is_retried_with_unchanged_model_settings() -> None:
     run, efforts = _recorder("", '{"spine": [1]}')
     result = await json_with_reasoning_retry(run, expected_key="spine")
     assert result == {"spine": [1]}
-    assert efforts == [None, RETRY_REASONING_EFFORT]
+    assert efforts == [None, None]
 
 
 @pytest.mark.asyncio
@@ -62,7 +55,7 @@ async def test_the_expected_key_is_what_counts_as_answered() -> None:
     run, efforts = _recorder('{"notes": "thinking..."}', '{"spine": [1]}')
     result = await json_with_reasoning_retry(run, expected_key="spine")
     assert result == {"spine": [1]}
-    assert efforts == [None, RETRY_REASONING_EFFORT]
+    assert efforts == [None, None]
 
 
 @pytest.mark.asyncio

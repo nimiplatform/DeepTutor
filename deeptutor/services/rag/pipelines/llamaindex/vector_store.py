@@ -254,6 +254,21 @@ def load_index(storage_dir: Path) -> Any:
     such a knowledge base rebuilds it as FAISS for the full speed-up.
     """
     storage_dir = Path(storage_dir)
+    from dataclasses import replace
+    import json
+
+    from deeptutor.services.embedding import get_embedding_config
+
+    from .embedding_adapter import CustomEmbedding
+
+    metadata = json.loads((storage_dir / "meta.json").read_text(encoding="utf-8"))
+    if not metadata.get("space_id"):
+        raise ValueError("This index has no Nimi embedding space. Re-index it before retrieval.")
+    embedding_model = CustomEmbedding(
+        embedding_config=replace(
+            get_embedding_config(), space_id=metadata["space_id"], dim=metadata["dimension"]
+        )
+    )
 
     if detect_backend(storage_dir) == BACKEND_FAISS:
         cosine_cls = _cosine_faiss_cls()
@@ -267,10 +282,10 @@ def load_index(storage_dir: Path) -> Any:
         context = StorageContext.from_defaults(
             persist_dir=str(storage_dir), vector_store=vector_store
         )
-        return load_index_from_storage(context)
+        return load_index_from_storage(context, embed_model=embedding_model)
 
     context = StorageContext.from_defaults(persist_dir=str(storage_dir))
-    return load_index_from_storage(context)
+    return load_index_from_storage(context, embed_model=embedding_model)
 
 
 __all__ = [

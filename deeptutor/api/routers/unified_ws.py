@@ -43,6 +43,7 @@ async def unified_websocket(ws: WebSocket) -> None:
     from deeptutor.api.routers.auth import ws_auth_failed, ws_require_auth
     from deeptutor.app.container import get_application_container
     from deeptutor.multi_user.context import reset_current_user
+    from deeptutor.nimi.transport import business_scope
 
     user_token = await ws_require_auth(ws)
     if user_token is ws_auth_failed:
@@ -210,13 +211,17 @@ async def unified_websocket(ws: WebSocket) -> None:
 
             if msg_type in {"message", "start_turn"}:
                 try:
-                    _, turn = await turns.start_turn(
-                        {
-                            key: value
-                            for key, value in msg.items()
-                            if key not in {"type", "protocol_version"}
-                        }
-                    )
+                    # A socket can outlive its Nimi session. Only an explicit
+                    # new turn adopts the current generation; existing tasks
+                    # retain their captured scope and cannot resume stale work.
+                    with business_scope():
+                        _, turn = await turns.start_turn(
+                            {
+                                key: value
+                                for key, value in msg.items()
+                                if key not in {"type", "protocol_version"}
+                            }
+                        )
                 except RuntimeError as exc:
                     await send_error(
                         str(exc),
@@ -323,7 +328,8 @@ async def unified_websocket(ws: WebSocket) -> None:
                     continue
                 overrides = msg.get("overrides") if isinstance(msg.get("overrides"), dict) else None
                 try:
-                    _, turn = await turns.regenerate_last_turn(session_id, overrides=overrides)
+                    with business_scope():
+                        _, turn = await turns.regenerate_last_turn(session_id, overrides=overrides)
                 except RuntimeError as exc:
                     await send_error(
                         str(exc),

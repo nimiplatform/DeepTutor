@@ -36,7 +36,7 @@ async def test_text_block_persists_only_visible_reader_content(
 
     assert result.status == BlockStatus.READY
     assert result.payload["body"] == "Polished reader paragraph."
-    assert calls[0]["reasoning_effort"] == "none"
+    assert calls[0].get("reasoning_effort") is None
 
 
 @pytest.mark.asyncio
@@ -57,3 +57,20 @@ async def test_text_block_does_not_mark_reasoning_only_response_ready(
     assert result.payload == {}
     assert "no visible text" in result.error
     assert result.metadata["failure"]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_block_retains_public_failure_and_does_not_guess_retryability(monkeypatch):
+    from deeptutor.nimi.transport import NimiRequestError
+
+    async def fail(**_kwargs):
+        raise NimiRequestError(
+            {"message": "Rejected", "reasonCode": "AI_TOOL_CALL_INVALID", "traceId": "trace-test"}
+        )
+
+    monkeypatch.setattr(text_block, "llm_text", fail)
+    result = await text_block.TextGenerator().generate(_text_context())
+    assert result.status == BlockStatus.ERROR
+    assert result.metadata["failure"]["retryable"] is False
+    assert result.metadata["failure"]["reason_code"] == "AI_TOOL_CALL_INVALID"
+    assert result.metadata["failure"]["trace_id"] == "trace-test"

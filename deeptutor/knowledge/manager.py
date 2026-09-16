@@ -129,6 +129,8 @@ def _get_embedding_fingerprint() -> tuple[str, int] | None:
         from deeptutor.services.embedding import get_embedding_config
 
         cfg = get_embedding_config()
+        if cfg.binding == "nimi":
+            return None
         return (cfg.model, cfg.dim)
     except Exception:
         return None
@@ -501,6 +503,24 @@ class KnowledgeBaseManager:
                 kb_dir = self.base_dir / name
                 if kb_dir.is_dir():
                     kb_config["index_versions"] = inspect_kb_versions(kb_dir, provider)
+                    # Describe the completed index from its actual Runtime
+                    # result. A text.embed capability name has no dimension.
+                    for meta_path in sorted(
+                        kb_dir.glob("version-*/meta.json"),
+                        key=lambda p: int(p.parent.name.split("-")[-1]),
+                        reverse=True,
+                    ):
+                        index_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                        if index_meta.get("binding") == "nimi" and index_meta.get("space_id"):
+                            kb_config.update(
+                                embedding_model=index_meta["model"],
+                                embedding_dim=index_meta["dimension"],
+                                embedding_signature=index_meta["signature"],
+                                embedding_space_id=index_meta["space_id"],
+                                needs_reindex=False,
+                            )
+                            kb_config.pop("embedding_mismatch", None)
+                            break
             except Exception:  # pragma: no cover - best-effort metadata
                 pass
 

@@ -45,6 +45,25 @@ def test_preview_prioritizes_the_terminal_tail() -> None:
     assert preview[-1]["type"] == "done"
 
 
+def test_confirmed_research_outline_is_semantic_state_in_a_bounded_preview():
+    outline = {
+        "type": "stage_start",
+        "stage": "researching",
+        "metadata": {
+            "confirmed_outline": [{"title": "实际确认的主题", "overview": "需要核对的资料"}]
+        },
+    }
+    events = [
+        outline,
+        *[{"type": "tool_call", "content": str(i)} for i in range(250)],
+        {"type": "done", "metadata": {"status": "failed"}},
+    ]
+    preview, truncated = compact_trace_preview(events)
+    assert truncated and len(preview) == MAX_TRACE_PREVIEW_EVENTS
+    assert preview[0] == outline
+    assert preview[-1]["metadata"]["status"] == "failed"
+
+
 def test_migration_backfills_assistant_message_link_from_legacy_done(tmp_path) -> None:
     path = tmp_path / "chat.db"
     store = SQLiteSessionStore(path)

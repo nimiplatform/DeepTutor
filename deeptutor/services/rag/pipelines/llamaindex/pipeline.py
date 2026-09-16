@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+from dataclasses import replace
 import json
 import logging
 from pathlib import Path
@@ -87,7 +89,7 @@ async def _run_with_stall_guard(
             progress_callback(*args, **kwargs)
 
     set_progress_callback(_heartbeat)
-    future = asyncio.get_running_loop().run_in_executor(None, fn)
+    future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn)
 
     def _consume_terminal_exception(fut: "asyncio.Future[Any]") -> None:
         # The stalled thread may finish after we raise; retrieve its exception
@@ -149,6 +151,16 @@ class LlamaIndexPipeline:
                 f"Could not clean up failed version dir for {storage_dir}: {cleanup_exc}"
             )
 
+    async def _prepare_embedding(self):
+        from deeptutor.services.embedding import get_embedding_client
+        from deeptutor.services.rag.embedding_signature import signature_from_config
+
+        from .embedding_adapter import CustomEmbedding
+
+        space_id, dimension = await get_embedding_client().probe_space()
+        config = replace(get_embedding_config(), space_id=space_id, dim=dimension)
+        return signature_from_config(config), CustomEmbedding(embedding_config=config)
+
     async def initialize(self, kb_name: str, file_paths: List[str], **kwargs) -> bool:
         progress_callback = kwargs.get("progress_callback")
         image_progress_callback = kwargs.get("image_progress_callback")
@@ -159,11 +171,10 @@ class LlamaIndexPipeline:
         )
 
         kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
-        signature = self._current_signature()
+        signature, embedding_model = await self._prepare_embedding()
         storage_dir = resolve_storage_dir_for_rebuild(kb_dir, signature)
 
         try:
-            await self._verify_embedding_connectivity()
             documents = await self.document_loader.load(
                 file_paths, image_progress_callback=image_progress_callback
             )
@@ -178,7 +189,10 @@ class LlamaIndexPipeline:
 
             await _run_with_stall_guard(
                 lambda: storage.create_index(
-                    documents, storage_dir, show_progress=should_show_progress()
+                    documents,
+                    storage_dir,
+                    show_progress=should_show_progress(),
+                    embedding_model=embedding_model,
                 ),
                 progress_callback=progress_callback,
             )
@@ -209,7 +223,7 @@ class LlamaIndexPipeline:
         self.logger.info(f"Searching KB '{kb_name}' with query: {query[:50]}...")
 
         kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
-        signature = self._current_signature()
+        signature, embedding_model = await self._prepare_embedding()
         storage_dir = resolve_storage_dir_for_read(kb_dir, signature)
 
         if storage_dir is None or not (storage_dir / "docstore.json").exists():
@@ -236,10 +250,34 @@ class LlamaIndexPipeline:
             top_k = kwargs.get("top_k") or default_top_k()
             nodes = await loop.run_in_executor(
                 None,
+                contextvars.copy_context().run,
                 lambda: storage.retrieve_nodes(storage_dir, query, top_k=top_k),
             )
 
-            result = self._nodes_to_result(query, nodes)
+            result = self._nodes_to_result(
+                query, nodes, include_source_content=bool(kwargs.get("include_source_content"))
+            )
+            if kwargs.get("include_source_content"):
+                from .source_layout import retrieved_table_layouts
+
+                layouts = await loop.run_in_executor(
+                    None, lambda: retrieved_table_layouts(nodes, kb_dir)
+                )
+                if layouts:
+                    result["source_layouts"] = layouts
+                    layout_text = "\n\n".join(
+                        f"[PDF source layout: {Path(item['source']).name}, page {item['page']}, "
+                        f"chunk {item['chunk_id']}; y is the vertical position in points. "
+                        "Keep empty columns and multi-line headers; blanks are not inferred values.]\n"
+                        + (
+                            f"[Layout omitted: {item['omitted_reason']} Do not assume table columns from plain text.]"
+                            if item.get("omitted_reason")
+                            else f"```text\n{item['text']}\n```"
+                        )
+                        for item in layouts
+                    )
+                    result["answer"] += "\n\n" + layout_text
+                    result["content"] = result["answer"]
             if embedding_mismatch_warning:
                 result["warning"] = embedding_mismatch_warning
             return result
@@ -274,7 +312,9 @@ class LlamaIndexPipeline:
         except Exception:
             return ""
 
-    def _nodes_to_result(self, query: str, nodes: list[Any]) -> Dict[str, Any]:
+    def _nodes_to_result(
+        self, query: str, nodes: list[Any], *, include_source_content: bool = False
+    ) -> Dict[str, Any]:
         context_parts: list[str] = []
         sources: list[dict[str, Any]] = []
         for i, node in enumerate(nodes):
@@ -288,6 +328,7 @@ class LlamaIndexPipeline:
                     "page": meta.get("page_label", meta.get("page", "")),
                     "chunk_id": node.node.node_id or str(i),
                     "score": round(node.score, 4) if node.score is not None else "",
+                    **({"text": node.node.text} if include_source_content else {}),
                 }
             )
 
@@ -308,12 +349,10 @@ class LlamaIndexPipeline:
         self.logger.info(f"Adding {len(file_paths)} documents to KB '{kb_name}' using LlamaIndex")
 
         kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
-        signature = self._current_signature()
+        signature, embedding_model = await self._prepare_embedding()
         plan = storage.resolve_add_storage_plan(kb_dir, signature)
 
         try:
-            await self._verify_embedding_connectivity()
-
             documents = await self.document_loader.load(
                 file_paths, image_progress_callback=image_progress_callback
             )
@@ -325,7 +364,10 @@ class LlamaIndexPipeline:
                 self.logger.info(f"Loading existing index from {plan.existing_storage}...")
                 num_added = await _run_with_stall_guard(
                     lambda: storage.insert_documents(
-                        plan.existing_storage, plan.storage_dir, documents
+                        plan.existing_storage,
+                        plan.storage_dir,
+                        documents,
+                        embedding_model=embedding_model,
                     ),
                     progress_callback=progress_callback,
                 )
@@ -337,7 +379,10 @@ class LlamaIndexPipeline:
                 plan.storage_dir.mkdir(parents=True, exist_ok=True)
                 num_added = await _run_with_stall_guard(
                     lambda: storage.create_index(
-                        documents, plan.storage_dir, show_progress=should_show_progress()
+                        documents,
+                        plan.storage_dir,
+                        show_progress=should_show_progress(),
+                        embedding_model=embedding_model,
                     ),
                     progress_callback=progress_callback,
                 )

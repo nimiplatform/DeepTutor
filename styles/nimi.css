@@ -1,0 +1,10 @@
+/* Compile the public Kit entry with the root Tailwind 4 toolchain. The Next
+ * app keeps Tailwind 3. Omit v4 Preflight to retain DeepTutor's existing reset. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "@nimiplatform/kit/ui/styles.css";
+@import "@nimiplatform/kit/ui/themes/light.css";
+@import "@nimiplatform/kit/ui/themes/nimi-accent.css";
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "../node_modules/@nimiplatform/kit/dist";
+@source "../web/components/settings/NimiModelSettings.tsx";

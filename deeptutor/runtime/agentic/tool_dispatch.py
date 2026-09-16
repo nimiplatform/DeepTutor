@@ -853,6 +853,7 @@ async def _collect_outcome(
                 "tool_call_id": tool_call_id,
                 "name": tool_name,
                 "content": result_text,
+                "is_error": not bool(result.get("success", False)),
             }
         )
         if isinstance(tool_extra_meta, dict) and tool_extra_meta:

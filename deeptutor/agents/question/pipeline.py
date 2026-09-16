@@ -69,7 +69,7 @@ from deeptutor.runtime.agentic import (
     run_labeled_step,
 )
 from deeptutor.runtime.agentic.labels import find_inline_labels
-from deeptutor.runtime.agentic.messages import assistant_message
+from deeptutor.runtime.agentic.messages import assistant_message, rejected_nimi_tool_results
 from deeptutor.runtime.agentic.tool_dispatch import (
     MAX_PARALLEL_TOOL_CALLS,
     tool_error_message_factory,
@@ -776,6 +776,10 @@ class QuestionPipeline:
                 iter_meta=iter_meta,
                 max_tokens=self._budgets["planning"]["max_tokens"],
                 reasoning_effort=RETRY_REASONING_EFFORT,
+            )
+        if step.finish_reason in {"length", "max_tokens", "max_output_tokens"}:
+            raise RuntimeError(
+                "The question plan reached its output limit before completing. Please retry with fewer questions."
             )
         plan = self._parse_plan(
             step.text,
@@ -1529,8 +1533,11 @@ class QuestionPipeline:
                 final_meta=final_meta,
             )
             calls += 1
-            if step.label == LABEL_FINISH and not find_inline_labels(
-                step.text, allowed_labels=_PROTOCOL_EXPLORE.allowed
+            if (
+                step.label == LABEL_FINISH
+                and not step.tool_calls
+                and step.finish_reason not in {"length", "max_tokens", "max_output_tokens"}
+                and not find_inline_labels(step.text, allowed_labels=_PROTOCOL_EXPLORE.allowed)
             ):
                 return step.text, True, calls
             messages.append(
@@ -1538,7 +1545,11 @@ class QuestionPipeline:
                     step.text[:500],
                     reasoning_content=step.reasoning_content or None,
                     thinking_blocks=list(step.thinking_blocks) or None,
+                    nimi_state=step.nimi_state,
                 )
+            )
+            messages.extend(
+                rejected_nimi_tool_results(step.nimi_state, self._t("protocol.force_finish_repair"))
             )
             messages.append({"role": "user", "content": self._t("protocol.force_finish_repair")})
         return self._t("protocol.fallback_final"), False, calls

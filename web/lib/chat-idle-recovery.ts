@@ -54,20 +54,19 @@ export function decideIdleTurnRecovery(
  * loading a session stamps `updatedAt` with the load time, which makes a
  * four-day-old turn look freshly active on every tick.
  *
- * Recency is what separates the two cases. A turn that really is running was
- * touched moments ago — the same signal the idle watchdog already trusts, so
- * this reuses its window (Settings › Network) rather than inventing a second
- * notion of "too quiet". Past that window, the status is stale bookkeeping
- * rather than a live turn, and the honest local answer is `idle`: we do not
- * know whether it finished or failed, only that it is not happening now.
+ * A live backend ownership lease takes precedence over timestamps: research
+ * can run for minutes while its event prefix is still buffered. Recency only
+ * handles stored status for which the backend could not confirm a live owner.
  */
 export function resolveLoadedRunStatus<T extends string>(
   status: T,
   lastActivityAt: number,
   now: number,
   idleTimeoutMs: number,
+  hasLiveOwner = false,
 ): T | "idle" {
   if (status !== "running") return status;
+  if (hasLiveOwner) return status;
   // No usable timestamp: trust the server rather than guessing.
   if (!Number.isFinite(lastActivityAt) || lastActivityAt <= 0) return status;
   if (now - lastActivityAt <= idleTimeoutMs) return status;

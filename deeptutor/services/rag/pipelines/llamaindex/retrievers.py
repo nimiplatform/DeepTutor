@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 import shutil
 from typing import Any
 
 from llama_index.core.llms.mock import MockLLM
+from llama_index.core.postprocessor import PrevNextNodePostprocessor
 from llama_index.core.retrievers import QueryFusionRetriever
 from llama_index.core.retrievers.fusion_retriever import FUSION_MODES
 
@@ -22,6 +24,7 @@ from .rerank import rerank_nodes
 logger = logging.getLogger(__name__)
 
 BM25_PERSIST_DIRNAME = "bm25_retriever"
+_CAPTION = re.compile(r"^\s*(?:table|figure|表|图)\s*\d+\s*[:：.]", re.IGNORECASE | re.MULTILINE)
 
 
 def _import_bm25_retriever():
@@ -159,7 +162,14 @@ def retrieve_nodes(
     *,
     top_k: int = 5,
 ) -> list[Any]:
-    """Run first-stage retrieval and the optional cross-encoder reranker."""
+    """Rank matches, then recover their bounded original document context.
+
+    Dense table rows can be split from their caption and rank poorly alone.
+    Keep the successor of a matched table/figure caption, using the stored
+    document link. Expanding every hit multiplies unrelated prose and can crowd
+    out the very evidence being retrieved. This performs no extra
+    embedding/model calls and leaves the persisted index/space unchanged.
+    """
     config = retrieval_config_from_settings()
     candidate_top_k = config.rerank_candidate_top_k(top_k)
     retriever = build_retriever(
@@ -170,14 +180,25 @@ def retrieve_nodes(
     )
     candidates = retriever.retrieve(query)
     if not config.reranker_model:
-        return candidates[: max(1, int(top_k))]
-
-    return rerank_nodes(
-        query,
-        candidates,
-        top_k=top_k,
-        model_name=config.reranker_model,
-    )
+        selected = candidates[: max(1, int(top_k))]
+    else:
+        selected = rerank_nodes(
+            query,
+            candidates,
+            top_k=top_k,
+            model_name=config.reranker_model,
+        )
+    context = PrevNextNodePostprocessor(docstore=index.docstore, num_nodes=1, mode="next")
+    ranked = {item.node.node_id: item for item in selected}
+    results, seen = [], set()
+    for item in selected:
+        window = context.postprocess_nodes([item]) if _CAPTION.search(item.node.text) else [item]
+        for candidate in window:
+            node_id = candidate.node.node_id
+            if node_id not in seen:
+                results.append(ranked.get(node_id, candidate))
+                seen.add(node_id)
+    return results
 
 
 __all__ = [

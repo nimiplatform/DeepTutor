@@ -25,6 +25,13 @@ import threading
 # Provider capabilities configuration
 # Keys are binding names (lowercase), values are capability dictionaries
 PROVIDER_CAPABILITIES: dict[str, dict[str, object]] = {
+    # These describe the public carrier; Runtime admits the selected model.
+    "nimi": {
+        "supports_response_format": True,
+        "supports_tools": True,
+        "supports_vision": True,
+        "has_thinking_tags": False,
+    },
     # OpenAI and OpenAI-compatible providers
     "openai": {
         "supports_response_format": True,

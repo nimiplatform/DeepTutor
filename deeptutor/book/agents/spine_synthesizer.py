@@ -16,8 +16,8 @@ Pipeline (default ``max_rounds=2``):
    and returns ``{issues, verdict}``.
 3. **Revise** — third LLM call that incorporates the critique.
 
-If any LLM call fails, the synthesiser returns the last valid draft (or a
-minimal fallback) so the pipeline never blocks.
+Model failures remain failures. A placeholder chapter cannot stand in for a
+generated, reviewed spine.
 
 After the LLM rounds, deterministic post-processing applies:
 
@@ -289,7 +289,7 @@ class SpineSynthesizer(BaseAgent):
             )
         except Exception as exc:
             logger.warning(f"SpineSynthesizer LLM call ({stage}) failed: {exc}")
-            return {}
+            raise
 
     # ------------------------------------------------------------------ #
     # Materialise: payload → Spine + ConceptGraph (with validation)
@@ -308,18 +308,9 @@ class SpineSynthesizer(BaseAgent):
         chapters = self._coerce_chapters(chapters_raw, raw_graph)
 
         if not chapters:
-            chapters = [
-                Chapter(
-                    title=f"{proposal.title} – Overview",
-                    learning_objectives=[
-                        "Understand the scope of this book",
-                        "Identify the key topics it will cover",
-                    ],
-                    content_type=ContentType.THEORY,
-                    summary=proposal.description or "Overview chapter.",
-                    order=0,
-                )
-            ]
+            raise ValueError(
+                "The model did not produce a usable book outline. Please retry the outline generation."
+            )
 
         # ── Validation passes (uses the raw LLM concept graph) ────────
         raw_graph = _remove_cycles(raw_graph)

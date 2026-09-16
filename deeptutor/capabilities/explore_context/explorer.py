@@ -107,6 +107,7 @@ class _CallResult:
     # the thinking mode must be passed back to the API".
     response_output_items: list[dict[str, Any]] = field(default_factory=list)
     thinking_blocks: list[dict[str, Any]] = field(default_factory=list)
+    nimi_state: dict[str, Any] | None = None
 
 
 class ContextExplorer:
@@ -342,6 +343,7 @@ class ContextExplorer:
         reasoning_parts: list[str] = []
         response_output_items: list[dict[str, Any]] = []
         thinking_blocks: list[dict[str, Any]] = []
+        nimi_state = None
         tool_acc = ToolCallAccumulator()
         output_chars = 0
         response_stream = await client.chat.completions.create(**kwargs)
@@ -353,6 +355,8 @@ class ContextExplorer:
                 choice = choices[0]
                 provider_fields = getattr(choice, "provider_specific_fields", None)
                 if isinstance(provider_fields, dict):
+                    if provider_fields.get("nimi_state") is not None:
+                        nimi_state = provider_fields["nimi_state"]
                     native_items = provider_fields.get("native_output_items")
                     if isinstance(native_items, list):
                         response_output_items.extend(
@@ -396,6 +400,7 @@ class ContextExplorer:
             reasoning_content="".join(reasoning_parts),
             response_output_items=response_output_items,
             thinking_blocks=thinking_blocks,
+            nimi_state=nimi_state,
         )
 
     def _read_source_schemas(self, source_index: dict[str, str]) -> list[dict[str, Any]]:
@@ -603,12 +608,14 @@ def _assistant_message_with_provider_state(result: _CallResult) -> dict[str, Any
             result.tool_calls,
             reasoning_content=result.reasoning_content or None,
             thinking_blocks=result.thinking_blocks or None,
+            nimi_state=result.nimi_state,
         )
     else:
         message = assistant_message(
             result.text,
             reasoning_content=result.reasoning_content or None,
             thinking_blocks=result.thinking_blocks or None,
+            nimi_state=result.nimi_state,
         )
     state: dict[str, Any] = {}
     if result.response_output_items:

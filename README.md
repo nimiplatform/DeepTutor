@@ -222,6 +222,170 @@
 - **2026-01-01** 🎊 Happy New Year! Join our [Discord](https://discord.gg/eRsjPgMU4t), [WeChat](https://github.com/HKUDS/DeepTutor/issues/78), or [Discussions](https://github.com/HKUDS/DeepTutor/discussions) — let's shape DeepTutor together.
 - **2025-12-29** 🎓 DeepTutor is officially released!
 
+## Nimi App integration
+
+This checkout adapts [HKUDS/DeepTutor](https://github.com/HKUDS/DeepTutor) at
+`897fce52f24bf22e6e50d8a3e4df532632a26322` (1.6.8, Apache-2.0).
+The current scope is formal Nimi integration and representative carrier
+acceptance. It does not certify every upstream feature or every model's output.
+There is no Release, Registry submission or public publication in this stage.
+
+### Carrier and package baseline
+
+- Next.js and the Python learning workflows remain App-owned. The supervised
+  Electron Host owns Python/renderer startup and shutdown, an authenticated
+  loopback business API, and SDK/Kit access. Python receives a bounded typed
+  model-step protocol, not Nimi credentials, subject selectors or private RPC.
+- Both the general LLM factory and the separate agentic client consume Nimi.
+  The App executes tools and preserves call/result IDs, ordering, opaque
+  continuity and successful terminal state. Failed or cancelled steps are not
+  silently replayed or converted into completed answers.
+- App Tools **0.7.4**, SDK **0.14.0**, Kit **0.10.1**, Kit-owned darwin-arm64
+  native **0.10.0**, nimi-coding **0.6.3**, pnpm **10.34.5**. Complete delivered
+  tarballs are selected through workspace overrides and the installed lockfile;
+  formal dependency version declarations remain in `package.json`.
+- Packaged Electron **42.11.4**; Desktop development Host **42.10.1**. The Python
+  `.venv` uses the original dependencies plus `dev,nimi-host`. The macOS arm64
+  payload contains real Next standalone assets and a frozen Python backend.
+- Current Runtime: clean Nimi commit `35ce54412`, binary SHA256
+  `4273731bf3f7cd45b0599e186910995d3825a57e6282792d127dc98256bacdd4`.
+  Earlier Cloud acceptance used the same functional D2 build with SHA256
+  `109108ba9a004e41edae8ff4868b41b832c8e0b11c111cb9c9cc11199535192c`.
+  It includes the complete-assistant-history Driver fix and the formal
+  non-thinking DeepSeek tool adapter. Runtime-only rebuilding did not replace
+  the npm package combination.
+- Text selection is currently Cloud `deepseek-flash`. Earlier representative
+  Local acceptance used Gemma 4 26B-A4B Q8_0. Embedding stayed on the same machine
+  selection: Nomic 768-dimensional GGUF embeddings, with Runtime-issued
+  `spaceId` persisted and checked against each index operation.
+
+### Representative evidence
+
+| Boundary / flow | Actual result |
+| --- | --- |
+| Same-package reference | Distinct reference App passed supervised text and embedding calls; no claim that the reference is DeepTutor. |
+| Real document and tools | The 15-page [Attention Is All You Need PDF](https://arxiv.org/abs/1706.03762) passed original parsing/indexing/retrieval, model/tool steps, cited response and notebook save/reopen. Local and Cloud evidence are recorded separately. |
+| Cloud Research | The initial report had errors. A native follow-up revision correctly checked Table 3 and page references; only that final turn was saved/reopened as notebook record `7b0b870c`. This is a revision-chain result, not one-shot success. |
+| Cloud Quiz / Solve | One four-option question passed wrong answer → retry → correct → reload and question-bank persistence (entry `10`). The quadratic task passed two methods and both substitutions, then notebook save/reopen (`7c871513`). |
+| Both text consumers | Cloud Co-Writer edited only the selected paragraph, reopened and exported the actual 152-byte Markdown file (`5faf9b388dc3`). Earlier Gemma evidence separately covered the general factory, Quiz and Solve. |
+| Scope and lifecycle | Reload during generation, explicit cancellation, subsequent new turn and same-registration reopen passed. Typed regressions cover scope invalidation and late-result rejection. Sync embedding cannot stop active native inference; late results are discarded before index commit. |
+| Same-Host Runtime recovery | After idle Runtime restart, the first new request failed with `runtime-service-unavailable`. Formal `auth.status` → `aiConfig.get` recovered on the same Host. The global **Reconnect Nimi** action now performs these reads without changing models or replaying work. Unsent input remained unchanged; an explicit subsequent send created a new successful turn (`turn_1789551600563_c13bfe6abf`). |
+| Preview boundary | A same-origin page opened through the real web preview could not read its parent (`SecurityError`). Preview scripts do not inherit the parent's Nimi bridge. |
+| Builds and checks | App Tools sync/check, TypeScript, targeted boundary tests and actual Next/PyInstaller/Electron builds passed. The frozen backend passed authenticated HTTP and Chinese notebook persistence. |
+| Installed carrier | Manager verified the final local package through Desktop import and two formal launches on macOS arm64 D2. Notebook `d1e21bd6` and session `unified_1789554736520_5ae6864e` reopened after Stop → Launch; Nimi Access and the public `deepseek-flash` configuration read were ready. |
+
+The first planned in-flight restart target completed **31.6 seconds before**
+Runtime stopped; that attempt proves only idle-restart behavior. Live Runtime
+interruption and account-switch journeys remain **NOT-VERIFIED**. They are not
+inferred from the cancellation tests or a successful reconnect. No full Gemma
+or optional-backend regression is required for this integration delivery.
+
+The App's conversation budget defaults to **32,768 estimated tokens**, including
+actual output reserve and `max(1024, ceil(input * 10%))` safety margin. This is an
+App policy, not the model's physical window. Guard, trace and composer use the
+same request projection. Opaque continuity contributes only known transport
+bytes; internal tokens remain unknown. Explicit
+`capabilities.chat.working_context_budget` in `data/user/settings/agents.yaml`
+takes precedence. Unread tool evidence is not silently erased to fit.
+
+### Storage and local installation
+
+Learning sessions, files, indexes, notebooks and learning memory remain
+DeepTutor-owned business data. Development uses the selected Host's
+`userData/workspace`; continue it with official `nimi-app dev --list-registrations`
+and an explicit `--resume` selection. It is registration-specific storage, not
+a Nimi-account authorization partition. Do not discover or merge sibling
+workspaces. Native exec isolation is APPLICATION-level, not an OS sandbox.
+
+The local package uses the upstream logo with four transparent pixels added
+above and below to meet the square-icon requirement; it is not new branding.
+Publisher-side ad-hoc sealing supplies no Developer ID or notarization. Formal
+`pack --production` must observe the actual native trust and execution facts.
+The production Host explicitly uses
+`~/Library/Application Support/org.nimiplatform.deeptutor` as its profile,
+with business data in `workspace/`. Development keeps Desktop's separate
+registration directory. No development data is copied or migrated. No Catalog
+or release workflow is involved.
+
+**Local installation acceptance: PASS, 2026-09-16.** The final archive is
+`dist/nimi-app/org.nimiplatform.deeptutor-1.6.8-macos-aarch64.nimiapp`
+(1,524,852,303 bytes), SHA256
+`748d4734c2e5a5a3cb7b0e2a5410a2d5e797abc98b6b91f3108b7443af5de32f`.
+Its observed posture is `production-unsigned`, current-user execution, no
+Developer ID and no notarization. This verifies the current macOS D2
+source-local-development carrier only, not a fixed-service topology or public
+distribution. Desktop Stop released the owned Host/Python processes and ports;
+the next formal launch reopened the same Chinese notebook and source chat.
+The actual installed AI response and generated notebook summary were verified
+on the preceding candidate, whose AI consumer code is unchanged by the final
+cache fix; the final candidate reused that saved result and read configuration
+without repeating inference.
+
+Failure history is retained: candidate `10a28ac0…` installed but its Next child
+failed to resolve `@swc/helpers` after symlink flattening. Candidate `026f0031…`
+fixed startup and passed real AI/save, but two image-cache files changed the
+sealed payload and the next launch correctly failed provenance validation.
+Both old archives and sidecars remain under `.nimi/local/install-candidates/`.
+The final candidate preserves the dependency layout and avoids those writes;
+Runtime integrity enforcement was not weakened.
+
+The Nimi production build disables Next image/ISR disk-cache writes into its
+immutable resources while retaining image optimization and memory caching.
+The final component check fetched the page and both optimized logo images:
+HTTP 200, 8,250 tree entries unchanged, and strict code-signature verification
+passed before and after. Next's pnpm links and Python framework links are
+preserved inside the payload. Startup failures are recorded, with bounded
+child stderr, in `workspace/logs/startup-error.log` under the App-owned profile.
+
+### Local source audit (2026-09-16)
+
+The pre-commit integration audit fixed two lifecycle defects: Host cleanup now
+recognizes children that already exited by signal, and explicit new/regenerated
+turns on a surviving WebSocket capture the current Nimi generation. Existing
+tasks retain their old scope; reconnect does not replay them.
+
+Current-source checks passed: six Node tests (including real OS child shutdown
+and authenticated Python persistence), 40 Python Nimi boundary tests, Host
+TypeScript and Electron compilation, frontend TypeScript, App Tools check and
+sync dry-run, 18 WebSocket protocol/runtime regressions and three frontend
+connection tests. Earlier
+representative business and installed-carrier results above remain historical
+evidence. The archive with SHA256 `748d4734…` predates these two audit fixes;
+their rebuilt installed-App journeys are **NOT-VERIFIED**. This source commit
+does not replace the installed package or publish a release.
+
+Local tarballs under `.nimi/local/packages/` are required by the workspace
+overrides and lockfile. They are intentionally excluded from Git, as are App
+data, the Python environment and build archives. A fresh clone needs the same
+manager-delivered package combination before installation; public CI/release
+portability is not claimed. Build-generated `web/next-env.d.ts` and the copied
+PDF.js QCMS license change are excluded from the adaptation commit.
+
+### Additional upstream changes retained for separate review
+
+The integration session also accumulated the changes below. They are retained
+without automatic rollback, but are **not additional integration completion
+conditions** and do not imply a general DeepTutor quality release:
+
+- RAG caption-adjacent context and Book full-source/layout transfer; section and
+  callout evidence handling. PDF layout expansion is bounded to two retrieved
+  table pages and 16,000 characters per page, with explicit omissions. The
+  original regenerated Book chapter still had factual contradictions; its
+  `ready` state is not content acceptance. No more generation is being pursued.
+- Research outline persistence, activity/recovery presentation and failure
+  propagation; Mastery current-question feedback, unposed-question checks and
+  saved-mode hydration.
+- Reading-to-notebook endpoint correction, Book estimate endpoint and reopened
+  draft settings. Their observed outcomes are distinct from the Nimi carrier.
+- Additional course, reading and learning-memory exercise data. L2 facts and
+  manual edits persisted; an over-inferred L3 batch was undone. Notebook-memory
+  cancellation retained completed edits and discarded unfinished output.
+
+Book facts/model hallucinations, teaching strategy, optional Manim/LaTeX,
+OCR/model parsing, image embeddings, reranking, generative media and external
+AI harnesses are outside this representative acceptance. Unrun paths remain
+**NOT-VERIFIED**; none is silently removed or replaced by private inference.
+
 ## ✨ Key Features
 
 DeepTutor is an agent-native learning workspace that connects tutoring, problem solving, quiz generation, research, visualization, and mastery practice in one extensible system.

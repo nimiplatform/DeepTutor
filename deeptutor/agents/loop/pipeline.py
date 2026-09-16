@@ -41,7 +41,12 @@ from deeptutor.agents._shared.tool_runtime import (
     drop_unconfigured_generation_tools,
 )
 from deeptutor.agents.loop.agent_loop import AgentLoop
-from deeptutor.agents.loop.context_budget import LLMRequestSnapshot, build_context_budget
+from deeptutor.agents.loop.context_budget import (
+    LLMRequestSnapshot,
+    build_context_budget,
+    build_nimi_working_budget,
+    resolve_nimi_working_budget,
+)
 from deeptutor.agents.loop.prompt_blocks import LoopPromptAssembler
 from deeptutor.capabilities import (
     LoopExtension,
@@ -1557,7 +1562,40 @@ class AgenticLoopPipeline:
         self,
         messages: list[dict[str, Any]],
         stream: StreamBus,
+        *,
+        request: LLMRequestSnapshot | None = None,
     ) -> None:
+        if getattr(self, "binding", None) == "nimi":
+            if request is None:
+                raise ValueError("Nimi working-set guard requires the actual request snapshot.")
+            budget = resolve_nimi_working_budget(self.llm_config)
+            latest_assistant = max(
+                (i for i, m in enumerate(messages) if m.get("role") == "assistant"), default=-1
+            )
+            candidates = [None] + [
+                m
+                for i, m in enumerate(messages)
+                if m.get("role") == "tool" and i < latest_assistant
+            ]
+            for message in candidates:
+                if message is not None:
+                    message["content"] = self._tool_result_snip_marker()
+                measured = self.measure_context_budget(request)
+                if (
+                    measured["message_count"] > 128
+                    or measured["tool_count"] > 64
+                    or measured["transport_bytes"] > 1024 * 1024
+                ):
+                    from deeptutor.services.llm.exceptions import LLMProviderError
+
+                    raise LLMProviderError(
+                        "The assembled request exceeds the Nimi message, tool or transport boundary."
+                    )
+                if measured["used_tokens"] <= budget:
+                    return
+            from deeptutor.services.llm.exceptions import AppContextBudgetExceeded
+
+            raise AppContextBudgetExceeded(used=measured["used_tokens"], budget=budget)
         try:
             window = resolve_effective_context_window(
                 context_window=getattr(self.llm_config, "context_window", None),
@@ -1571,9 +1609,17 @@ class AgenticLoopPipeline:
         budget = int(window * CONTEXT_WINDOW_GUARD_RATIO)
         if self._estimate_messages_tokens(messages) <= budget:
             return
+        latest_assistant = max(
+            (i for i, item in enumerate(messages) if item.get("role") == "assistant"),
+            default=-1,
+        )
         snipped = False
-        for msg in messages:
+        for i, msg in enumerate(messages):
             if msg.get("role") != "tool":
+                continue
+            if i > latest_assistant:
+                # These are the new results the model has not seen yet.
+                # Erasing them produces an endless retrieve/erase loop.
                 continue
             marker = self._tool_result_snip_marker()
             if msg.get("content") == marker:
@@ -1589,6 +1635,12 @@ class AgenticLoopPipeline:
                 stage=self.event_stage,
                 metadata={"trace_kind": "warning"},
             )
+        if self._estimate_messages_tokens(messages) > budget:
+            from deeptutor.services.llm.exceptions import AppContextBudgetExceeded
+
+            raise AppContextBudgetExceeded(
+                used=self._estimate_messages_tokens(messages), budget=budget
+            )
 
     def measure_context_budget(self, request: LLMRequestSnapshot) -> dict[str, Any] | None:
         """Break the turn's last real request down for the composer's chip.
@@ -1596,6 +1648,12 @@ class AgenticLoopPipeline:
         Measured after the fact from what was actually sent — never a dry run.
         Returns ``None`` when the measurement fails, so the turn is unaffected.
         """
+        if self.binding == "nimi":
+            return build_nimi_working_budget(
+                blocks=self._last_prompt_blocks,
+                request=request,
+                budget=resolve_nimi_working_budget(self.llm_config),
+            )
         loaded = self._deferred_loader.loaded_names if self._deferred_loader is not None else set()
         return build_context_budget(
             blocks=self._last_prompt_blocks,

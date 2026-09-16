@@ -89,6 +89,35 @@ def normalize_provider_response_state(value: Any) -> dict[str, Any] | None:
         return None
 
     normalized: dict[str, Any] = {}
+    nimi_state = value.get("nimi_state")
+    if nimi_state is not None:
+        # Preserve Runtime-issued bytes and output order as private App replay
+        # state. Invalid state is a storage error, never a reason to drop it.
+        if not isinstance(nimi_state, dict) or set(nimi_state) != {"output_items", "tools"}:
+            raise ValueError("Invalid Nimi replay state")
+        encoded = json.dumps(nimi_state, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(encoded) > 2 * 1024 * 1024:
+            raise ValueError("Nimi replay state exceeds the storage limit")
+        if not isinstance(nimi_state["output_items"], list) or not isinstance(
+            nimi_state["tools"], list
+        ):
+            raise ValueError("Invalid Nimi replay collections")
+        for item in nimi_state["output_items"]:
+            if not isinstance(item, dict) or item.get("type") not in {
+                "text",
+                "tool-call",
+                "reasoning-continuity",
+            }:
+                raise ValueError("Invalid Nimi output item")
+            if item["type"] == "reasoning-continuity":
+                payload = item.get("carrier", {}).get("payload")
+                if (
+                    not isinstance(payload, list)
+                    or not 1 <= len(payload) <= 65536
+                    or any(type(byte) is not int or not 0 <= byte <= 255 for byte in payload)
+                ):
+                    raise ValueError("Invalid Nimi continuity bytes")
+        normalized["nimi_state"] = json.loads(encoded)
     reasoning_content = value.get("reasoning_content")
     if (
         isinstance(reasoning_content, str)

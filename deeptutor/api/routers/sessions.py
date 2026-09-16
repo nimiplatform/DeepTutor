@@ -191,6 +191,16 @@ async def get_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     _redact_private_message_metadata(session.get("messages", []))
     _truncate_oversized_events(session.get("messages", []))
+    if session.get("active_turns"):
+        from deeptutor.app.container import get_application_container
+
+        live = await get_application_container().turns.check_active_turn(session_id)
+        for turn in session["active_turns"]:
+            turn["lease_active"] = bool(
+                live
+                and live.get("turn_id") == (turn.get("turn_id") or turn.get("id"))
+                and live.get("status") != "recovering"
+            )
     return session
 
 

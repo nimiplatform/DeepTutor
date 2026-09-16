@@ -9,19 +9,15 @@ from urllib.parse import urlparse
 
 from deeptutor.services.imagegen.config import ImagegenConfig
 from deeptutor.services.keypool import primary_api_key
-from deeptutor.services.model_selection import LLMSelection, apply_llm_selection_to_catalog
+from deeptutor.services.model_selection import LLMSelection
 from deeptutor.services.provider_registry import (
     NANOBOT_LLM_PROVIDERS,
     PROVIDERS,
     ProviderSpec,
-    api_format_for_provider,
-    api_format_from_legacy,
     canonical_provider_name,
     find_by_model,
     find_by_name,
     find_gateway,
-    wire_api_for_provider,
-    wire_api_from_api_format,
 )
 from deeptutor.services.videogen.config import VideogenConfig
 from deeptutor.services.voice.config import (
@@ -797,95 +793,17 @@ def _choose_resolved_provider(
 
 
 def resolve_llm_runtime_config(
-    catalog: dict[str, Any] | None = None,
-    *,
-    service: ModelCatalogService | None = None,
-    llm_selection: dict[str, Any] | LLMSelection | None = None,
-    service_name: str = "llm",
+    catalog=None, *, service=None, llm_selection=None, service_name="llm"
 ) -> ResolvedLLMConfig:
-    """Resolve active LLM config with TutorBot-style provider matching.
-
-    ``service_name`` selects which catalog service supplies the profile and
-    model. It is ``llm`` for everything the user drives; the ``task`` service
-    is the same shape and stands in for it on the calls DeepTutor makes on its
-    own. The provider pool it falls back to stays the LLM one either way —
-    a task profile that names a bare model still resolves against the
-    credentials configured for chat.
-    """
-    catalog_service = service or get_model_catalog_service()
-    loaded = _with_personal_llm_profiles(_load_catalog(catalog))
-    # Parse the payload once: ``apply_llm_selection_to_catalog`` would otherwise
-    # re-parse it, so a malformed selection would be validated (and rejected)
-    # from two places. ``from_payload`` is idempotent on an already-parsed value.
-    selection = LLMSelection.from_payload(llm_selection)
-    loaded = apply_llm_selection_to_catalog(loaded, selection)
-
-    profile, model = _active_profile_and_model(loaded, catalog_service, service_name)
-    resolved_model = _as_str((model or {}).get("model"))
-
-    binding_hint_raw = _as_str((profile or {}).get("binding"))
-    binding_hint = canonical_provider_name(binding_hint_raw)
-
-    active_api_key = _as_api_key((profile or {}).get("api_key"))
-    active_api_base = _as_str((profile or {}).get("base_url"))
-    active_api_version = _as_str((profile or {}).get("api_version"))
-    configured_wire_api = _as_str((profile or {}).get("wire_api")) or "auto"
-    configured_api_format = (profile or {}).get("api_format")
-    reasoning_effort = _as_str((model or {}).get("reasoning_effort")) or None
-    # Per-conversation override (#641): an explicit reasoning_effort on the
-    # caller's LLMSelection takes precedence over the profile/model default
-    # resolved above. The model/global config value stays the fallback when
-    # no override is present, preserving today's behavior.
-    if selection is not None and selection.reasoning_effort:
-        reasoning_effort = selection.reasoning_effort
-    active_extra_headers = _to_headers((profile or {}).get("extra_headers"))
-    context_window = _coerce_optional_int((model or {}).get("context_window"))
-    if context_window is None:
-        context_window = _coerce_optional_int((model or {}).get("context_window_tokens"))
-
-    provider_pool = _collect_provider_pool(loaded)
-    spec = _choose_resolved_provider(
-        hint=binding_hint,
-        model=resolved_model,
-        api_key=active_api_key,
-        api_base=active_api_base or None,
-        provider_pool=provider_pool,
-    )
-
-    mapped = provider_pool.get(spec.name)
-    api_key = active_api_key or (mapped.api_key if mapped else "")
-    api_base = active_api_base or ((mapped.api_base or "") if mapped else "")
-    api_version = active_api_version or ((mapped.api_version or "") if mapped else "")
-    if not api_base and spec.default_api_base:
-        api_base = spec.default_api_base
-    if not api_key and spec.is_local:
-        api_key = "sk-no-key-required"
-    extra_headers = active_extra_headers or ((mapped.extra_headers or {}) if mapped else {})
-    # Profiles written before ``api_format`` existed carry only ``wire_api``;
-    # derive the format from it so their requests are byte-for-byte unchanged.
-    if configured_api_format is None:
-        api_format = api_format_from_legacy(spec, configured_wire_api)
-    else:
-        api_format = api_format_for_provider(configured_api_format, spec)
-    wire_api = wire_api_for_provider(wire_api_from_api_format(api_format), spec)
-    _register_catalog_capabilities(loaded)
-
+    """App AIConfig owns text selection; Python receives a capability reference."""
+    if llm_selection is not None:
+        selection = LLMSelection.from_payload(llm_selection)
+        if selection is not None and getattr(selection, "profile_id", None):
+            raise ValueError(
+                "Independent session model selection needs a Nimi configuration contract. Use App AIConfig for this stage."
+            )
     return ResolvedLLMConfig(
-        model=resolved_model,
-        provider_name=spec.name,
-        provider_mode=spec.mode,
-        binding_hint=binding_hint,
-        binding=spec.name,
-        api_key=api_key,
-        base_url=api_base or None,
-        effective_url=api_base or None,
-        api_version=api_version or None,
-        extra_headers=extra_headers,
-        wire_api=wire_api,
-        api_format=api_format,
-        reasoning_effort=reasoning_effort,
-        context_window=context_window,
-        capabilities=_model_capabilities(model),
+        model="text.generate", provider_name="nimi", provider_mode="nimi", binding="nimi"
     )
 
 

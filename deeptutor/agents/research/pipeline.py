@@ -80,7 +80,7 @@ from deeptutor.runtime.agentic import (
     run_agentic_loop,
     run_labeled_step,
 )
-from deeptutor.runtime.agentic.messages import assistant_message
+from deeptutor.runtime.agentic.messages import assistant_message, rejected_nimi_tool_results
 from deeptutor.runtime.agentic.tool_dispatch import (
     MAX_PARALLEL_TOOL_CALLS,
     tool_error_message_factory,
@@ -280,6 +280,7 @@ class ResearchedBlock:
 
     block: TopicBlock
     knowledge: str  # accumulated FINISH text from the block's agentic loop
+    failure: Exception | None = None
 
 
 @dataclass(frozen=True)
@@ -633,7 +634,15 @@ class ResearchPipeline:
         for sub in confirmed_outline:
             queue.add_block(sub.title, sub.overview)
 
-        async with stream.stage("researching", source=SOURCE):
+        async with stream.stage(
+            "researching",
+            source=SOURCE,
+            metadata={
+                "confirmed_outline": [
+                    {"title": sub.title, "overview": sub.overview} for sub in confirmed_outline
+                ]
+            },
+        ):
             researched = await self._drive_queue(
                 queue=queue,
                 citations=citations,
@@ -651,6 +660,14 @@ class ResearchPipeline:
         # visibly (a warning notice) and in the result envelope so callers can
         # tell the report is partial (issue #595).
         incomplete = [rb for rb in researched if rb.block.status != TopicStatus.COMPLETED]
+        completed_blocks = [rb for rb in researched if rb.block.status == TopicStatus.COMPLETED]
+        if not completed_blocks:
+            failure = next((rb.failure for rb in incomplete if rb.failure is not None), None)
+            if failure is not None:
+                raise failure
+            raise RuntimeError(
+                "No research topic completed. No evidence-based report was generated; please retry the research."
+            )
         failed_block_titles = [rb.block.sub_topic for rb in incomplete]
         if incomplete:
             logger.warning(
@@ -685,7 +702,7 @@ class ResearchPipeline:
         ):
             report_text = await self._write_report(
                 topic=refined_topic,
-                blocks=researched,
+                blocks=completed_blocks,
                 citations=citations,
                 stream=stream,
                 client=client,
@@ -1005,11 +1022,16 @@ class ResearchPipeline:
                 usage=self.usage,
                 stream_body_live=False,
                 eager_sub_trace=True,
+                initial_tool_choice=(
+                    {"type": "function", "function": {"name": "rag"}}
+                    if self.kb_name and "rag" in prompt_tool_names
+                    else None
+                ),
             )
         except Exception as exc:
             logger.exception("Research block %s failed: %s", block.block_id, exc)
             queue.mark_failed(block.block_id)
-            return ResearchedBlock(block=block, knowledge="")
+            return ResearchedBlock(block=block, knowledge="", failure=exc)
 
         knowledge = (outcome.final_text or "").strip()
         if outcome.completed:
@@ -1063,13 +1085,24 @@ class ResearchPipeline:
                 iter_meta=iter_meta,
             )
             calls += 1
-            if result.label == LABEL_FINISH and result.text.strip():
+            if (
+                result.label == LABEL_FINISH
+                and result.text.strip()
+                and not result.tool_calls
+                and result.finish_reason not in {"length", "max_tokens", "max_output_tokens"}
+            ):
                 return result.text, True, calls
             messages.append(
                 assistant_message(
                     result.text[:500],
                     reasoning_content=result.reasoning_content or None,
                     thinking_blocks=list(result.thinking_blocks) or None,
+                    nimi_state=result.nimi_state,
+                )
+            )
+            messages.extend(
+                rejected_nimi_tool_results(
+                    result.nimi_state, self._t("protocol.force_finish_repair")
                 )
             )
             messages.append({"role": "user", "content": self._t("protocol.force_finish_repair")})
@@ -1183,7 +1216,9 @@ class ResearchPipeline:
                     logger.exception("Block %s research failed: %s", block.block_id, result)
                     if block.status == TopicStatus.RESEARCHING:
                         queue.mark_failed(block.block_id)
-                    researched_by_id[block.block_id] = ResearchedBlock(block=block, knowledge="")
+                    researched_by_id[block.block_id] = ResearchedBlock(
+                        block=block, knowledge="", failure=result
+                    )
                     continue
                 researched_by_id[block.block_id] = result
 
@@ -2585,6 +2620,7 @@ class _BlockLoopHost:
         self._context = context
         self._client = client
         self._tool_rounds_used = 0
+        self._settling_evidence = False
 
     async def guard_context_window(self, messages: list[dict[str, Any]]) -> None:
         # Per-block budgets keep messages bounded; no trimming for v1.
@@ -2677,8 +2713,11 @@ class _BlockLoopHost:
         """
         if (
             label == LABEL_FINISH
-            and self._tool_rounds_used <= 0
             and self._pipeline._use_native_block_tools()
+            and (
+                self._tool_rounds_used <= 0
+                or (self._pipeline.kb_name and not self._block.tool_traces)
+            )
         ):
             return "finish_without_tool"
         return None
@@ -2709,6 +2748,8 @@ class _BlockLoopHost:
             call_meta_by_id[cid] = (name, args)
 
         for tm in outcome.tool_messages:
+            if tm.get("is_error"):
+                continue
             tool_call_id = str(tm.get("tool_call_id") or "")
             tool_name, tool_args = call_meta_by_id.get(tool_call_id, ("", {}))
             if not _is_citable_tool(tool_name):
@@ -2787,6 +2828,41 @@ class _BlockLoopHost:
         messages: list[dict[str, Any]],
         start_iteration: int,
     ) -> tuple[str, bool, int]:
+        if await self.validate_terminal(LABEL_FINISH, ""):
+            if self._settling_evidence:
+                return "", False, 0
+            self._settling_evidence = True
+            # Spend the existing three finalization slots on obtaining the
+            # missing evidence, with the same protocol and model parameters.
+            # A tool-less synthesis cannot satisfy a sourced research task.
+            names = self._pipeline._block_tool_names()
+            outcome = await run_agentic_loop(
+                initial_messages=messages,
+                protocol=_PROTOCOL_BLOCK,
+                client=self._client,
+                model=self._pipeline.model,
+                completion_kwargs=self._pipeline._completion_kwargs(
+                    self._pipeline._budgets["block"]["max_tokens"]
+                ),
+                binding=self._pipeline.binding,
+                tool_schemas=self._pipeline._build_block_tool_schemas(names),
+                stream=self._stream,
+                source=SOURCE,
+                stage="researching",
+                max_iterations=3,
+                host=self,
+                usage=self._pipeline.usage,
+                stream_body_live=False,
+                eager_sub_trace=True,
+                initial_tool_choice=(
+                    {"type": "function", "function": {"name": "rag"}}
+                    if self._pipeline.kb_name and "rag" in names
+                    else None
+                ),
+            )
+            return outcome.final_text, outcome.completed, outcome.iterations
+        if self._settling_evidence:
+            return "", False, 0
         return await self._pipeline._force_finish_block(
             client=self._client,
             messages=messages,

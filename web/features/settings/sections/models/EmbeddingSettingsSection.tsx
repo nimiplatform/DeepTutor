@@ -2,7 +2,7 @@
 
 import { useTranslation } from "react-i18next";
 
-import { ServiceConfigEditor } from "@/components/settings/ServiceConfigEditor";
+import { NimiModelSettings } from "@/components/settings/NimiModelSettings";
 import { SettingsPageHeader } from "@/components/settings/shared";
 
 export default function EmbeddingSettingsPage() {
@@ -15,7 +15,7 @@ export default function EmbeddingSettingsPage() {
           "Configure embedding model profiles. Used by retrieval and knowledge-base ingestion.",
         )}
       />
-      <ServiceConfigEditor service="embedding" />
+      <NimiModelSettings capability="text.embed" />
     </div>
   );
 }

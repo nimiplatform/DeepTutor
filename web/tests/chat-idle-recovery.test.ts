@@ -118,3 +118,8 @@ test("the loader vets the stored status and skips subscribing to a stale turn", 
   // enough to hide a surface's empty state while rendering an empty bubble.
   assert.match(adapter, /\(message\.attachments\?\.length \?\? 0\) > 0/);
 });
+
+test("an old activity timestamp does not idle a turn with a live backend owner", () => {
+  assert.equal(resolveLoadedRunStatus("running", NOW - 60 * MINUTE, NOW, 180_000, true), "running");
+  assert.equal(resolveLoadedRunStatus("running", NOW - 60 * MINUTE, NOW, 180_000, false), "idle");
+});

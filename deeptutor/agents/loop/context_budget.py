@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 import json
 import logging
+import math
 from typing import Any
 
 from deeptutor.capabilities.protocol import PromptBlock
@@ -61,6 +62,115 @@ class LLMRequestSnapshot:
 
     messages: list[dict[str, Any]] = field(default_factory=list)
     tool_schemas: list[dict[str, Any]] = field(default_factory=list)
+    output_token_limit: int | None = None
+
+
+NIMI_DEFAULT_WORKING_BUDGET = 32_768
+
+
+def resolve_nimi_working_budget(config: Any) -> int:
+    """An App product budget, never inferred from a physical model name."""
+    explicit = getattr(config, "working_context_budget", None)
+    if explicit is None:
+        explicit = getattr(config, "context_window", None)
+    if explicit is None:
+        from deeptutor.services.config.loader import get_chat_params
+
+        try:
+            explicit = get_chat_params().get("working_context_budget")
+        except FileNotFoundError:
+            explicit = None
+    if explicit is None:
+        return NIMI_DEFAULT_WORKING_BUDGET
+    value = coerce_positive_int(explicit)
+    if value is None:
+        raise ValueError("App working_context_budget must be a positive integer.")
+    return value
+
+
+def working_set_total(input_tokens: int, output_limit: int) -> tuple[int, int]:
+    margin = max(1024, math.ceil(input_tokens * 0.1))
+    return input_tokens + output_limit + margin, margin
+
+
+def build_nimi_working_budget(
+    *,
+    blocks: Sequence[PromptBlock],
+    request: LLMRequestSnapshot,
+    budget: int,
+    counter: TokenCounter | None = None,
+) -> dict[str, Any]:
+    """Count the public request once, without interpreting opaque continuity.
+
+    Message text/calls/results and sent schemas are estimated with cl100k_base;
+    opaque payload contributes only transport bytes, never guessed model tokens.
+    """
+    from deeptutor.nimi.llm import model_request
+
+    if request.output_token_limit is None:
+        raise ValueError("A working-set estimate requires this call's actual output cap.")
+    count = counter or _default_counter()
+    projected, _ = model_request(
+        request.messages, request.tool_schemas, maxTokens=request.output_token_limit
+    )
+    message_tokens = 0
+    opaque_bytes = 0
+    for message in projected["messages"]:
+        for part in message.get("content", []):
+            if part.get("type") == "text":
+                message_tokens += count(part["text"])
+        for item in message.get("turnItems", []):
+            if item["type"] == "tool-result":
+                value = item["toolResult"]
+                result = value["result"]
+                message_tokens += count(result if isinstance(result, str) else _dumps(result))
+                message_tokens += count(_dumps({k: v for k, v in value.items() if k != "result"}))
+            else:
+                value = item["output"]
+                if value["type"] in {"text", "reasoning-summary"}:
+                    message_tokens += count(value["text"])
+                elif value["type"] == "tool-call":
+                    message_tokens += count(_dumps(value["toolCall"]))
+                elif value["type"] == "reasoning-continuity":
+                    opaque_bytes += len(value["carrier"]["payload"])
+    base_system = request.messages[0] if request.messages else {}
+    system_tokens = (
+        count(str(base_system.get("content") or "")) if base_system.get("role") == "system" else 0
+    )
+    totals = _prompt_block_tokens(blocks, count)
+    _merge(totals, {"system_prompt": max(0, system_tokens - sum(totals.values()))})
+    _merge(totals, {"messages": max(0, message_tokens - system_tokens)})
+    _merge(totals, _tool_schema_tokens(projected.get("tools", []), set(), count))
+    input_tokens = sum(totals.values())
+    used, margin = working_set_total(input_tokens, request.output_token_limit)
+    totals["output_reserve"] = request.output_token_limit
+    totals["safety_margin"] = margin
+    wire_bytes = len(
+        json.dumps(projected, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+    return {
+        "budget_kind": "app_working_set",
+        "window": budget,
+        "window_estimated": False,
+        "tokens_estimated": True,
+        "counter": detect_counter_name(),
+        "model": "text.generate",
+        "input_tokens": input_tokens,
+        "output_token_limit": request.output_token_limit,
+        "safety_margin": margin,
+        "used_tokens": used,
+        "free_tokens": max(0, budget - used),
+        "opaque_transport_bytes": opaque_bytes,
+        "opaque_model_tokens": None if opaque_bytes else 0,
+        "transport_bytes": wire_bytes,
+        "message_count": len(projected["messages"]),
+        "tool_count": len(projected.get("tools", [])),
+        "segments": [
+            {"key": k, "tokens": v}
+            for k, v in sorted(totals.items(), key=lambda item: (-item[1], item[0]))
+            if v
+        ],
+    }
 
 
 @dataclass(slots=True)

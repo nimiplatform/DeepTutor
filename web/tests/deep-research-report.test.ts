@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import type { StreamEvent } from "../features/chat/model/protocol";
 import {
   authoritativeResearchReport,
+  confirmedResearchOutline,
+  researchFollowupIndices,
   isConfirmedResearchFollowup,
   normalizeDeepResearchReportFormatting,
   researchFollowupStatus,
@@ -92,4 +94,56 @@ test("a completed turn with a structurally truncated report is shown as failed",
 
   assert.equal(researchFollowupStatus(incomplete), "failed");
   assert.equal(researchFollowupStatus(complete), "done");
+});
+
+test("accepted edits survive event replay and partial reports do not claim completion", () => {
+  const confirmed = [
+    { title: "Mechanism", overview: "Section 3.2" },
+    { title: "Evidence", overview: "Table 3" },
+  ];
+  const events = [
+    event("result", {
+      metadata: {
+        outline_preview: true,
+        sub_topics: [{ title: "Old outline", overview: "" }],
+      },
+    }),
+    event("stage_start", {
+      stage: "researching",
+      metadata: { confirmed_outline: confirmed },
+    }),
+    event("result", {
+      metadata: {
+        response:
+          "# Report\n\n## 1. Intro\n\nIntro.\n\n## 2. Findings\n\nEvidence.\n\n## 3. Conclusion\n\nDone.",
+        metadata: { partial: true },
+      },
+    }),
+    event("done", { metadata: { status: "completed" } }),
+  ];
+  assert.deepEqual(
+    confirmedResearchOutline(JSON.parse(JSON.stringify(events))),
+    confirmed,
+  );
+  assert.equal(researchFollowupStatus(events), "failed");
+});
+
+test("a retry uses the newest confirmed followup without crossing another user task", () => {
+  const confirmed = {
+    role: "assistant",
+    capability: "deep_research",
+    events: [event("stage_start", { stage: "researching" })],
+  };
+  const messages = [
+    {
+      role: "assistant",
+      capability: "deep_research",
+      events: [event("result", { metadata: { outline_preview: true } })],
+    },
+    confirmed,
+    confirmed,
+    { role: "user", capability: "deep_research" },
+    confirmed,
+  ];
+  assert.deepEqual(researchFollowupIndices(messages, 0), [1, 2]);
 });

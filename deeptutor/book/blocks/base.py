@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 import logging
 from typing import Any
 
+from deeptutor.services.llm.exceptions import LLMConfigError
+
 from ..models import (
     Block,
     BlockStatus,
@@ -69,6 +71,17 @@ def _classify_failure(message: str) -> str:
 def _failure_metadata(exc: Exception, source: str) -> dict[str, Any]:
     message = str(exc)
     kind = _classify_failure(message)
+    if isinstance(exc, LLMConfigError):
+        return {"kind": "configuration", "message": message, "retryable": False, "source": source}
+    if hasattr(exc, "retryable"):
+        return {
+            "kind": "provider_error",
+            "message": message,
+            "retryable": bool(exc.retryable),
+            "source": source,
+            "reason_code": getattr(exc, "error_code", None),
+            "trace_id": (getattr(exc, "details", None) or {}).get("traceId"),
+        }
     return {
         "kind": kind,
         "message": message,

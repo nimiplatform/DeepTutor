@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import logging
 
+from deeptutor.services.llm.exceptions import LLMError
+
 from ..models import SourceAnchor
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,7 @@ def _coerce_anchors(sources: list[dict] | None) -> list[SourceAnchor]:
     return anchors
 
 
-async def optional_rag_lookup(*, query: str, ctx) -> RagLookup:
+async def optional_rag_lookup(*, query: str, ctx, refresh: bool = False) -> RagLookup:
     """Cheap, best-effort retrieval helper for block generators.
 
     Lookup order (BookEngine v2):
@@ -68,7 +70,7 @@ async def optional_rag_lookup(*, query: str, ctx) -> RagLookup:
         logger.debug(f"relevant_chunks failed: {exc}")
         local_chunks = []
 
-    if local_chunks:
+    if local_chunks and (not refresh or not ctx.rag_enabled or not ctx.primary_kb):
         text = "\n\n".join(
             f"- {(c.text or '').strip()}" for c in local_chunks if (c.text or "").strip()
         )
@@ -99,6 +101,8 @@ async def optional_rag_lookup(*, query: str, ctx) -> RagLookup:
         if provider in {PAGEINDEX_PROVIDER, PAGEINDEX_OSS_PROVIDER}:
             # PageIndex evidence is gathered once by SourceExplorer's own agent
             # loop and reused through relevant_chunks; never fall back to search().
+            if refresh:
+                return await optional_rag_lookup(query=query, ctx=ctx)
             return RagLookup()
     except Exception:
         pass
@@ -106,7 +110,11 @@ async def optional_rag_lookup(*, query: str, ctx) -> RagLookup:
     try:
         from deeptutor.tools.rag_tool import rag_search
 
-        result = await rag_search(query=query, kb_name=ctx.primary_kb)
+        result = await rag_search(
+            query=query, kb_name=ctx.primary_kb, include_source_content=True
+        )
+    except LLMError:
+        raise
     except Exception as exc:
         logger.debug(f"RAG lookup skipped ({ctx.primary_kb}): {exc}")
         return RagLookup()

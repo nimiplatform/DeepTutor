@@ -121,6 +121,7 @@ class LabeledStepResult:
     # Anthropic's signed thinking blocks, which must be replayed verbatim and
     # cannot be reconstructed from text.
     thinking_blocks: tuple[dict[str, Any], ...] = ()
+    nimi_state: dict[str, Any] | None = None
     # The round was all thinking and no answer: no label was ever emitted,
     # ``text`` came back empty, and the model *did* reason (inline ``<think>``
     # or the provider's own reasoning channel). A reasoning model pays for its
@@ -191,7 +192,7 @@ async def run_labeled_step(
         auto_stream_options_added = True
     if tool_schemas:
         kwargs["tools"] = tool_schemas
-        kwargs["tool_choice"] = "auto"
+        kwargs.setdefault("tool_choice", "auto")
 
     label: str | None = None
     label_buf = ""
@@ -217,6 +218,7 @@ async def run_labeled_step(
     # Kept for replay on the next round's assistant message, not for display.
     reasoning_acc: list[str] = []
     thinking_blocks: list[dict[str, Any]] = []
+    nimi_state = None
     usage_seen: Any = None
     output_chars_seen = 0
     finish_reason_seen: str | None = None
@@ -453,6 +455,8 @@ async def run_labeled_step(
         try:
             return await client.chat.completions.create(**kwargs)
         except Exception as exc:
+            if binding == "nimi":
+                raise
             if auto_stream_options_added and is_stream_options_unsupported(exc):
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("stream_options", None)
@@ -502,7 +506,7 @@ async def run_labeled_step(
                     usage_trailer_waited = True
                 else:
                     break
-            elif label in final_labels and content_acc:
+            elif binding != "nimi" and label in final_labels and content_acc:
                 timeout = _FINAL_LABEL_IDLE_TIMEOUT_S
             try:
                 if timeout is None:
@@ -533,6 +537,8 @@ async def run_labeled_step(
             # what makes them replayable.
             provider_fields = getattr(choice, "provider_specific_fields", None)
             if isinstance(provider_fields, dict):
+                if provider_fields.get("nimi_state") is not None:
+                    nimi_state = provider_fields["nimi_state"]
                 signed_blocks = provider_fields.get("thinking_blocks")
                 if isinstance(signed_blocks, list) and signed_blocks:
                     thinking_blocks = [
@@ -608,8 +614,22 @@ async def run_labeled_step(
             label_buf = ""
             await _emit_text(after_label)
         if label is None:
-            label = LABEL_UNKNOWN
-            never_labelled = True
+            if (
+                binding == "nimi"
+                and nimi_state is not None
+                and finish_reason_seen == "tool_calls"
+                and tc_acc.ordered()
+                and tool_label in allowed_labels
+                and not label_buf.strip()
+                and not "".join(content_acc).strip()
+            ):
+                # A successful typed native call is itself a TOOL action.
+                # Keep the original output items; do not fabricate a label in
+                # model text or override an explicit conflicting action label.
+                label = tool_label
+            else:
+                label = LABEL_UNKNOWN
+                never_labelled = True
         if label_buf:
             await _emit_text(label_buf)
             label_buf = ""
@@ -653,6 +673,7 @@ async def run_labeled_step(
         stream_idle_timeout=stream_idle_timeout,
         reasoning_content=reasoning_acc_text,
         thinking_blocks=tuple(thinking_blocks),
+        nimi_state=nimi_state,
         # Tool calls count as reaching the answer: the round acted, it just
         # did not narrate. Only a round that produced nothing but thinking
         # is worth asking again.

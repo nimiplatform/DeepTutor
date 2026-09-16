@@ -18,7 +18,6 @@ from deeptutor.services.llm import (
 from deeptutor.services.llm import (
     complete as llm_complete,
 )
-from deeptutor.services.llm.reasoning_params import RETRY_REASONING_EFFORT
 from deeptutor.services.llm.structured_retry import json_payload_is_usable
 from deeptutor.services.prompt.language import append_language_directive
 from deeptutor.utils.json_parser import parse_json_response
@@ -54,6 +53,28 @@ async def llm_text(
         kwargs["response_format"] = response_format
     if reasoning_effort is not None:
         kwargs["reasoning_effort"] = reasoning_effort
+    if binding == "nimi":
+        from deeptutor.agents.loop.context_budget import (
+            LLMRequestSnapshot,
+            build_nimi_working_budget,
+            resolve_nimi_working_budget,
+        )
+        from deeptutor.services.llm.exceptions import AppContextBudgetExceeded
+
+        budget = resolve_nimi_working_budget(config)
+        measured = build_nimi_working_budget(
+            blocks=[],
+            request=LLMRequestSnapshot(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                output_token_limit=max_tokens,
+            ),
+            budget=budget,
+        )
+        if measured["used_tokens"] > budget:
+            raise AppContextBudgetExceeded(used=measured["used_tokens"], budget=budget)
     response = await llm_complete(
         prompt=user_prompt,
         system_prompt=system_prompt,
@@ -134,21 +155,11 @@ async def llm_json(
     expected_key: str | None = None,
     reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
-    """Run a structured JSON LLM call with robust parsing and one safe retry.
+    """Parse a structured result, with one bounded retry on unusable output.
 
-    Reasoning models can spend the whole response budget on hidden/scratchpad
-    tokens and leave the visible JSON object empty. For structured book blocks
-    we first honor the configured reasoning mode, then retry once with low
-    reasoning effort if parsing fails or the expected top-level key is missing
-    — the same rule the Book pipeline agents apply via
-    :func:`deeptutor.services.llm.structured_retry.json_with_reasoning_retry`.
-
-    A caller that supplies an effort of its own (book reader-facing blocks pass
-    ``"none"``) keeps that value on the retry, so a round that was deliberately
-    run without thinking cannot silently re-enable it.
-
-    Also strips thinking/reasoning preamble text (common with local models)
-    before JSON parsing.
+    Both calls use the same configured model and settings. App-internal retries
+    must not change reasoning policy owned by Nimi AIConfig. An explicit effort
+    still reaches the binding, where unsupported settings fail visibly.
     """
 
     async def _once(reasoning_effort: str | None) -> dict[str, Any]:
@@ -177,10 +188,10 @@ async def llm_json(
     if json_payload_is_usable(data, expected_key):
         return data
 
-    retry_effort = RETRY_REASONING_EFFORT if reasoning_effort is None else reasoning_effort
+    retry_effort = reasoning_effort
     retry_data = await _once(retry_effort)
     if json_payload_is_usable(retry_data, expected_key):
-        retry_data.setdefault("_metadata", {})["reasoning_retry"] = retry_effort
+        retry_data.setdefault("_metadata", {})["structured_retry"] = True
         return retry_data
     return data or retry_data
 

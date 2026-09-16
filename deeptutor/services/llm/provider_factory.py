@@ -12,7 +12,6 @@ from typing import Any
 
 from deeptutor.services.llm.config import LLMConfig, get_llm_config
 from deeptutor.services.llm.provider_core.base import GenerationSettings, LLMProvider
-from deeptutor.services.provider_registry import effective_backend, find_by_name
 
 _PROVIDER_POOL_MAXSIZE = 2
 _provider_pool: "OrderedDict[tuple[Any, ...], LLMProvider]" = OrderedDict()
@@ -45,81 +44,14 @@ def _provider_cache_key(config: LLMConfig, loop: asyncio.AbstractEventLoop) -> t
     )
 
 
-def _build_runtime_provider(
-    llm_config: LLMConfig,
-    *,
-    configure_env: bool = True,
-) -> LLMProvider:
-    """Construct one provider, importing only the selected backend SDK."""
-    provider_name = llm_config.provider_name or llm_config.binding
-    api_key = llm_config.get_api_key()
-    spec = find_by_name(provider_name)
-    backend = effective_backend(spec, llm_config.api_format)
-    if backend == "openai_compat" and provider_name == "openai" and llm_config.api_version:
-        # An OpenAI profile carrying an api_version is an Azure deployment typed
-        # under the generic vendor. The agentic client has always sent those to
-        # the Azure SDK; the services path must make the same call.
-        backend = "azure_openai"
+def _build_runtime_provider(llm_config: LLMConfig, *, configure_env: bool = True) -> LLMProvider:
+    """Bind both service consumers and isolated steps to the supervised Host."""
+    from deeptutor.nimi.llm import NimiLLMProvider
+    from deeptutor.services.llm.exceptions import LLMConfigError
 
-    if backend == "openai_codex":
-        from deeptutor.services.llm.provider_core.openai_codex_provider import (
-            OpenAICodexProvider,
-        )
-
-        provider: LLMProvider = OpenAICodexProvider(default_model=llm_config.model)
-    elif backend == "github_copilot":
-        from deeptutor.services.llm.provider_core.github_copilot_provider import (
-            GitHubCopilotProvider,
-        )
-
-        provider = GitHubCopilotProvider(
-            default_model=llm_config.model,
-            configure_env=configure_env,
-        )
-    elif backend == "codebuddy":
-        from deeptutor.services.llm.provider_core.codebuddy_http_provider import (
-            build_codebuddy_provider,
-        )
-
-        provider = build_codebuddy_provider(
-            api_key=api_key or None,
-            default_model=llm_config.model,
-            configure_env=configure_env,
-        )
-    elif backend == "azure_openai":
-        from deeptutor.services.llm.provider_core.azure_openai_provider import AzureOpenAIProvider
-
-        provider = AzureOpenAIProvider(
-            api_key=api_key,
-            api_base=llm_config.effective_url or llm_config.base_url or "",
-            default_model=llm_config.model,
-            extra_headers=llm_config.extra_headers or None,
-            api_version=llm_config.api_version,
-        )
-    elif backend == "anthropic":
-        from deeptutor.services.llm.provider_core.anthropic_provider import AnthropicProvider
-
-        provider = AnthropicProvider(
-            api_key=api_key or None,
-            api_base=llm_config.effective_url or llm_config.base_url or None,
-            default_model=llm_config.model,
-            extra_headers=llm_config.extra_headers or None,
-            supports_prompt_caching=bool(spec and spec.supports_prompt_caching),
-        )
-    else:
-        from deeptutor.services.llm.provider_core.openai_compat_provider import OpenAICompatProvider
-
-        provider = OpenAICompatProvider(
-            api_key=llm_config.api_key or None,
-            api_base=llm_config.effective_url or llm_config.base_url or None,
-            default_model=llm_config.model,
-            extra_headers=llm_config.extra_headers or None,
-            spec=spec,
-            provider_name=provider_name,
-            wire_api=llm_config.wire_api,
-            configure_env=configure_env,
-        )
-
+    if llm_config.binding != "nimi" or llm_config.model != "text.generate":
+        raise LLMConfigError("Configure AI through Nimi App AIConfig.")
+    provider = NimiLLMProvider()
     provider.generation = GenerationSettings(
         temperature=llm_config.temperature,
         max_tokens=llm_config.max_tokens,

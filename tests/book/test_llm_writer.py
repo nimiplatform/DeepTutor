@@ -35,17 +35,15 @@ async def test_llm_json_uses_single_object_from_array(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
-async def test_llm_json_retries_structured_calls_with_low_reasoning(
+async def test_llm_json_retries_structured_calls_without_changing_model_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The retry uses "low" reasoning effort rather than "minimal": vLLM-served
-    # local models (e.g. Qwen) reject "minimal" and only accept low/medium/high.
     calls: list[str | None] = []
 
     async def fake_llm_text(**kwargs: object) -> str:
         effort = kwargs.get("reasoning_effort")
         calls.append(effort if isinstance(effort, str) else None)
-        if effort == "low":
+        if len(calls) == 2:
             return '{"events": [{"date": "2026", "title": "Ready"}]}'
         return ""
 
@@ -57,9 +55,9 @@ async def test_llm_json_retries_structured_calls_with_low_reasoning(
         expected_key="events",
     )
 
-    assert calls == [None, "low"]
+    assert calls == [None, None]
     assert data["events"][0]["title"] == "Ready"
-    assert data["_metadata"]["reasoning_retry"] == "low"
+    assert data["_metadata"]["structured_retry"] is True
 
 
 @pytest.mark.asyncio
@@ -86,4 +84,4 @@ async def test_llm_json_reader_facing_retry_keeps_reasoning_disabled(
 
     assert calls == ["none", "none"]
     assert data["events"][0]["title"] == "Ready"
-    assert data["_metadata"]["reasoning_retry"] == "none"
+    assert data["_metadata"]["structured_retry"] is True

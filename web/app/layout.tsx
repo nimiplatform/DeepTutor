@@ -45,6 +45,7 @@ export default function RootLayout({
       className={`${fontSans.variable} ${fontSerif.variable}`}
     >
       <head>
+        <link rel="stylesheet" href="/nimi-ui.css" />
         <ThemeScript />
       </head>
       <body

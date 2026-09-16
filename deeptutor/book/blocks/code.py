@@ -86,7 +86,6 @@ class CodeGenerator(BlockGenerator):
             max_tokens=900,
             temperature=0.3,
             language=ctx.language,
-            reasoning_effort="none",
         )
 
         code = str(data.get("code") or "").strip()

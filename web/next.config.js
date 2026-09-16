@@ -3,6 +3,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const NIMI_PACKAGED_BUILD = process.env.DEEPTUTOR_NIMI_PACKAGE === "1";
 
 function readJsonFile(filePath) {
   try {
@@ -114,28 +115,31 @@ const nextConfig = {
   // Standalone output: self-contained server.js + minimal node_modules
   // This eliminates the need to copy the full node_modules into Docker production images
   output: "standalone",
+  // Installed Nimi payloads are immutable. Keep image optimization available,
+  // but never write its cache into the signed application resources.
+  ...(NIMI_PACKAGED_BUILD ? { images: { maximumDiskCacheSize: 0 } } : {}),
 
   // Keep the standalone bundle rooted at this frontend directory. Without an
   // explicit root, Next.js can mirror the absolute checkout path inside
   // `.next-deeptutor/standalone`, while the DeepTutor launcher expects
   // `.next-deeptutor/standalone/server.js` directly.
-  outputFileTracingRoot: __dirname,
+  outputFileTracingRoot: path.resolve(__dirname, ".."),
 
   // web/proxy.ts clones request bodies before rewriting them. Keep enough room
   // for individual large-body endpoints that still use Proxy. Knowledge-base
   // create/upload batches use dedicated streaming route handlers instead, so
   // their total size is not coupled to this in-memory clone limit.
   experimental: {
+    ...(NIMI_PACKAGED_BUILD ? { isrFlushToDisk: false } : {}),
     proxyClientMaxBodySize: 210 * 1024 * 1024,
     // Agentic reads and full-draft edits routinely exceed Next's 30-second
     // rewrite default; the browser remains responsible for cancelling them.
     proxyTimeout: 30 * 60 * 1000,
   },
 
-  // Move dev indicator to bottom-right corner
-  devIndicators: {
-    position: "bottom-right",
-  },
+  // The floating indicator covers the chat send button in the Electron
+  // viewport. Compilation errors and the supervised CDP target remain visible.
+  devIndicators: false,
 
   // Transpile mermaid and related packages for proper ESM handling
   transpilePackages: ["mermaid"],
@@ -174,6 +178,7 @@ const nextConfig = {
 
   // Turbopack configuration (used when running `npm run dev:turbo`)
   turbopack: {
+    root: path.resolve(__dirname, ".."),
     resolveAlias: {
       // Fix for mermaid's cytoscape dependency - use CJS version
       cytoscape: "cytoscape/dist/cytoscape.cjs.js",

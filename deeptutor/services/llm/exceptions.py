@@ -41,6 +41,21 @@ class LLMProviderError(LLMError):
     pass
 
 
+class AppContextBudgetExceeded(LLMProviderError):
+    """The App working set cannot fit without erasing unread evidence."""
+
+    error_code = "app_context_budget_exceeded"
+    retryable = False
+
+    def __init__(self, *, used: int, budget: int):
+        super().__init__(
+            "The App conversation budget is full. Current evidence was preserved; "
+            "start a shorter conversation or reduce attached context before continuing."
+        )
+        self.used = used
+        self.budget = budget
+
+
 class LLMReasoningBudgetExhausted(LLMProviderError):
     """The model exhausted its output budget while producing only reasoning."""
 

@@ -27,6 +27,7 @@ def signature_from_config(config: Any) -> EmbeddingSignature:
         ).strip(),
         api_version=(getattr(config, "api_version", "") or "").strip(),
         role_semantics=role_semantics,
+        space_id=getattr(config, "space_id", "") or "",
     )
 
 
@@ -38,10 +39,25 @@ def signature_from_embedding_config() -> EmbeddingSignature | None:
         return None
 
     try:
-        return signature_from_config(get_embedding_config())
+        config = get_embedding_config()
+        if config.binding == "nimi" and not config.space_id:
+            # A capability reference is not an embedding identity. Ordinary
+            # metadata reads must neither infer one nor run an AI probe.
+            return None
+        return signature_from_config(config)
     except Exception as exc:
         logger.debug(f"Cannot resolve embedding signature: {exc}")
         return None
+
+
+async def current_nimi_embedding_signature() -> EmbeddingSignature:
+    """Capture actual space evidence for an explicit index/query operation."""
+    from dataclasses import replace
+
+    from deeptutor.services.embedding import get_embedding_client, get_embedding_config
+
+    space_id, dimension = await get_embedding_client().probe_space()
+    return signature_from_config(replace(get_embedding_config(), space_id=space_id, dim=dimension))
 
 
 def embedding_meta_fields() -> dict[str, Any]:
