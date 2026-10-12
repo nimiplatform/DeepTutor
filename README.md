@@ -1,6 +1,6 @@
 # DeepTutor on Nimi — public dependencies
 
-The Nimi App version is 1.6.9. Its npm workspace uses released SDK 0.21.0,
+The Nimi App version is 1.6.10. Its npm workspace uses released SDK 0.21.0,
 Kit/native 0.19.0, App Tools 0.12.0 and Nimi Coding 0.6.5 with a frozen pnpm
 lock. Nimi local tarball overrides are removed. DeepTutor retains its learning,
 notes, documents and retrieval workflows and its original Apache-2.0 license.

@@ -1,6 +1,6 @@
 {
   "name": "nimiapp-deeptutor",
-  "version": "1.6.9",
+  "version": "1.6.10",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -14,7 +14,7 @@
     "dev:renderer": "pnpm run build:nimi-styles && node scripts/nimi-renderer.mjs",
     "test:app": "node scripts/prepare-nimi-python.mjs && node --test tests/nimi/*.test.mjs && .venv/bin/python -m pytest tests/nimi -q",
     "postinstall": "install-electron --no",
-    "setup:python": "uv venv .venv && uv pip install --python .venv/bin/python -e '.[dev,nimi-host]'",
+    "setup:python": "node scripts/nimi-uv.mjs venv .venv && node scripts/nimi-uv.mjs pip install --python .venv/bin/python -e '.[dev,nimi-host]'",
     "build:renderer": "pnpm run build:nimi-styles && DEEPTUTOR_NIMI_PACKAGE=1 DEEPTUTOR_NEXT_DIST_DIR=.next-nimi-production pnpm --dir web build",
     "build:electron": "node scripts/build-electron.mjs",
     "build:electron:production": "pnpm run build:renderer && pnpm run build:python && pnpm run build:electron && node scripts/package-electron-production.mjs",
