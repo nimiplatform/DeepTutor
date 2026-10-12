@@ -1,25 +1,10 @@
 ## Catalog App support — 1.6.13
 
-Uses public SDK 0.21.0, Kit/native 0.19.2 and App Tools 0.12.0 with a frozen npm lock. Home can launch this packaged App against the macOS source Runtime while preserving native peer identity and installed-App/session checks. Includes the tokenizer plugin required by packaged knowledge indexing. Catalog AI acceptance is pending publication and admission; historical results below retain their stated versions.
+[DeepTutor 1.6.13](https://github.com/nimiplatform/DeepTutor/releases/tag/v1.6.13) is published and [admitted by Registry PR #78](https://github.com/nimiplatform/nimi-app-registry/pull/78). Its frozen public npm lock uses SDK 0.21.0, Kit/native 0.19.2, App Tools 0.12.0 and Nimi Coding 0.6.5. No local Nimi dependency override remains. The installed App keeps its packaged native carrier and verifies the source Runtime peer, installed-App admission and protected session under Home supervision.
 
-# DeepTutor on Nimi — public dependencies
+Catalog AI acceptance passed on macOS arm64. After Home updated the official 1.6.12 package to 1.6.13, the original failed knowledge base successfully indexed one document with real 768-dimensional Nimi embeddings. LlamaIndex retrieval returned the source's Runtime Bridge project, BLUEBIRD-743 reference, SDK/Kit versions and delivery sequence; the answer was exported as Markdown. Existing chat and source data survived the update. This fixes the frozen backend's missing tiktoken encoding plugins. The frozen worker test and managed production tests/build/pack passed.
 
-The Nimi App version is 1.6.10. Its npm workspace uses released SDK 0.21.0,
-Kit/native 0.19.0, App Tools 0.12.0 and Nimi Coding 0.6.5 with a frozen pnpm
-lock. Nimi local tarball overrides are removed. DeepTutor retains its learning,
-notes, documents and retrieval workflows and its original Apache-2.0 license.
-
-On macOS arm64, production preflight, 10 Host tests and 41 Python tests,
-production renderer/Python/Electron build and production pack have passed.
-The supervised App generated a real learning response and indexed a text
-knowledge base through the protected Nimi model and embedding carrier.
-Document and query embeddings carry their explicit retrieval purpose and retain
-Runtime space identity. The App's test/build command prepares its declared
-Python environment when a fresh release checkout needs it.
-
-Publication, Registry admission and installed acceptance are recorded separately.
-The upstream documentation below describes the original project and its optional
-standalone integrations.
+Screenshots and exports are in `.nimi/local/released-dependencies-20261012/`. Windows and other unrun AI modalities remain **NOT-VERIFIED**. The upstream About badge still reports 1.6.8; Home and the native package identify the installed Nimi version. DeepTutor retains its Apache-2.0 license and App-owned learning workflows. Upstream documentation follows.
 
 <div align="center">
 
