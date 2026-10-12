@@ -1,12 +1,13 @@
 app_id: org.nimiplatform.deeptutor
 display_name: DeepTutor
-version: 1.6.10
+version: 1.6.11
 profile: standalone
 manifest_role: submitted-input
 metadata:
   summary: A learning workspace for studying documents, solving problems and writing notes, using Nimi for AI models.
   icon: assets/nimi-app-icon.png
   readme: README.md
+  release_notes: NIMI_RELEASE_NOTES.md
 app_access:
   - runtime.consume
 capability_contract_refs:
