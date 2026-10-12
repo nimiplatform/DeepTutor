@@ -1264,3 +1264,9 @@ Licensed under the [Apache License 2.0](LICENSE).
 </p>
 
 </div>
+
+## Published Nimi dependency update — 2026-10-12
+
+[1.6.11](https://github.com/nimiplatform/DeepTutor/releases/tag/v1.6.11) is published through the managed immutable-release workflow and [admitted to the Registry](https://github.com/nimiplatform/nimi-app-registry/pull/69). The App consumes released SDK 0.21.0, Kit/native 0.19.0, App Tools 0.12.0 and Nimi Coding 0.6.5 through public npm locks, with no local Nimi dependency override.
+
+Learning replies, document knowledge-base indexing and grounded retrieval with source citations passed. These business checks used the actual Desktop-supervised development Host. Catalog AI acceptance remains NOT-VERIFIED; the user authorized publication and admission with that limitation recorded. This release declares macOS arm64.
