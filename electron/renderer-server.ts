@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:net';
 import path from 'node:path';
 import { BACKEND_ORIGIN, BACKEND_PORT, childEnvironment } from '../scripts/nimi-runtime-config.mjs';
+import { stopOwnedChild } from './owned-child.js';
 
 /** Own the Next standalone server in the packaged App. Dev uses Desktop's
  * existing dev:renderer process; both retain DeepTutor's server routes. */
@@ -31,7 +32,7 @@ export class DeepTutorRendererServer {
     this.reservation = undefined;
     const root = path.join(process.resourcesPath, 'deeptutor-web', 'web');
     this.child = spawn(process.execPath, [path.join(root, 'server.js')], {
-      cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
       env: { ...childEnvironment(), ELECTRON_RUN_AS_NODE: '1', NODE_ENV: 'production',
         HOSTNAME: '127.0.0.1', PORT: String(port), BACKEND_PORT: String(BACKEND_PORT),
         DEEPTUTOR_API_BASE_URL: BACKEND_ORIGIN, NEXT_PUBLIC_API_BASE: origin },
@@ -63,15 +64,6 @@ export class DeepTutorRendererServer {
     }
     const child = this.child;
     if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
-    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-    const signal = (name: NodeJS.Signals) => {
-      try { process.kill(-child.pid!, name); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-      }
-    };
-    signal('SIGTERM');
-    const force = setTimeout(() => signal('SIGKILL'), 5000);
-    await exited;
-    clearTimeout(force);
+    await stopOwnedChild(child, 5000);
   }
 }

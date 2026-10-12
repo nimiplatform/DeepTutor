@@ -2,9 +2,10 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import type { Duplex } from 'node:stream';
+import { Duplex } from 'node:stream';
 import { app, session } from 'electron';
 import { BACKEND_PORT, BACKEND_ORIGIN, childEnvironment } from '../scripts/nimi-runtime-config.mjs';
+import { stopOwnedChild } from './owned-child.js';
 
 export class DeepTutorBackend {
   private child: ChildProcess | undefined;
@@ -16,19 +17,19 @@ export class DeepTutorBackend {
     const dataRoot = path.join(app.getPath('userData'), 'workspace');
     await mkdir(dataRoot, { recursive: true, mode: 0o700 });
     const executable = app.isPackaged
-      ? path.join(process.resourcesPath, 'deeptutor-backend', 'deeptutor-backend')
-      : path.join(appRoot, '.venv', 'bin', 'python');
+      ? path.join(process.resourcesPath, 'deeptutor-backend', process.platform === 'win32' ? 'deeptutor-backend.exe' : 'deeptutor-backend')
+      : path.join(appRoot, '.venv', process.platform === 'win32' ? 'Scripts' : 'bin', process.platform === 'win32' ? 'python.exe' : 'python');
     const args = app.isPackaged ? [] : ['-m', 'deeptutor.nimi.worker'];
     this.child = spawn(executable, [...args, '--port', String(BACKEND_PORT)], {
       cwd: app.isPackaged ? dataRoot : appRoot,
       detached: true,
-      stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...childEnvironment(), DEEPTUTOR_HOME: dataRoot,
         BACKEND_PORT: String(BACKEND_PORT), FRONTEND_PORT: new URL(rendererOrigin).port },
     });
-    this.child.stdout?.pipe(process.stdout);
     this.child.stderr?.pipe(process.stderr);
-    this.pipe = this.child.stdio[3] as Duplex;
+    this.pipe = Duplex.from({ readable: this.child.stdout!, writable: this.child.stdin! });
     ai?.attach(this.pipe);
     this.pipe.write(JSON.stringify({ type: 'initialize', apiToken: this.token, rendererOrigin, generation: ai?.generation ?? 1 }) + '\n', 'utf8');
     await session.defaultSession.cookies.set({
@@ -65,16 +66,7 @@ export class DeepTutorBackend {
       this.pipe?.destroy();
       return;
     }
-    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-    const signal = (name: NodeJS.Signals) => {
-      try { process.kill(-child.pid!, name); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-      }
-    };
-    signal('SIGTERM');
-    const force = setTimeout(() => signal('SIGKILL'), 8000);
-    await exited;
-    clearTimeout(force);
+    await stopOwnedChild(child, 8000);
     this.pipe?.destroy();
   }
 }

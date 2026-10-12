@@ -13,7 +13,7 @@ importers:
     dependencies:
       '@nimiplatform/kit':
         specifier: ^0.19.0
-        version: 0.19.2(@types/node@24.13.5)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(electron@44.7.0)(react-dom@19.3.0(react@19.3.0))(react-i18next@17.0.16(i18next@26.4.3(typescript@5.9.3))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3))(react@19.3.0)
+        version: 0.19.3(@types/node@24.13.5)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(electron@44.7.0)(react-dom@19.3.0(react@19.3.0))(react-i18next@17.0.16(i18next@26.4.3(typescript@5.9.3))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3))(react@19.3.0)
       '@nimiplatform/sdk':
         specifier: ^0.21.0
         version: 0.21.0(@grpc/grpc-js@1.14.5)
@@ -31,8 +31,8 @@ importers:
         specifier: ^20.3.0
         version: 20.3.0
       '@nimiplatform/app-tools':
-        specifier: ^0.12.0
-        version: 0.12.0(vite@8.3.0(@types/node@24.13.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.1))
+        specifier: ^0.12.2
+        version: 0.12.2(vite@8.3.0(@types/node@24.13.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.1))
       '@nimiplatform/nimi-coding':
         specifier: 0.6.5
         version: 0.6.5
@@ -1190,8 +1190,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@nimiplatform/app-tools@0.12.0':
-    resolution: {integrity: sha512-rQHC2rm4kjZLWDDgjcux/zwYBtQm5BIXGXgzpRs0hsVMqET1n7rqP9L7grLjcI2MPceA4KXtRlrQ+JbKGWyJ+Q==}
+  '@nimiplatform/app-tools@0.12.2':
+    resolution: {integrity: sha512-X5iBXdinEtdbtLIdYPmPCp8/4XJti8YwLC7f3GhsMAVnfjjzBJkpGMtWpeFQGzi2gEXdTo39dvKu7iEzOVpY8w==}
     engines: {node: '>=24.0.0'}
     hasBin: true
     peerDependencies:
@@ -1206,8 +1206,8 @@ packages:
     cpu: [arm64]
     os: [darwin]
 
-  '@nimiplatform/kit-protected-local-darwin-arm64@0.19.2':
-    resolution: {integrity: sha512-B5vgwbVFI8sw0h5df5n/Aw5eu9aFAFp8+EHdK0pCz4b/hW8d4A1n6PcSradR7zikPZG7qS1B5WoUsEgraukxmQ==}
+  '@nimiplatform/kit-protected-local-darwin-arm64@0.19.3':
+    resolution: {integrity: sha512-rqP1Hbf0K8R5PPDpNpzYDqlE6kuZ1Ju8EyRvJjRwRUNXgjVfesnl3fSuSbp8yIYMTioPfaHDEFonthK/laKE/A==}
     engines: {node: '>=22'}
     cpu: [arm64]
     os: [darwin]
@@ -1217,8 +1217,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@nimiplatform/kit-protected-local-win32-x64@0.19.2':
-    resolution: {integrity: sha512-rmtJjqSvy8dAKcYYnnRvyGJvndMEzLUZ9lXC8KTA53tD1Cs8tFf4XBEMvixdHH/yPLkThBGw1hiU3r0/q6aF4Q==}
+  '@nimiplatform/kit-protected-local-win32-x64@0.19.3':
+    resolution: {integrity: sha512-CeBCRTXnVr9mOL5gEITN39ELJ5PY3iZ8vTIFT0YLGKJfs5oFmzNjW3VbgtZEOtXVFMJ/3EvGbiCvbn9WSIOeRw==}
     cpu: [x64]
     os: [win32]
 
@@ -1237,8 +1237,8 @@ packages:
       react-i18next:
         optional: true
 
-  '@nimiplatform/kit@0.19.2':
-    resolution: {integrity: sha512-jmdg3AAsDgtiMxSZh/2NszDLV4vLsbyGKkr6srwmcUA4GC2JEM2GJxmFQO2jnqG1s/6vAB7Ia9D+zRlR8SnJew==}
+  '@nimiplatform/kit@0.19.3':
+    resolution: {integrity: sha512-L8dzPkiS9y4u8Ligjae6W/P25r10zBt9xyJRORfFEQY0PbGdNMyPFTm+P14/8ho7h6EAgKqX4OR+pgGHWL79FQ==}
     peerDependencies:
       electron: ^44.0.0
       react: ^19.0.0
@@ -6635,7 +6635,7 @@ snapshots:
   '@next/swc-win32-x64-msvc@16.3.5':
     optional: true
 
-  '@nimiplatform/app-tools@0.12.0(vite@8.3.0(@types/node@24.13.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.1))':
+  '@nimiplatform/app-tools@0.12.2(vite@8.3.0(@types/node@24.13.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.1))':
     dependencies:
       pngjs: 7.0.0
       semver: 7.8.5
@@ -6647,13 +6647,13 @@ snapshots:
   '@nimiplatform/kit-protected-local-darwin-arm64@0.19.0':
     optional: true
 
-  '@nimiplatform/kit-protected-local-darwin-arm64@0.19.2':
+  '@nimiplatform/kit-protected-local-darwin-arm64@0.19.3':
     optional: true
 
   '@nimiplatform/kit-protected-local-win32-x64@0.19.0':
     optional: true
 
-  '@nimiplatform/kit-protected-local-win32-x64@0.19.2':
+  '@nimiplatform/kit-protected-local-win32-x64@0.19.3':
     optional: true
 
   '@nimiplatform/kit@0.19.0(@types/node@25.9.7)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(electron@44.7.0)(react-dom@19.3.0(react@19.3.0))(react-i18next@17.0.16(i18next@26.4.3(typescript@5.9.3))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3))(react@19.3.0)':
@@ -6695,7 +6695,7 @@ snapshots:
       - '@types/react-dom'
       - supports-color
 
-  '@nimiplatform/kit@0.19.2(@types/node@24.13.5)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(electron@44.7.0)(react-dom@19.3.0(react@19.3.0))(react-i18next@17.0.16(i18next@26.4.3(typescript@5.9.3))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3))(react@19.3.0)':
+  '@nimiplatform/kit@0.19.3(@types/node@24.13.5)(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(electron@44.7.0)(react-dom@19.3.0(react@19.3.0))(react-i18next@17.0.16(i18next@26.4.3(typescript@5.9.3))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3))(react@19.3.0)':
     dependencies:
       '@grpc/grpc-js': 1.14.5
       '@nimiplatform/sdk': 0.21.0(@grpc/grpc-js@1.14.5)
@@ -6723,8 +6723,8 @@ snapshots:
       wlipsync: 1.3.1
       zod: 4.6.5
     optionalDependencies:
-      '@nimiplatform/kit-protected-local-darwin-arm64': 0.19.2
-      '@nimiplatform/kit-protected-local-win32-x64': 0.19.2
+      '@nimiplatform/kit-protected-local-darwin-arm64': 0.19.3
+      '@nimiplatform/kit-protected-local-win32-x64': 0.19.3
       electron: 44.7.0
       react-dom: 19.3.0(react@19.3.0)
       react-i18next: 17.0.16(i18next@26.4.3(typescript@5.9.3))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3)

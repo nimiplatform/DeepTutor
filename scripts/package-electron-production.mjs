@@ -100,7 +100,7 @@ try {
   });
 
   await realpath(path.join(appRoot, 'web', '.next-nimi-production', 'standalone', 'web', 'server.js'));
-  await realpath(path.join(appRoot, 'dist-python', 'deeptutor-backend', 'deeptutor-backend'));
+  await realpath(path.join(appRoot, 'dist-python', 'deeptutor-backend', MACOS_BUILD ? 'deeptutor-backend' : 'deeptutor-backend.exe'));
   await realpath(path.join(appRoot, 'dist-electron', 'preload.cjs'));
 
   await mkdir(path.join(productionSourceRoot, 'dist-electron'), { recursive: true });
@@ -115,10 +115,10 @@ try {
   const webResources = path.join(stagingRoot, 'deeptutor-web');
   // PyInstaller's framework links are deliberately relative. Node's default
   // cp rewrites them to the source checkout, which breaks relocated packages.
-  await cp(path.join(appRoot, 'dist-python', 'deeptutor-backend'), backendResources, { recursive: true, verbatimSymlinks: true });
+  await cp(path.join(appRoot, 'dist-python', 'deeptutor-backend'), backendResources, { recursive: true, dereference: !MACOS_BUILD, verbatimSymlinks: MACOS_BUILD });
   // Preserve Next's closed pnpm layout: flattening `web/node_modules/next`
   // changes where Node looks for Next's own sibling dependencies.
-  await cp(path.join(appRoot, 'web', '.next-nimi-production', 'standalone'), webResources, { recursive: true, verbatimSymlinks: true });
+  await cp(path.join(appRoot, 'web', '.next-nimi-production', 'standalone'), webResources, { recursive: true, dereference: !MACOS_BUILD, verbatimSymlinks: MACOS_BUILD });
   await cp(path.join(appRoot, 'web', '.next-nimi-production', 'static'), path.join(webResources, 'web', '.next-nimi-production', 'static'), { recursive: true });
   await cp(path.join(appRoot, 'web', 'public'), path.join(webResources, 'web', 'public'), { recursive: true });
   await copyFile(path.join(appRoot, 'dist-electron', 'main.js'), path.join(productionSourceRoot, 'dist-electron', 'main.js'));
@@ -166,10 +166,10 @@ try {
         : path.join(buildPath, 'resources');
       const packagedBackend = path.join(resourcesPath, 'deeptutor-backend');
       await rm(packagedBackend, { recursive: true, force: true });
-      await cp(backendResources, packagedBackend, { recursive: true, verbatimSymlinks: true });
+      await cp(backendResources, packagedBackend, { recursive: true, dereference: !MACOS_BUILD, verbatimSymlinks: MACOS_BUILD });
       const packagedWeb = path.join(resourcesPath, 'deeptutor-web');
       await rm(packagedWeb, { recursive: true, force: true });
-      await cp(webResources, packagedWeb, { recursive: true, verbatimSymlinks: true });
+      await cp(webResources, packagedWeb, { recursive: true, dereference: !MACOS_BUILD, verbatimSymlinks: MACOS_BUILD });
     }],
     prune: false,
     quiet: true,

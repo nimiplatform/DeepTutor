@@ -1,6 +1,6 @@
 app_id: org.nimiplatform.deeptutor
 display_name: DeepTutor
-version: 1.6.13
+version: 1.6.14
 profile: standalone
 npm_package_name: nimiapp-deeptutor
 cargo_package_name: nimiapp-deeptutor-shell
@@ -14,11 +14,8 @@ required_standardized_feature_refs: []
 storage_policy:
   kind: app-owned-os-storage
   os_storage_disclosure:
-    - path_pattern: ~/Library/Application Support/Nimi/Local App Hosts/v1/*/workspace/**
-      purpose: Development Host workspace for learning sessions, uploaded materials, retrieval indexes, notebooks and App settings
-      expected_size_band: 100 MiB–20 GiB, depending on imported materials
-    - path_pattern: ~/Library/Application Support/org.nimiplatform.deeptutor/**
-      purpose: Installed App profile and workspace containing browser cache, learning sessions, uploaded materials, retrieval indexes, notebooks and App settings
+    - path_pattern: <Nimi data root>/app-hosts/*/apps/*/user-data/workspace/**
+      purpose: Desktop-prepared Host workspace on Windows and macOS for learning sessions, uploaded materials, retrieval indexes, notebooks, App settings and logs
       expected_size_band: 100 MiB–20 GiB, depending on imported materials
 support_manifest:
   diagnostics_bundle_fields:

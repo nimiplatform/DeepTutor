@@ -1,3 +1,7 @@
+# 1.6.14 — Windows candidate (unreleased)
+
+Adds the Windows production target and correct executable/venv paths. The App-owned worker uses one UTF-8 stdin/stdout protocol on both platforms, and shutdown terminates the exact owned Windows child tree. Python setup, renderer builds and guarded development use portable entry points. Public SDK 0.21.0, Kit/native 0.19.3 and App Tools 0.12.2 are used. The real frozen Windows backend passed authenticated HTTP, origin rejection and Chinese notebook persistence checks. Supervised MiMo learning chat passed; Catalog installation of this candidate remains NOT-VERIFIED.
+
 # Nimi release 1.6.13 — Packaged knowledge indexing
 
 Includes tiktoken encoding plugins in the frozen Python backend. This fixes the Catalog-only `Unknown encoding cl100k_base` failure during knowledge-base indexing. Public Kit/native 0.19.2 and Runtime identity checks are unchanged.

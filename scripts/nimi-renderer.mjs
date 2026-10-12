@@ -10,9 +10,11 @@ const origin = new URL(manifest.local_development.electron.renderer_origin);
 if (origin.protocol !== "http:" || origin.hostname !== "127.0.0.1" || !origin.port) {
   throw new Error("DeepTutor development requires an explicit IPv4 loopback renderer origin.");
 }
-const child = spawn("pnpm", ["--dir", "web", "dev", "--hostname", origin.hostname, "--port", origin.port], {
+const child = spawn(process.platform === 'win32' ? 'corepack.cmd' : 'corepack', ["pnpm", "--dir", "web", "dev", "--hostname", origin.hostname, "--port", origin.port], {
   cwd: root,
   stdio: "inherit",
+  shell: process.platform === 'win32',
+  windowsHide: true,
   env: {
     ...childEnvironment(),
     DEEPTUTOR_API_BASE_URL: BACKEND_ORIGIN,

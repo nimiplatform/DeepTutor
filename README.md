@@ -1,3 +1,7 @@
+## Windows candidate 1.6.14 — 2026-10-13
+
+Unreleased working tree with SDK 0.21.0, Kit/native 0.19.3, App Tools 0.12.2 and Nimi Coding 0.6.5. Ten Node tests and 41 Python tests pass. The actual frozen Windows worker passed authenticated HTTP, unrelated-origin rejection and Chinese notebook persistence. Portable Python/build entries, owned Windows child-tree shutdown, executable suffixes and UTF-8 stdin/stdout replace Unix-only assumptions. The supervised App used MiMo v2.6-flash for a real Chinese learning question about six planned observations, four readings and missing values; the initial Qwen request was rejected as unsupported and is retained as a failure. Windows indexing/export and candidate installation remain NOT-VERIFIED. New public admission needs the publisher's safety declaration. Earlier macOS evidence retains its original scope.
+
 ## Catalog App support — 1.6.13
 
 [DeepTutor 1.6.13](https://github.com/nimiplatform/DeepTutor/releases/tag/v1.6.13) is published and [admitted by Registry PR #78](https://github.com/nimiplatform/nimi-app-registry/pull/78). Its frozen public npm lock uses SDK 0.21.0, Kit/native 0.19.2, App Tools 0.12.0 and Nimi Coding 0.6.5. No local Nimi dependency override remains. The installed App keeps its packaged native carrier and verifies the source Runtime peer, installed-App admission and protected session under Home supervision.

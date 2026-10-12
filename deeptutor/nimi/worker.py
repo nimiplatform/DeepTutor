@@ -5,7 +5,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import socket
+import sys
+
+
+class StdioChannel:
+    def __init__(self, writer):
+        self.writer = writer
+
+    def sendall(self, payload: bytes) -> None:
+        self.writer.write(payload)
+        self.writer.flush()
 
 
 def main() -> None:
@@ -16,11 +25,11 @@ def main() -> None:
         parser.error("backend port must be in 1024..65535")
     if not os.environ.get("DEEPTUTOR_HOME"):
         parser.error("the App Host must supply a writable DEEPTUTOR_HOME")
-    # A dedicated inherited pipe carries bounded App business messages. UTF-8
-    # decoding is explicit even in the frozen worker; stdout remains logs.
-    channel = socket.socket(fileno=3)
-    channel.set_inheritable(False)
-    reader = channel.makefile("rb")
+    # Standard inherited streams work with both Windows handles and Unix FDs.
+    # Keep stdout exclusively for bounded business frames; library logs use stderr.
+    channel = StdioChannel(sys.stdout.buffer)
+    reader = sys.stdin.buffer
+    sys.stdout = sys.stderr
     line = reader.readline(4097)
     configuration = json.loads(line.decode("utf-8", "strict"))
     if (

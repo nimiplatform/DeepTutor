@@ -27,7 +27,7 @@ for (const [file, name] of [
     test(`${name} stops ${alreadyExited ? "an already signal-terminated" : "a live"} child`, { timeout: 5000 }, async () => {
       const Owner = await loadOwner(file, name);
       const owner = new Owner();
-      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore", windowsHide: true });
       await once(child, "spawn");
       owner.child = child;
       const pipe = new PassThrough();
@@ -35,17 +35,24 @@ for (const [file, name] of [
       try {
         if (alreadyExited) {
           const exited = once(child, "exit");
-          process.kill(-child.pid, "SIGTERM");
+          if (process.platform === 'win32') child.kill('SIGTERM');
+          else process.kill(-child.pid, "SIGTERM");
           await exited;
           assert.equal(child.exitCode, null);
           assert.equal(child.signalCode, "SIGTERM");
         }
+        let timeout;
+        try { await Promise.race([owner.stop(), new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Owner did not stop its child')), 2000); })]); }
+        finally { clearTimeout(timeout); }
         await owner.stop();
-        await owner.stop();
-        assert.equal(child.signalCode, "SIGTERM");
+        if (process.platform === 'win32' && !alreadyExited) assert.notEqual(child.exitCode, null);
+        else assert.equal(child.signalCode, "SIGTERM");
         if (name === "DeepTutorBackend") assert.equal(pipe.destroyed, true);
       } finally {
-        if (child.exitCode === null && child.signalCode === null) process.kill(-child.pid, "SIGKILL");
+        if (child.exitCode === null && child.signalCode === null) {
+          if (process.platform === 'win32') child.kill('SIGKILL');
+          else process.kill(-child.pid, "SIGKILL");
+        }
         pipe.destroy();
       }
     });

@@ -5,6 +5,8 @@ import { createServer } from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { childEnvironment } from "../../scripts/nimi-runtime-config.mjs";
+import { pythonExecutable } from '../../scripts/nimi-python-path.mjs';
+import { stopOwnedChild } from '../../electron/owned-child.ts';
 
 test("the real Python worker serves only its Host's authenticated business requests", { timeout: 45000 }, async () => {
   const reservation = createServer();
@@ -14,16 +16,16 @@ test("the real Python worker serves only its Host's authenticated business reque
   await mkdir(".nimi/local", { recursive: true });
   const dataRoot = await mkdtemp(path.resolve(".nimi/local/后端验收-"));
   const frozenWorker = process.env.DEEPTUTOR_TEST_FROZEN_WORKER;
-  const child = spawn(path.resolve(frozenWorker || ".venv/bin/python"), [
+  const child = spawn(path.resolve(frozenWorker || pythonExecutable), [
     ...(frozenWorker ? [] : ["-m", "deeptutor.nimi.worker"]), "--port", String(port),
   ], {
-    stdio: ["ignore", "pipe", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
     env: { ...childEnvironment(), DEEPTUTOR_HOME: dataRoot },
   });
   let diagnostics = "";
-  for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk) => { diagnostics = (diagnostics + chunk.toString("utf8")).slice(-6000); });
+  child.stderr.on("data", (chunk) => { diagnostics = (diagnostics + chunk.toString("utf8")).slice(-6000); });
   const token = "a".repeat(64);
-  child.stdio[3].write(JSON.stringify({ type: "initialize", apiToken: token, rendererOrigin: "http://127.0.0.1:1467" }) + "\n", "utf8");
+  child.stdin.write(JSON.stringify({ type: "initialize", apiToken: token, rendererOrigin: "http://127.0.0.1:1467" }) + "\n", "utf8");
   const base = `http://127.0.0.1:${port}`;
   try {
     let ready = false;
@@ -51,12 +53,8 @@ test("the real Python worker serves only its Host's authenticated business reque
     const saved = JSON.parse(await readFile(path.join(dataRoot, "data/user/workspace/notebook", `${notebook.id}.json`), "utf8"));
     assert.equal(saved.name, name);
   } finally {
-    const stopped = new Promise((resolve) => child.once("exit", resolve));
-    child.kill("SIGTERM");
-    const force = setTimeout(() => child.kill("SIGKILL"), 4000);
-    if (child.exitCode === null) await stopped;
-    clearTimeout(force);
-    child.stdio[3].destroy();
+    await stopOwnedChild(child, 4000);
+    child.stdin.destroy();
     await rm(dataRoot, { recursive: true, force: true });
   }
 });

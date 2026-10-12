@@ -1,6 +1,6 @@
 {
   "name": "nimiapp-deeptutor",
-  "version": "1.6.13",
+  "version": "1.6.14",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -11,14 +11,14 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev:renderer": "pnpm run build:nimi-styles && node scripts/nimi-renderer.mjs",
-    "test:app": "node scripts/prepare-nimi-python.mjs && node --test tests/nimi/*.test.mjs && .venv/bin/python -m pytest tests/nimi -q",
+    "dev:renderer": "corepack pnpm run build:nimi-styles && node scripts/nimi-renderer.mjs",
+    "test:app": "node scripts/prepare-nimi-python.mjs && node --test tests/nimi/*.test.mjs && node scripts/nimi-python.mjs -m pytest tests/nimi -q",
     "postinstall": "install-electron --no",
-    "setup:python": "node scripts/nimi-uv.mjs venv .venv && node scripts/nimi-uv.mjs pip install --python .venv/bin/python -e '.[dev,nimi-host]'",
-    "build:renderer": "pnpm run build:nimi-styles && DEEPTUTOR_NIMI_PACKAGE=1 DEEPTUTOR_NEXT_DIST_DIR=.next-nimi-production pnpm --dir web build",
+    "setup:python": "node scripts/setup-nimi-python.mjs",
+    "build:renderer": "pnpm run build:nimi-styles && node scripts/build-nimi-renderer.mjs",
     "build:electron": "node scripts/build-electron.mjs",
     "build:electron:production": "pnpm run build:renderer && pnpm run build:python && pnpm run build:electron && node scripts/package-electron-production.mjs",
-    "build:python": "node scripts/prepare-nimi-python.mjs && .venv/bin/python -m PyInstaller --noconfirm --distpath dist-python --workpath .nimi/local/pyinstaller scripts/deeptutor-backend.spec",
+    "build:python": "node scripts/prepare-nimi-python.mjs && node scripts/nimi-python.mjs -m PyInstaller --noconfirm --distpath dist-python --workpath .nimi/local/pyinstaller scripts/deeptutor-backend.spec",
     "dev": "nimi-app dev --shell electron",
     "dev:shell": "nimi-app dev",
     "dev:electron": "nimi-app dev --shell electron",
@@ -27,24 +27,24 @@
     "build:nimi-styles": "tailwindcss -i styles/nimi.css -o web/public/nimi-ui.css --minify"
   },
   "dependencies": {
+    "@nimiplatform/kit": "^0.19.0",
+    "@nimiplatform/sdk": "^0.21.0",
     "ai": "^6.0.85",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "@nimiplatform/sdk": "^0.21.0",
-    "@nimiplatform/kit": "^0.19.0"
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
+    "@nimiplatform/app-tools": "^0.12.2",
+    "@nimiplatform/nimi-coding": "0.6.5",
+    "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^24.13.3",
     "electron": "^44.5.1",
     "esbuild": "^0.28.2",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3",
-    "yaml": "^2.9.0",
-    "@nimiplatform/app-tools": "^0.12.0",
-    "@nimiplatform/nimi-coding": "0.6.5",
-    "tailwindcss": "^4.3.3",
-    "@tailwindcss/cli": "^4.3.3"
+    "yaml": "^2.9.0"
   },
   "main": "dist-electron/main.js"
 }

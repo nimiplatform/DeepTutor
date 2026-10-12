@@ -6,7 +6,6 @@ import asyncio
 from contextlib import aclosing, contextmanager
 from contextvars import ContextVar
 import json
-import socket
 import threading
 from uuid import uuid4
 
@@ -43,7 +42,7 @@ class NimiRequestError(LLMProviderError):
 
 
 class HostTransport:
-    def __init__(self, channel: socket.socket, reader, generation: int):
+    def __init__(self, channel, reader, generation: int):
         self.channel = channel
         self.reader = reader
         self.generation = generation
