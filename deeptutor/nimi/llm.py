@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import aclosing
+import base64
 import json
 from typing import Any
 
@@ -15,6 +16,15 @@ from deeptutor.services.llm.provider_core.base import (
 )
 
 from .transport import get_transport
+
+
+def _pipe_output(item, *, decode=False):
+    if item["type"] != "reasoning-continuity":
+        return item
+    carrier = item["carrier"]
+    payload = carrier["payload"]
+    payload = list(base64.b64decode(payload, validate=True)) if decode else base64.b64encode(bytes(payload)).decode("ascii")
+    return {**item, "carrier": {**carrier, "payload": payload}}
 
 
 def model_request(messages, tools=None, tool_choice=None, response_format=None, **parameters):
@@ -174,8 +184,8 @@ class NimiLLMProvider(LLMProvider):
         messages,
         tools=None,
         model=None,
-        max_tokens=4096,
-        temperature=0.7,
+        max_tokens=None,
+        temperature=None,
         reasoning_effort=None,
         tool_choice=None,
         on_content_delta=None,
@@ -189,7 +199,13 @@ class NimiLLMProvider(LLMProvider):
                 "Independent reasoning effort is not exposed by this Nimi text binding."
             )
         response_format = kwargs.pop("response_format", None)
-        parameters = {"maxTokens": max_tokens, "temperature": temperature}
+        # Omitted controls belong to Runtime's configured route. Explicit
+        # caller/task controls are retained and may be refused by that route.
+        parameters = {}
+        if max_tokens is not None:
+            parameters["maxTokens"] = max_tokens
+        if temperature is not None:
+            parameters["temperature"] = temperature
         for old, new in {
             "top_p": "topP",
             "top_k": "topK",
@@ -207,6 +223,9 @@ class NimiLLMProvider(LLMProvider):
         request, declarations = model_request(
             messages, tools, tool_choice, response_format, **parameters
         )
+        request = {**request, "messages": [{**message, **({"turnItems": [
+            {**item, "output": _pipe_output(item["output"])} if item["type"] == "output" else item
+            for item in message["turnItems"]]} if "turnItems" in message else {})} for message in request["messages"]]}
         async with aclosing(get_transport().events("text.step", request)) as events:
             async for frame in events:
                 if frame["kind"] == "delta" and on_content_delta:
@@ -228,7 +247,7 @@ class NimiLLMProvider(LLMProvider):
                         finish_reason=result["finishReason"].replace("-", "_"),
                         provider_specific_fields={
                             "nimi_state": {
-                                "output_items": result["outputItems"],
+                                "output_items": [_pipe_output(item, decode=True) for item in result["outputItems"]],
                                 "tools": replay_tools,
                             }
                         },

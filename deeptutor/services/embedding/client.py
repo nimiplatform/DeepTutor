@@ -34,6 +34,7 @@ def embedding_batches(texts: list[str]) -> list[list[str]]:
     return batches
 
 
+# @nimi-authority: rule.nimi.runtime.ai-provider.embedding-retrieval-purpose
 class EmbeddingClient:
     def __init__(self, config: Optional[EmbeddingConfig] = None):
         self.config = config or get_embedding_config()
@@ -43,7 +44,7 @@ class EmbeddingClient:
 
     async def probe_space(self) -> tuple[str, int]:
         result = await get_transport().request(
-            "embedding.batch", {"inputs": ["DeepTutor embedding space check."]}
+            "embedding.batch", {"inputs": ["DeepTutor embedding space check."], "purpose": "retrieval-document"}
         )
         vectors = validate_embedding_batch(
             result["vectors"], expected_count=1, binding="nimi", model="text.embed"
@@ -53,14 +54,13 @@ class EmbeddingClient:
     async def embed(self, texts, progress_callback=None, *, input_type=None):
         if input_type not in {None, "search_query", "search_document"}:
             raise ValueError("Unsupported embedding retrieval role.")
-        # The selected public text.embed contract is symmetric. Asymmetric
-        # role-specific backends require their own admitted platform contract.
+        purpose = "retrieval-query" if input_type == "search_query" else "retrieval-document"
         batches = embedding_batches(texts)
         vectors = []
         space_id = self.config.space_id
         dimension = self.config.dim or None
         for number, batch in enumerate(batches, 1):
-            result = await get_transport().request("embedding.batch", {"inputs": batch})
+            result = await get_transport().request("embedding.batch", {"inputs": batch, "purpose": purpose})
             actual_space = result["spaceId"]
             if not isinstance(actual_space, str) or not actual_space:
                 raise ValueError("Nimi did not return an embedding spaceId.")

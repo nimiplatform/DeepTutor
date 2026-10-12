@@ -9,15 +9,25 @@ import {
 import type { NimiElectronAppBusinessServices } from '@nimiplatform/kit/shell/electron/main';
 
 const MAX_FRAME_BYTES = 2 * 1024 * 1024;
-const encode = (value: unknown) => JSON.stringify(value, (_key, item) => item instanceof Uint8Array ? Array.from(item) : item) + '\n';
+const encode = (value: unknown) => JSON.stringify(value, (_key, item) => item instanceof Uint8Array ? Buffer.from(item).toString('base64') : item) + '\n';
+function continuityBytes(value: unknown): Uint8Array {
+  if (typeof value !== 'string' || !value) throw new Error('Invalid continuity payload');
+  const bytes = Buffer.from(value, 'base64');
+  if (bytes.toString('base64') !== value) throw new Error('Invalid continuity encoding');
+  return bytes;
+}
 
 /** App business requests only. No method names, credentials, owner selectors,
  * Runtime endpoints or tool execution cross this private child pipe. */
+// @nimi-authority: rule.nimi.platform.app-ecosystem.p-scaf-016b
 export class DeepTutorBusinessAI {
   generation = 1;
   private pipe: Duplex | undefined;
   private readonly active = new Map<string, AbortController>();
-  constructor(private readonly services: NimiElectronAppBusinessServices, private readonly failureDirectory?: string) {}
+  private services: NimiElectronAppBusinessServices | undefined;
+  constructor(private readonly failureDirectory?: string) {}
+
+  bind(services: NimiElectronAppBusinessServices): void { this.services = services; }
 
   attach(pipe: Duplex): void {
     this.pipe = pipe;
@@ -49,6 +59,7 @@ export class DeepTutorBusinessAI {
   }
 
   invalidate(): void {
+    this.services = undefined;
     this.generation += 1;
     for (const controller of this.active.values()) controller.abort();
     this.active.clear();
@@ -71,6 +82,9 @@ export class DeepTutorBusinessAI {
     };
     try {
       guard();
+      const services = this.services;
+      if (!services) throw Object.assign(new Error('NIMI_SESSION_UNAVAILABLE: wait for Nimi access, then start a new learning turn.'),
+        { reasonCode: 'session-invalid', actionHint: 'refresh_local_app_runtime_projection' });
       if (this.active.has(id) || this.active.size >= 32) throw new Error('Invalid or excessive concurrent business requests.');
       this.active.set(id, controller);
       if (frame.operation === 'text.step') {
@@ -80,9 +94,9 @@ export class DeepTutorBusinessAI {
           ...(message.turnItems ? { turnItems: message.turnItems.map((item) =>
             item.type === 'output' && item.output.type === 'reasoning-continuity'
               ? { ...item, output: { ...item.output, carrier: { ...item.output.carrier,
-                payload: new Uint8Array(item.output.carrier.payload) } } } : item) } : {}),
+                payload: continuityBytes(item.output.carrier.payload) } } } : item) } : {}),
         }));
-        const model = createNimiLocalAppTextModel(this.services.ai);
+        const model = createNimiLocalAppTextModel(services.ai, { executionMode: 'sync' });
         const stream = await model.streamText!({ ...input, messages, signal: controller.signal });
         async function* observe() {
           for await (const event of stream) {
@@ -102,11 +116,12 @@ export class DeepTutorBusinessAI {
         emit('result', { text: result.text, finishReason: result.finishReason,
           outputItems: result.outputItems, toolCalls: result.toolCalls ?? [] });
       } else if (frame.operation === 'embedding.batch') {
-        const input = frame.input as { inputs?: unknown };
-        if (!input || Object.keys(input).some((key) => key !== 'inputs') || !Array.isArray(input.inputs)
+        const input = frame.input as { inputs?: unknown; purpose?: 'retrieval-document' | 'retrieval-query' };
+        if (!input || Object.keys(input).some((key) => !['inputs', 'purpose'].includes(key)) || !Array.isArray(input.inputs)
+          || !['retrieval-document', 'retrieval-query'].includes(input.purpose ?? '')
           || input.inputs.some((item) => typeof item !== 'string')) throw new Error('Invalid embedding business input.');
-        const result = await this.services.ai.scenario.execute({ type: 'text-embed', inputs: input.inputs });
-        guard(); // Sync embedding cannot abort its active Runtime request; discard late results.
+        const result = await services.ai.scenario.execute({ type: 'text-embed', inputs: input.inputs, purpose: input.purpose }, { signal: controller.signal });
+        guard();
         if (result.output.type !== 'text-embed') throw new Error('Unexpected embedding output.');
         emit('result', result.output);
       } else {
@@ -125,7 +140,7 @@ export class DeepTutorBusinessAI {
             actionHint: failure.actionHint, traceId: failure.traceId },
         }, (key, value) => {
           if (key === 'carrier' && value?.payload) {
-            const bytes = Buffer.from(value.payload);
+            const bytes = typeof value.payload === 'string' ? Buffer.from(value.payload, 'base64') : Buffer.from(value.payload);
             return { kind: value.kind, version: value.version, payloadRedacted: true,
               bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
           }

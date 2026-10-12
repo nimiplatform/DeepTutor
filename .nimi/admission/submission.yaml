@@ -1,6 +1,6 @@
 app_id: org.nimiplatform.deeptutor
 display_name: DeepTutor
-version: 1.6.8
+version: 1.6.9
 profile: standalone
 npm_package_name: nimiapp-deeptutor
 cargo_package_name: nimiapp-deeptutor-shell

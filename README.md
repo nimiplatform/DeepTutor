@@ -1,3 +1,22 @@
+# DeepTutor on Nimi — public dependencies
+
+The Nimi App version is 1.6.9. Its npm workspace uses released SDK 0.21.0,
+Kit/native 0.19.0, App Tools 0.12.0 and Nimi Coding 0.6.5 with a frozen pnpm
+lock. Nimi local tarball overrides are removed. DeepTutor retains its learning,
+notes, documents and retrieval workflows and its original Apache-2.0 license.
+
+On macOS arm64, production preflight, 10 Host tests and 41 Python tests,
+production renderer/Python/Electron build and production pack have passed.
+The supervised App generated a real learning response and indexed a text
+knowledge base through the protected Nimi model and embedding carrier.
+Document and query embeddings carry their explicit retrieval purpose and retain
+Runtime space identity. The App's test/build command prepares its declared
+Python environment when a fresh release checkout needs it.
+
+Publication, Registry admission and installed acceptance are recorded separately.
+The upstream documentation below describes the original project and its optional
+standalone integrations.
+
 <div align="center">
 
 <p align="center"><img src="assets/figs/logo/logo.png" alt="DeepTutor logo" height="56" style="vertical-align: middle;">&nbsp;<img src="assets/figs/logo/banner.png" alt="DeepTutor" height="48" style="vertical-align: middle;"></p>

@@ -3,14 +3,18 @@ import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, ipcMain, Menu, protocol, session, shell, webContents } from 'electron';
+import { configureNimiElectronAppHostProfile } from '@nimiplatform/kit/shell/electron/host-profile';
+// @nimi-authority: rule.nimi.platform.app-ecosystem.p-napp-034c
+try { configureNimiElectronAppHostProfile(app); }
+catch (error) { process.stderr.write(`[deeptutor-host-profile] ${String(error)}\n`); app.exit(78); throw error; }
 import { DeepTutorBackend } from './backend.js';
 import { DeepTutorRendererServer } from './renderer-server.js';
 import { DeepTutorBusinessAI } from './business-ai.js';
-import {
+const {
   isAllowedElectronRendererUrl,
   registerNimiElectronAppAssetProtocolScheme,
   registerNimiElectronAppBridge,
-} from '@nimiplatform/kit/shell/electron/main';
+} = await import('@nimiplatform/kit/shell/electron/main');
 
 declare const __NIMI_ELECTRON_PRODUCTION__: boolean;
 
@@ -27,13 +31,9 @@ const allowedRendererUrls: string[] = [];
 const backend = new DeepTutorBackend();
 const rendererServer = new DeepTutorRendererServer();
 let businessAI: DeepTutorBusinessAI | undefined;
+let bridge: ReturnType<typeof registerNimiElectronAppBridge> | undefined;
 
 app.setName("DeepTutor");
-if (IS_PRODUCTION_BUNDLE) {
-  // Installed launch has no Desktop development user-data-dir override.
-  // Keep its App-owned profile stable without touching development workspaces.
-  app.setPath('userData', path.join(app.getPath('appData'), APP_ID));
-}
 app.setAppUserModelId(NATIVE_BUNDLE_IDENTIFIER);
 Menu.setApplicationMenu(null);
 registerNimiElectronAppAssetProtocolScheme(protocol);
@@ -42,16 +42,17 @@ void app.whenReady().then(async () => {
   const startPackagedRenderer = !rendererUrl;
   if (startPackagedRenderer) rendererUrl = await rendererServer.prepare();
   allowedRendererUrls.push(rendererUrl);
-  const bridge = registerNimiElectronAppBridge({
+  const failureDirectory = !app.isPackaged && existsSync(path.join(appRoot, '.nimi/local/capture-model-failures'))
+    ? path.join(appRoot, '.nimi/local/model-failures') : undefined;
+  businessAI = new DeepTutorBusinessAI(failureDirectory);
+  bridge = registerNimiElectronAppBridge({
     appId: APP_ID,
     allowedRendererUrls,
     assetMediaPlatform: { protocol, webRequest: session.defaultSession.webRequest, webContents },
     ipcMain,
     onSessionInvalidated: () => businessAI?.invalidate(),
+    onSessionReady: (services) => businessAI?.bind(services),
   });
-  const failureDirectory = !app.isPackaged && existsSync(path.join(appRoot, '.nimi/local/capture-model-failures'))
-    ? path.join(appRoot, '.nimi/local/model-failures') : undefined;
-  businessAI = new DeepTutorBusinessAI(bridge.services, failureDirectory);
   // Kit primes its verified technical session on registration. Do not defer
   // that binding until the standalone renderer or Python finishes cold start.
   await Promise.all([
@@ -83,6 +84,7 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   businessAI?.invalidate();
+  bridge?.unregister();
   void Promise.allSettled([backend.stop(), rendererServer.stop()]).finally(() => {
     quitting = true; app.quit();
   });
