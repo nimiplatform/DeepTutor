@@ -1,6 +1,6 @@
-## Catalog App support — 1.6.12
+## Catalog App support — 1.6.13
 
-Uses public SDK 0.21.0, Kit/native 0.19.2 and App Tools 0.12.0 with a frozen npm lock. Home can launch this packaged App against the macOS source Runtime while preserving native peer identity and installed-App/session checks. Catalog AI acceptance is pending publication and admission; historical results below retain their stated versions.
+Uses public SDK 0.21.0, Kit/native 0.19.2 and App Tools 0.12.0 with a frozen npm lock. Home can launch this packaged App against the macOS source Runtime while preserving native peer identity and installed-App/session checks. Includes the tokenizer plugin required by packaged knowledge indexing. Catalog AI acceptance is pending publication and admission; historical results below retain their stated versions.
 
 # DeepTutor on Nimi — public dependencies
 

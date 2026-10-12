@@ -8,7 +8,10 @@ analysis = Analysis(
     [str(root / "deeptutor/nimi/worker.py")],
     pathex=[str(root)],
     datas=collect_data_files("deeptutor"),
-    hiddenimports=collect_submodules("deeptutor") + collect_submodules("uvicorn"),
+    # tiktoken discovers encoding constructors through a namespace package.
+    # Static import analysis misses these plugins, breaking packaged KB indexing.
+    hiddenimports=(collect_submodules("deeptutor") + collect_submodules("uvicorn")
+                   + collect_submodules("tiktoken_ext")),
 )
 archive = PYZ(analysis.pure)
 executable = EXE(archive, analysis.scripts, [], exclude_binaries=True,
