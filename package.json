@@ -12,7 +12,7 @@
   },
   "scripts": {
     "dev:renderer": "corepack pnpm run build:nimi-styles && node scripts/nimi-renderer.mjs",
-    "test:app": "node scripts/prepare-nimi-python.mjs && node --test tests/nimi/*.test.mjs && node scripts/nimi-python.mjs -m pytest tests/nimi -q && pnpm --dir web run contracts:check && pnpm --dir web run test:node",
+    "test:app": "node scripts/prepare-nimi-python.mjs && node --test tests/nimi/*.test.mjs && node scripts/nimi-python.mjs -m pytest tests/nimi tests/services/rag/test_llamaindex_pipeline_stall.py tests/services/workspace/test_content_workspace.py -q && pnpm --dir web run contracts:check && pnpm --dir web run test:node",
     "postinstall": "install-electron --no",
     "setup:python": "node scripts/setup-nimi-python.mjs",
     "build:renderer": "pnpm run build:nimi-styles && node scripts/build-nimi-renderer.mjs",

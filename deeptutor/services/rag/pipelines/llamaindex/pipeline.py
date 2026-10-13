@@ -28,7 +28,6 @@ from .config import default_top_k, should_show_progress
 from .document_loader import LlamaIndexDocumentLoader
 from .embedding_adapter import (
     configure_llamaindex_settings,
-    set_progress_callback,
     verify_embedding_connectivity,
 )
 from .errors import search_error_result
@@ -51,6 +50,7 @@ class IndexingStallError(RuntimeError):
 async def _run_with_stall_guard(
     fn: Callable[[], Any],
     *,
+    embedding_model: Any,
     progress_callback: Optional[Callable[..., Any]] = None,
     stall_timeout: Optional[float] = None,
 ) -> Any:
@@ -69,27 +69,29 @@ async def _run_with_stall_guard(
     Python cannot interrupt arbitrary synchronous code — but the API call
     fails fast with an actionable message instead of waiting forever.
 
-    ``set_progress_callback`` writes to the process-global LlamaIndex
-    ``Settings`` embed model, which holds exactly one callback. A second
-    indexing job started while this one runs therefore displaces our
-    heartbeat, so we re-arm it on every poll tick: missing a few
-    notifications for one tick is harmless, whereas never seeing our own
-    progress again would kill a perfectly healthy job. The guard is
-    consciously biased this way — it can be slow to notice a genuine stall
-    while another job indexes, and never fails a job that is making progress.
+    Observe the captured embedding adapter used by this operation, rather
+    than the unrelated process-global Settings default. Deliver progress on
+    the caller's loop so WebSocket notifications use their owning loop.
     """
     if stall_timeout is None:
         stall_timeout = _INDEX_STALL_TIMEOUT_SECONDS
 
     last_progress = {"at": time.monotonic()}
+    loop = asyncio.get_running_loop()
+    active = True
 
-    def _heartbeat(*args: Any, **kwargs: Any) -> None:
+    async def _deliver_progress(args, kwargs) -> None:
+        if not active:
+            return
         last_progress["at"] = time.monotonic()
         if progress_callback is not None:
             progress_callback(*args, **kwargs)
 
-    set_progress_callback(_heartbeat)
-    future = asyncio.get_running_loop().run_in_executor(None, contextvars.copy_context().run, fn)
+    def _heartbeat(*args: Any, **kwargs: Any) -> None:
+        if active:
+            # The synchronous adapter runs in the executor. Waiting here also
+            # preserves callback errors and orders progress before completion.
+            asyncio.run_coroutine_threadsafe(_deliver_progress(args, kwargs), loop).result()
 
     def _consume_terminal_exception(fut: "asyncio.Future[Any]") -> None:
         # The stalled thread may finish after we raise; retrieve its exception
@@ -97,21 +99,26 @@ async def _run_with_stall_guard(
         if not fut.cancelled():
             fut.exception()
 
-    while True:
-        done, _ = await asyncio.wait({future}, timeout=_INDEX_STALL_POLL_SECONDS)
-        if done:
-            return future.result()
-        # Reclaim the shared callback slot in case a concurrent job took it.
-        set_progress_callback(_heartbeat)
-        stalled_for = time.monotonic() - last_progress["at"]
-        if stalled_for > stall_timeout:
+    future = None
+    embedding_model.set_progress_callback(_heartbeat)
+    try:
+        future = loop.run_in_executor(None, contextvars.copy_context().run, fn)
+        while True:
+            done, _ = await asyncio.wait({future}, timeout=_INDEX_STALL_POLL_SECONDS)
+            if done:
+                return future.result()
+            stalled_for = time.monotonic() - last_progress["at"]
+            if stalled_for > stall_timeout:
+                raise IndexingStallError(
+                    f"Indexing made no progress for {stalled_for:.0f}s while "
+                    "processing documents. Check document parsing, local indexing "
+                    "and the embedding service before retrying."
+                )
+    finally:
+        active = False
+        embedding_model.set_progress_callback(None)
+        if future is not None and not future.done():
             future.add_done_callback(_consume_terminal_exception)
-            raise IndexingStallError(
-                f"Indexing made no progress for {stalled_for:.0f}s while "
-                "embedding documents. The embedding provider may be accepting "
-                "requests without completing them; check the embedding "
-                "endpoint and retry."
-            )
 
 
 class LlamaIndexPipeline:
@@ -194,6 +201,7 @@ class LlamaIndexPipeline:
                     show_progress=should_show_progress(),
                     embedding_model=embedding_model,
                 ),
+                embedding_model=embedding_model,
                 progress_callback=progress_callback,
             )
 
@@ -209,8 +217,6 @@ class LlamaIndexPipeline:
             self.logger.error(traceback.format_exc())
             self._cleanup_failed_version_dir(storage_dir, signature)
             raise
-        finally:
-            set_progress_callback(None)
 
     async def search(
         self,
@@ -369,6 +375,7 @@ class LlamaIndexPipeline:
                         documents,
                         embedding_model=embedding_model,
                     ),
+                    embedding_model=embedding_model,
                     progress_callback=progress_callback,
                 )
                 self.logger.info(f"Added {num_added} documents to existing index")
@@ -384,6 +391,7 @@ class LlamaIndexPipeline:
                         show_progress=should_show_progress(),
                         embedding_model=embedding_model,
                     ),
+                    embedding_model=embedding_model,
                     progress_callback=progress_callback,
                 )
                 self.logger.info(f"Created new index with {num_added} documents")
@@ -399,8 +407,6 @@ class LlamaIndexPipeline:
             if plan.existing_storage is None or plan.storage_dir != plan.existing_storage:
                 self._cleanup_failed_version_dir(plan.storage_dir, signature)
             raise
-        finally:
-            set_progress_callback(None)
 
     async def delete(self, kb_name: str) -> bool:
         kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)

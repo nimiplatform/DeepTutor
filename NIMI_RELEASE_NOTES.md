@@ -1,5 +1,23 @@
 # 1.6.18 — Windows knowledge-index startup
 
+Indexing now observes the exact embedding adapter captured for each operation.
+Its progress callbacks run on the caller's event loop, keeping WebSocket updates
+on their owner loop and preventing another operation from taking or clearing
+the heartbeat. Ended monitors suppress late progress. Eight indexing regressions
+cover progress, concurrent operations, owner-loop delivery, stalls and cleanup.
+The release test command includes these and the existing workspace suite.
+
+The workspace write probe now uses the same extended Windows I/O paths as media
+publication while preserving canonical workspace identities and confinement.
+The long-path regression explicitly places the probe beyond MAX_PATH; a separate
+workspace-text test accepts Windows separator spelling without relaxing its
+host-prefix exclusion. All 87 selected Python tests pass. Through the real
+Desktop-supervised CDP target, a 65,871-byte Chinese document was added to the
+existing KB as 61 text chunks, retaining its original document. Creating another
+KB with that document delivered seven actual embedding batch progress messages
+over the UI's WebSocket and completed as Ready. These are development results;
+installation and formal publication remain pending.
+
 Loads the required FAISS native library before starting the Host's background
 stdin reader on Windows. The installed 1.6.17 worker stalled inside FAISS's
 OpenBLAS DLL import after document embedding, then reported an indexing timeout.

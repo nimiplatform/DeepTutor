@@ -194,12 +194,15 @@ async def test_post_generation_save_failure_stops_the_model_instead_of_retrying_
 def test_workspace_publication_handles_long_windows_host_profile_paths(tmp_path,monkeypatch):
     from deeptutor.services.path_service import PathService
     from deeptutor.services.workspace import service as workspace_module
-    paths=PathService(workspace_root=tmp_path/("host-profile-"+"x"*75))
+    short_paths=PathService(workspace_root=tmp_path/"host-profile-")
+    padding=max(0,220-len(str(short_paths.get_workspace_dir())))
+    paths=PathService(workspace_root=tmp_path/("host-profile-"+"x"*padding))
     paths.ensure_all_directories()
     monkeypatch.setattr(workspace_module,"get_path_service",lambda:paths)
     monkeypatch.delenv("DEEPTUTOR_WORKSPACE_ROOT",raising=False)
     monkeypatch.delenv("DEEPTUTOR_WORKSPACE_ALLOWED_ROOTS",raising=False)
     service=workspace_module.ContentWorkspaceService();binding=service.current_binding(ensure_output=True)
+    assert len(str(binding.root/"outputs"/(".deeptutor-write-probe-"+"0"*32)))>260
     original=binding.root/"outputs"/"中文.png"
     original.write_bytes(b"preserved-media-bytes")
     item=service.publish(binding,[{"path":"outputs/中文.png"}])[0]

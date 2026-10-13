@@ -33,7 +33,7 @@ _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _windows_io_path(path: Path) -> Path:
-    """Private publication files need Win32 extended paths without changing
+    """Workspace I/O needs Win32 extended paths without changing
     the canonical workspace root or the ids derived from that root."""
     if os.name != "nt":
         return path
@@ -246,16 +246,17 @@ class ContentWorkspaceService:
 
     def _ensure_ready(self, binding: WorkspaceBinding) -> None:
         root = binding.root
-        if not root.exists() or not root.is_dir():
+        io_root = _windows_io_path(root)
+        if not io_root.exists() or not io_root.is_dir():
             raise WorkspaceError("The selected workspace folder does not exist.")
         self._assert_allowed_root(root)
-        if not os.access(root, os.R_OK):
+        if not os.access(io_root, os.R_OK):
             raise WorkspaceError("The selected workspace folder is not readable.")
-        output = root / "outputs"
+        output = io_root / "outputs"
         try:
             output.mkdir(parents=True, exist_ok=True)
             resolved_output = output.resolve()
-            resolved_output.relative_to(root)
+            resolved_output.relative_to(io_root.resolve())
             probe = output / f".deeptutor-write-probe-{uuid.uuid4().hex}"
             probe.touch(exist_ok=False)
             probe.unlink()

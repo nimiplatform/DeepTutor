@@ -164,13 +164,6 @@ def configure_llamaindex_settings(logger=None) -> None:
             logger.debug(message)
 
 
-def set_progress_callback(callback) -> None:
-    """Attach an indexing progress callback to the active embedding adapter."""
-    embed_model = getattr(Settings, "_embed_model", None)
-    if isinstance(embed_model, CustomEmbedding):
-        embed_model.set_progress_callback(callback)
-
-
 async def verify_embedding_connectivity(logger=None) -> None:
     """Quick smoke-test to catch embedding config/network issues before indexing."""
     if logger is not None:

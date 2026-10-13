@@ -609,5 +609,7 @@ def test_execution_results_expose_only_workspace_relative_paths(tmp_path: Path) 
     rendered = logicalize_workspace_text(f'File "{physical}"', root)
 
     assert str(root) not in rendered
-    assert "outputs/chat/turn/code_runs/python_1/main.py" in rendered
+    # Subprocess text retains its native separator spelling after removing the
+    # host prefix; the dedicated path projection below is always POSIX.
+    assert "outputs/chat/turn/code_runs/python_1/main.py" in rendered.replace("\\", "/")
     assert logical_workspace_path(run_dir, root) == ("outputs/chat/turn/code_runs/python_1")
