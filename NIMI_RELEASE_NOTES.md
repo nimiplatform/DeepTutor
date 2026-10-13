@@ -1,4 +1,4 @@
-# 1.6.14 — Windows candidate (unreleased)
+# 1.6.14 — Windows and Nimi media support
 
 The current source moves read-aloud, microphone transcription and existing image/video chat tools to Nimi configuration and protected Jobs. Media transfer is chunked, conversation-backed recovery observes the original submission, and App-owned media provider controls are closed. Real Windows image/video generation, original-Job recovery, cancellation, downloads, video playback and reopening passed after correcting Win32 long paths. The user also completed real microphone transcription, with the HTTP 200 transcript shown unchanged in the composer and left unsent. Read-aloud passed with published Kit 0.20.0 and Nimi 0.2.3-rc.2: the original Chinese answer produced 182.72 seconds of playable 24 kHz WAV, browser playback and Stop worked, and the actual output fully decoded. The Windows production build now includes this media work, and its new frozen backend passed the authenticated HTTP and notebook persistence checks. Installed-App acceptance remains pending.
 
