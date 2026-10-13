@@ -11,7 +11,10 @@ and the report deadline from an observation start time, and did not invent the
 missing budget or team size. The answer was saved to the notebook
 `Windows 安装版松塔 Q58 验收`. After normal close and Home relaunch, the answer,
 one notebook record and Ready index remained. The annotated v1.6.18 tag points
-to that tested implementation; formal publication is still pending its workflow.
+to that tested implementation. The [formal release](https://github.com/nimiplatform/DeepTutor/releases/tag/v1.6.18)
+is immutable and published for both targets; its exact packages, source licenses
+and build provenance passed Registry preparation. [Candidate #100](https://github.com/nimiplatform/nimi-app-registry/pull/100)
+replaces withdrawn #98. Human admission and Catalog installation remain pending.
 
 Indexing now observes the exact embedding adapter captured for each operation.
 Its progress callbacks run on the caller's event loop, keeping WebSocket updates
