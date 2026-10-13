@@ -11,7 +11,9 @@ The workspace write probe now uses the same extended Windows I/O paths as media
 publication while preserving canonical workspace identities and confinement.
 The long-path regression explicitly places the probe beyond MAX_PATH; a separate
 workspace-text test accepts Windows separator spelling without relaxing its
-host-prefix exclusion. All 87 selected Python tests pass. Through the real
+host-prefix exclusion. The probe retains the binding's already-resolved root,
+and rejects a later symlink redirection instead of changing its confinement
+boundary. All 88 selected Python tests pass. Through the real
 Desktop-supervised CDP target, a 65,871-byte Chinese document was added to the
 existing KB as 61 text chunks, retaining its original document. Creating another
 KB with that document delivered seven actual embedding batch progress messages

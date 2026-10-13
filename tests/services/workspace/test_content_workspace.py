@@ -91,6 +91,26 @@ def test_symlink_cannot_escape_workspace(workspace_service, tmp_path: Path) -> N
         service.resolve(binding, "outside-link.txt")
 
 
+def test_write_probe_keeps_the_resolved_binding_root(workspace_service, tmp_path: Path) -> None:
+    service, _paths = workspace_service
+    binding = service.current_binding(ensure_output=True)
+    root = binding.root
+    displaced = tmp_path / "original-workspace"
+    redirected = tmp_path / "redirected-workspace"
+    assert root.is_relative_to(tmp_path)
+    assert displaced.resolve().is_relative_to(tmp_path)
+    redirected.mkdir()
+    root.rename(displaced)
+    try:
+        root.symlink_to(redirected, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are unavailable")
+
+    with pytest.raises(WorkspaceError, match="leaves the workspace"):
+        service._ensure_ready(binding)
+    assert not list(redirected.rglob(".deeptutor-write-probe-*"))
+
+
 def test_outputs_symlink_is_rejected_before_write(workspace_service, tmp_path: Path) -> None:
     service, paths = workspace_service
     root = paths.get_workspace_dir().resolve()

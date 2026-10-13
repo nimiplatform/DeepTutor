@@ -256,7 +256,7 @@ class ContentWorkspaceService:
         try:
             output.mkdir(parents=True, exist_ok=True)
             resolved_output = output.resolve()
-            resolved_output.relative_to(io_root.resolve())
+            resolved_output.relative_to(io_root)
             probe = output / f".deeptutor-write-probe-{uuid.uuid4().hex}"
             probe.touch(exist_ok=False)
             probe.unlink()
