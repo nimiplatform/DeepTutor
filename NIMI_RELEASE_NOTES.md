@@ -1,3 +1,21 @@
+# Unreleased — Windows knowledge-index startup
+
+Loads the required FAISS native library before starting the Host's background
+stdin reader on Windows. The installed 1.6.17 worker stalled inside FAISS's
+OpenBLAS DLL import after document embedding, then reported an indexing timeout.
+A real subprocess regression reproduces the hang before this change and completes
+native vector insertion/search afterward. All 15 Nimi Node tests and 55 Python
+tests pass.
+
+On Nimi 0.2.3, the existing Desktop-supervised development registration passed
+the real workflow through its own loopback CDP: upload the 696-byte Chinese Q58
+document, publish a 1024-dimensional index, retrieve its facts through the model,
+save the answer to a notebook, close the App and reopen the same registration.
+The answer correctly retained all seven requested facts and declined to invent
+the absent budget or team size. The index remained Ready and the notebook record
+remained present after reopening. A rebuilt installed package containing this
+fix is NOT-VERIFIED; no new release is claimed by these development results.
+
 # 1.6.17 — Relocatable Windows renderer dependencies
 
 Uses pnpm's hoisted layout with the existing frozen dependency versions so
@@ -7,8 +25,10 @@ and PDF.js resources from the installed packages. Production packaging now
 starts a copy of the actual Next resources outside the checkout, checks its
 HTML response and stops the owned process tree; test caches stay out of the
 final package. This check reproduced the installed 1.6.16 missing-SWC failure
-and passes on the corrected renderer. Full rebuilt installed acceptance is
-pending. The immutable 1.6.16 release remains unchanged.
+and passes on the corrected renderer. Local production 1.6.17 was imported into
+Nimi 0.2.3 and its installed UI launched successfully; its knowledge-index run
+exposed the Windows FAISS startup issue described above. The dual-platform
+1.6.17 release workflow succeeded. Immutable earlier releases remain unchanged.
 
 Frontend Node tests now use the installed tsx runner and the App's TypeScript
 configuration, with type checking retained. Windows filesystem comparisons

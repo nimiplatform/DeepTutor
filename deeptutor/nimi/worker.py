@@ -7,6 +7,13 @@ import json
 import os
 import sys
 
+# Windows OpenBLAS DLL initialization can deadlock against a background CRT
+# stdin read. Load the App's FAISS dependency before starting the Host reader;
+# knowledge-base indexing otherwise reaches this import only in an executor.
+# https://github.com/numpy/numpy/issues/24290
+if sys.platform == "win32":
+    import faiss  # noqa: F401
+
 
 class StdioChannel:
     def __init__(self, writer):
