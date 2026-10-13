@@ -1,5 +1,18 @@
 # 1.6.18 — Windows knowledge-index startup
 
+Installed Windows acceptance passed on October 14 using the complete local
+package from 1b518953 and installed Nimi 0.2.4-rc.1 (5936ee1d2). Home updated
+the Imported source from 1.6.17 to 1.6.18 while retaining the original 696-byte
+Chinese document and failed knowledge-base state. Retry indexing completed as
+Ready with a 1024-dimensional index. A real LlamaIndex retrieval and model turn
+returned ST-Q58-7429, 贺澜, the 13-minute interval, seven observations per workday
+and MISSING correctly. It distinguished the Cedar Ledger module from a protocol
+and the report deadline from an observation start time, and did not invent the
+missing budget or team size. The answer was saved to the notebook
+`Windows 安装版松塔 Q58 验收`. After normal close and Home relaunch, the answer,
+one notebook record and Ready index remained. The annotated v1.6.18 tag points
+to that tested implementation; formal publication is still pending its workflow.
+
 Indexing now observes the exact embedding adapter captured for each operation.
 Its progress callbacks run on the caller's event loop, keeping WebSocket updates
 on their owner loop and preventing another operation from taking or clearing
@@ -17,8 +30,8 @@ boundary. All 88 selected Python tests pass. Through the real
 Desktop-supervised CDP target, a 65,871-byte Chinese document was added to the
 existing KB as 61 text chunks, retaining its original document. Creating another
 KB with that document delivered seven actual embedding batch progress messages
-over the UI's WebSocket and completed as Ready. These are development results;
-installation and formal publication remain pending.
+over the UI's WebSocket and completed as Ready. These batch-progress results
+are from development; the installed update is recorded above.
 
 Loads the required FAISS native library before starting the Host's background
 stdin reader on Windows. The installed 1.6.17 worker stalled inside FAISS's
@@ -35,8 +48,9 @@ document, publish a 1024-dimensional index, retrieve its facts through the model
 save the answer to a notebook, close the App and reopen the same registration.
 The answer correctly retained all seven requested facts and declined to invent
 the absent budget or team size. The index remained Ready and the notebook record
-remained present after reopening. A rebuilt installed package containing this
-fix is NOT-VERIFIED; no new release is claimed by these development results.
+remained present after reopening. The rebuilt installed package is covered by
+the October 14 acceptance above; these development results alone do not claim
+a public release or Catalog installation.
 
 # 1.6.17 — Relocatable Windows renderer dependencies
 
