@@ -27,7 +27,7 @@
     "build:nimi-styles": "tailwindcss -i styles/nimi.css -o web/public/nimi-ui.css --minify"
   },
   "dependencies": {
-    "@nimiplatform/kit": "^0.19.0",
+    "@nimiplatform/kit": "^0.20.0",
     "@nimiplatform/sdk": "^0.21.0",
     "ai": "^6.0.85",
     "react": "^19.2.8",
@@ -35,7 +35,7 @@
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
-    "@nimiplatform/app-tools": "^0.12.2",
+    "@nimiplatform/app-tools": "^0.12.3",
     "@nimiplatform/nimi-coding": "0.6.5",
     "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^24.13.3",

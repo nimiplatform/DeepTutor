@@ -1,9 +1,8 @@
 """Voice endpoints — text-to-speech and speech-to-text.
 
-These are thin HTTP surfaces over :mod:`deeptutor.services.voice`. Config comes
-from the admin-managed model catalog (``services.tts`` / ``services.stt``), so
-voice is shared infrastructure like embedding/search — any authenticated user
-may call it; it is not gated by per-user LLM grants.
+These authenticated HTTP surfaces use :mod:`deeptutor.services.voice` and the
+Nimi Host's effective AIConfig selections. Read-aloud uses the App user's saved
+choice from Nimi's preset voice list; provider credentials stay with Nimi.
 """
 
 from __future__ import annotations
@@ -27,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Guard against pathological uploads (the providers cap well below this anyway).
-_MAX_AUDIO_BYTES = 25 * 1024 * 1024  # 25 MB, matching OpenAI's limit.
+# Match the bounded audio upload accepted by the Nimi Host bridge.
+_MAX_AUDIO_BYTES = 25 * 1024 * 1024
 _DEFAULT_PCM_SAMPLE_RATE = 24_000
 _DEFAULT_PCM_CHANNELS = 1
 _PCM16_SAMPLE_WIDTH = 2
