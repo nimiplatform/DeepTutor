@@ -735,7 +735,7 @@ class AgenticLoopPipeline:
             forced=PARTNER_BUILTIN_TOOL_NAMES if is_partner else (),
             suppressed=_PARTNER_SUPPRESSED_TOOLS if is_partner else (),
         )
-        composed = drop_unconfigured_generation_tools(composed)
+        composed = drop_unconfigured_generation_tools(composed, context.metadata.get("nimi_media_ready", []))
         lookup_get = getattr(self.tool_lookup, "get", None)
         if callable(lookup_get) and lookup_get("workspace_export") is not None:
             composed.append("workspace_export")

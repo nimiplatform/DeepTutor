@@ -2402,6 +2402,7 @@ class SQLiteSessionStore:
         self, session_id: str, preferences: dict[str, Any]
     ) -> bool:
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             current = conn.execute(
                 "SELECT preferences_json FROM sessions WHERE id = ?",
                 (session_id,),

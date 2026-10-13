@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiFetch, apiUrl } from "@/lib/api";
 import { stripAudioMimeParameters } from "@/lib/voice-mime";
+import { prepareRecordingWav } from "@/lib/recording-wav";
 
 export type RecorderState = "idle" | "recording" | "transcribing";
 
@@ -18,6 +19,7 @@ export function useVoiceRecorder(onTranscript: (text: string) => void) {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
 
@@ -60,17 +62,15 @@ export function useVoiceRecorder(onTranscript: (text: string) => void) {
         return;
       }
       setState("transcribing");
+      const request = new AbortController(); requestRef.current = request;
       try {
-        const ext = mimeType.includes("ogg")
-          ? "ogg"
-          : mimeType.includes("mp4")
-            ? "mp4"
-            : "webm";
+        const prepared = await prepareRecordingWav(blob);
         const form = new FormData();
-        form.append("file", blob, `recording.${ext}`);
+        form.append("file", prepared, "recording.wav");
         const resp = await apiFetch(apiUrl("/api/voice/stt"), {
           method: "POST",
           body: form,
+          signal: request.signal,
         });
         if (!resp.ok) {
           const detail = (await resp.json().catch(() => null)) as {
@@ -110,7 +110,8 @@ export function useVoiceRecorder(onTranscript: (text: string) => void) {
   useEffect(() => {
     return () => {
       const recorder = recorderRef.current;
-      if (recorder && recorder.state !== "inactive") recorder.stop();
+      if (recorder && recorder.state !== "inactive") { recorder.onstop = null; recorder.stop(); }
+      requestRef.current?.abort();
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);

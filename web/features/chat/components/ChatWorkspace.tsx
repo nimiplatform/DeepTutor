@@ -28,6 +28,7 @@ import type { SelectedRecord } from "@/lib/notebook-selection-types";
 import type { SelectedHistorySession } from "@/components/chat/HistorySessionPicker";
 import type { SelectedQuestionEntry } from "@/components/chat/QuestionBankPicker";
 import ChatComposer from "@/components/chat/home/ChatComposer";
+import NimiMediaActions from "@/components/chat/NimiMediaActions";
 import { ChatMessageList } from "@/features/chat/messages";
 import { TurnNavigator } from "@/components/chat/home/TurnNavigator";
 import SessionLoadingView from "@/components/chat/home/SessionLoadingView";
@@ -2397,6 +2398,7 @@ export default function ChatWorkspace({
                 />
               </div>
             </div>
+            <NimiMediaActions key={state.sessionId || "draft"} sessionId={state.sessionId || null} running={state.isStreaming} />
             <div className="flex w-full flex-1 min-h-0 flex-col">
               {sessionLoading || sessionLoadFailed ? (
                 <div className="flex w-full flex-1 min-h-0 justify-center px-6">

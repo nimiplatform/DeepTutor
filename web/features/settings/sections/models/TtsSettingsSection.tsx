@@ -2,7 +2,7 @@
 
 import { useTranslation } from "react-i18next";
 
-import { ServiceConfigEditor } from "@/components/settings/ServiceConfigEditor";
+import { NimiModelSettings } from "@/components/settings/NimiModelSettings";
 import { SettingsPageHeader } from "@/components/settings/shared";
 import { useVoiceAutoplayPreference } from "@/hooks/useVoiceAutoplay";
 
@@ -49,11 +49,11 @@ export default function TtsSettingsPage() {
       <SettingsPageHeader
         title={t("Text-to-Speech")}
         description={t(
-          "Read assistant replies aloud from the chat speaker button. Works with any OpenAI-compatible audio API — OpenAI, OpenRouter, Groq, SiliconFlow, Azure, or a local server.",
+          "Read assistant replies aloud from the chat speaker button. Choose the voice model in Nimi.",
         )}
       />
 
-      <ServiceConfigEditor service="tts" />
+      <NimiModelSettings capability="audio.synthesize" />
 
       <section>
         <div className="mb-3">

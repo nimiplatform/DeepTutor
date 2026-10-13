@@ -1472,11 +1472,20 @@ async def get_llm_options():
     return list_llm_options(get_model_catalog_service().load())
 
 
+def _require_nimi_catalog_unchanged(proposed: dict[str, Any], current: dict[str, Any]) -> None:
+    proposed_services = restore_catalog_secrets(proposed, current).get("services") or {}
+    current_services = current.get("services") or {}
+    for name in ("llm", "task", "embedding", "tts", "stt", "imagegen", "videogen"):
+        if proposed_services.get(name) != current_services.get(name):
+            raise HTTPException(status_code=400, detail="Configure AI models through Nimi App AIConfig.")
+
+
 @router.put("/catalog")
 async def update_catalog(payload: CatalogPayload):
     _require_settings_admin()
     service = get_model_catalog_service()
     current = service.load()
+    _require_nimi_catalog_unchanged(payload.catalog, current)
     restored = restore_catalog_secrets(payload.catalog, current)
     proposed = reconcile_codex_catalog_update(current, restored)
     with _runtime_catalog_write():
@@ -1494,6 +1503,8 @@ async def apply_catalog_service(payload: CatalogServicePayload):
     """
 
     _require_settings_admin()
+    if payload.service != "search":
+        raise HTTPException(status_code=400, detail="Configure AI models through Nimi App AIConfig.")
     service = get_model_catalog_service()
     current = service.load()
     proposed = deepcopy(current)
@@ -1555,6 +1566,8 @@ async def update_settings_draft(payload: SettingsDraftPayload):
         stored,
         get_model_catalog_service().load(),
     )
+    if isinstance(merged.get("catalog"), dict):
+        _require_nimi_catalog_unchanged(merged["catalog"], get_model_catalog_service().load())
     if is_empty_draft(merged):
         service.clear()
         return {"draft": None}
@@ -1591,6 +1604,7 @@ async def apply_catalog(payload: CatalogPayload | None = None):
             if isinstance(draft_catalog, dict)
             else current
         )
+    _require_nimi_catalog_unchanged(proposed, current)
     catalog = reconcile_codex_catalog_update(current, proposed)
     with _runtime_catalog_write():
         applied = service.apply(catalog)
@@ -1605,46 +1619,8 @@ async def apply_catalog(payload: CatalogPayload | None = None):
 
 @router.post("/fetch-models")
 async def fetch_models_from_provider(payload: FetchModelsPayload):
-    """List the model IDs an OpenAI-compatible provider exposes.
-
-    Thin HTTP surface over ``factory.fetch_models`` so the settings UI can
-    populate a model picker from ``base_url`` + ``api_key`` instead of making
-    the user type model IDs by hand.
-    """
     _require_settings_admin()
-    from deeptutor.services.llm.factory import fetch_models as fetch_llm_models
-
-    base_url = (payload.base_url or "").strip()
-    binding = (payload.binding or "").strip().lower() or "openai"
-    if not base_url and binding != "codebuddy":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="base_url is required for this provider.",
-        )
-
-    api_key = payload.api_key
-    api_format = (payload.api_format or "").strip().lower()
-    if payload.profile_id and (api_key == CATALOG_SECRET_MASK or not api_format):
-        service = get_model_catalog_service().load().get("services", {}).get(payload.service, {})
-        profile = next(
-            (item for item in service.get("profiles", []) if item.get("id") == payload.profile_id),
-            None,
-        )
-        if api_key == CATALOG_SECRET_MASK:
-            api_key = profile.get("api_key") if profile else None
-        if not api_format and profile:
-            api_format = str(profile.get("api_format") or "")
-
-    try:
-        model_ids = await fetch_llm_models(binding, base_url, api_key, api_format or "auto")
-    except Exception as exc:  # noqa: BLE001 — surface any provider error as 502
-        logger.exception("Failed to fetch models from %s", base_url)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Provider request failed: {exc}",
-        ) from exc
-
-    return {"models": [{"id": model_id, "name": model_id} for model_id in model_ids]}
+    raise HTTPException(status_code=400, detail="Choose AI models in Nimi App AIConfig.")
 
 
 @router.post("/model-capabilities")
@@ -1792,6 +1768,8 @@ async def update_enabled_tools(update: EnabledToolsUpdate):
 @router.post("/tests/{service}/start")
 async def start_service_test(service: str, payload: CatalogPayload | None = None):
     _require_settings_admin()
+    if service != "search":
+        raise HTTPException(status_code=400, detail="Manage and check AI models in Nimi.")
     catalog = None
     if payload is not None:
         catalog_service = get_model_catalog_service()
@@ -1866,6 +1844,7 @@ async def complete_tour(payload: TourCompletePayload | None = None):
         if payload and payload.catalog
         else current
     )
+    _require_nimi_catalog_unchanged(catalog, current)
     with _runtime_catalog_write():
         applied = service.apply(catalog)
     now = int(time.time())

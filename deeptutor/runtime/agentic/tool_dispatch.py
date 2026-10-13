@@ -653,6 +653,8 @@ async def execute_tool_call(
     parallel-dispatch path call this directly.
     """
     status_meta = retrieve_meta if retrieve_meta is not None else trace_meta
+    if tool_name in {"imagegen", "videogen"} and status_meta:
+        tool_args = {**tool_args, "_nimi_call_id": str(status_meta.get("call_id") or "")}
 
     async def _event_sink(
         event_type: str,

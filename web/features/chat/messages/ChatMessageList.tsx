@@ -978,11 +978,15 @@ export function PlayAudioButton({
   } = useVoiceAutoplay(conversationKey);
   const [state, setState] = useState<"idle" | "loading" | "playing">("idle");
   const [showPrompt, setShowPrompt] = useState(false);
+  const [speechError, setSpeechError] = useState<string | null>(null);
+  const speechRequest = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const urlRef = useRef<string | null>(null);
   const autoPlayedRef = useRef(false);
 
   const cleanup = useCallback(() => {
+    speechRequest.current?.abort();
+    speechRequest.current = null;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
@@ -994,19 +998,24 @@ export function PlayAudioButton({
   }, []);
 
   const play = useCallback(async () => {
+    cleanup();
+    const request = new AbortController(); speechRequest.current = request;
+    setSpeechError(null);
     setState("loading");
     try {
       const resp = await apiFetch(apiUrl("/api/voice/tts"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: content }),
+        signal: request.signal,
       });
       if (!resp.ok) {
-        cleanup();
-        setState("idle");
-        return;
+        const failure = await resp.json().catch(() => null);
+        throw new Error(failure?.detail || `Speech failed (HTTP ${resp.status}).`);
       }
       const blob = await resp.blob();
+      request.signal.throwIfAborted();
+      speechRequest.current = null;
       cleanup();
       const url = URL.createObjectURL(blob);
       urlRef.current = url;
@@ -1021,8 +1030,9 @@ export function PlayAudioButton({
         cleanup();
       };
       await audio.play();
-      setState("playing");
-    } catch {
+      if (audioRef.current === audio) setState("playing");
+    } catch (error) {
+      if (!request.signal.aborted) setSpeechError(error instanceof Error ? error.message : String(error));
       cleanup();
       setState("idle");
     }
@@ -1080,6 +1090,7 @@ export function PlayAudioButton({
           )}
         </button>
       </Tooltip>
+      {speechError && <span role="alert" className="ml-2 max-w-80 text-xs text-[var(--destructive)]">{speechError}</span>}
       {showPrompt && (
         <div className="absolute bottom-full left-0 z-30 mb-2 w-60 rounded-lg border border-[var(--border)] bg-[var(--card)] p-3 shadow-lg">
           <p className="text-[12px] leading-relaxed text-[var(--foreground)]">

@@ -119,7 +119,9 @@ class HostTransport:
             )
 
     async def events(self, operation: str, value):
-        if operation not in {"text.step", "embedding.batch"}:
+        if operation not in {"text.step", "embedding.batch", "media.config", "media.audio.begin",
+                             "media.audio.chunk", "media.audio.release", "media.submit", "media.lookup",
+                             "media.get", "media.cancel", "media.artifact"}:
             raise ValueError("Unsupported business operation")
         generation = _scope.get()
         if generation is None:

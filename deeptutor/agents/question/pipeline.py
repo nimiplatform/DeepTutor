@@ -1591,7 +1591,7 @@ class QuestionPipeline:
             mount_flags=self._mount_flags(context),
         )
         resolved = list(dict.fromkeys([*names, *self._pageindex_tool_names()]))
-        return drop_unconfigured_generation_tools(resolved)
+        return drop_unconfigured_generation_tools(resolved, context.metadata.get("nimi_media_ready", []))
 
     def _use_native_tools(self, context: UnifiedContext) -> bool:
         """Native tool calling is only worth enabling when (a) the binding /

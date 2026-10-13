@@ -1019,36 +1019,7 @@ def resolve_tts_runtime_config(
     *,
     service: ModelCatalogService | None = None,
 ) -> TTSConfig:
-    """Resolve the active text-to-speech config from the model catalog."""
-    catalog_service = service or get_model_catalog_service()
-    loaded = _load_catalog(catalog)
-    profile, model = _active_profile_and_model(loaded, catalog_service, "tts")
-    resolved_model = _as_str((model or {}).get("model"))
-    if not resolved_model:
-        raise ValueError("No active TTS model is configured. Set it in Settings > Voice.")
-
-    provider = _canonical_voice_provider(_as_str((profile or {}).get("binding")), TTS_PROVIDERS)
-    spec = TTS_PROVIDERS[provider]
-    api_base = _as_str((profile or {}).get("base_url")) or spec.default_api_base
-    api_key = _as_str((profile or {}).get("api_key"))
-    if not api_key and spec.is_local:
-        api_key = "sk-no-key-required"
-    voice = _as_str((model or {}).get("voice")) or spec.default_voice
-    response_format = _as_str((model or {}).get("response_format")) or "mp3"
-
-    return TTSConfig(
-        model=resolved_model,
-        provider_name=provider,
-        adapter=spec.adapter,
-        auth_style=spec.auth_style,
-        api_key=api_key,
-        base_url=api_base,
-        api_version=_as_str((profile or {}).get("api_version")) or None,
-        extra_headers=_to_headers((profile or {}).get("extra_headers")),
-        voice=voice,
-        response_format=response_format,
-        speed=_coerce_optional_float((model or {}).get("speed")),
-    )
+    raise ValueError("Media model configuration belongs to Nimi App AIConfig.")
 
 
 def resolve_stt_runtime_config(
@@ -1056,33 +1027,7 @@ def resolve_stt_runtime_config(
     *,
     service: ModelCatalogService | None = None,
 ) -> STTConfig:
-    """Resolve the active speech-to-text config from the model catalog."""
-    catalog_service = service or get_model_catalog_service()
-    loaded = _load_catalog(catalog)
-    profile, model = _active_profile_and_model(loaded, catalog_service, "stt")
-    resolved_model = _as_str((model or {}).get("model"))
-    if not resolved_model:
-        raise ValueError("No active STT model is configured. Set it in Settings > Voice.")
-
-    provider = _canonical_voice_provider(_as_str((profile or {}).get("binding")), STT_PROVIDERS)
-    spec = STT_PROVIDERS[provider]
-    api_base = _as_str((profile or {}).get("base_url")) or spec.default_api_base
-    api_key = _as_str((profile or {}).get("api_key"))
-    if not api_key and spec.is_local:
-        api_key = "sk-no-key-required"
-
-    return STTConfig(
-        model=resolved_model,
-        provider_name=provider,
-        adapter=spec.adapter,
-        request_style=spec.request_style,
-        auth_style=spec.auth_style,
-        api_key=api_key,
-        base_url=api_base,
-        api_version=_as_str((profile or {}).get("api_version")) or None,
-        extra_headers=_to_headers((profile or {}).get("extra_headers")),
-        language=_as_str((model or {}).get("language")) or None,
-    )
+    raise ValueError("Media model configuration belongs to Nimi App AIConfig.")
 
 
 def resolve_imagegen_runtime_config(
@@ -1090,40 +1035,7 @@ def resolve_imagegen_runtime_config(
     *,
     service: ModelCatalogService | None = None,
 ) -> ImagegenConfig:
-    """Resolve the active text-to-image config from the model catalog."""
-    catalog_service = service or get_model_catalog_service()
-    loaded = _load_catalog(catalog)
-    profile, model = _active_profile_and_model(loaded, catalog_service, "imagegen")
-    resolved_model = _as_str((model or {}).get("model"))
-    if not resolved_model:
-        raise ValueError(
-            "No active image-generation model is configured. "
-            "Set it in Settings > Media Generation > Image Generation."
-        )
-
-    provider = _canonical_generation_provider(
-        _as_str((profile or {}).get("binding")), IMAGEGEN_PROVIDERS
-    )
-    spec = IMAGEGEN_PROVIDERS[provider]
-    api_base = _as_str((profile or {}).get("base_url")) or spec.default_api_base
-    api_key = _as_str((profile or {}).get("api_key"))
-    if not api_key and spec.is_local:
-        api_key = "sk-no-key-required"
-
-    return ImagegenConfig(
-        model=resolved_model,
-        provider_name=provider,
-        adapter=spec.adapter,
-        auth_style=spec.auth_style,
-        api_key=api_key,
-        base_url=api_base,
-        api_version=_as_str((profile or {}).get("api_version")) or None,
-        extra_headers=_to_headers((profile or {}).get("extra_headers")),
-        size=_as_str((model or {}).get("size")),
-        quality=_as_str((model or {}).get("quality")),
-        style=_as_str((model or {}).get("style")),
-        response_format=_as_str((model or {}).get("response_format")),
-    )
+    raise ValueError("Media model configuration belongs to Nimi App AIConfig.")
 
 
 def resolve_videogen_runtime_config(
@@ -1131,39 +1043,7 @@ def resolve_videogen_runtime_config(
     *,
     service: ModelCatalogService | None = None,
 ) -> VideogenConfig:
-    """Resolve the active text-to-video config from the model catalog."""
-    catalog_service = service or get_model_catalog_service()
-    loaded = _load_catalog(catalog)
-    profile, model = _active_profile_and_model(loaded, catalog_service, "videogen")
-    resolved_model = _as_str((model or {}).get("model"))
-    if not resolved_model:
-        raise ValueError(
-            "No active video-generation model is configured. "
-            "Set it in Settings > Media Generation > Video Generation."
-        )
-
-    provider = _canonical_generation_provider(
-        _as_str((profile or {}).get("binding")), VIDEOGEN_PROVIDERS
-    )
-    spec = VIDEOGEN_PROVIDERS[provider]
-    api_base = _as_str((profile or {}).get("base_url")) or spec.default_api_base
-    api_key = _as_str((profile or {}).get("api_key"))
-    if not api_key and spec.is_local:
-        api_key = "sk-no-key-required"
-
-    return VideogenConfig(
-        model=resolved_model,
-        provider_name=provider,
-        adapter=spec.adapter,
-        auth_style=spec.auth_style,
-        api_key=api_key,
-        base_url=api_base,
-        api_version=_as_str((profile or {}).get("api_version")) or None,
-        extra_headers=_to_headers((profile or {}).get("extra_headers")),
-        aspect_ratio=_as_str((model or {}).get("aspect_ratio")),
-        duration=_as_str((model or {}).get("duration")),
-        resolution=_as_str((model or {}).get("resolution")),
-    )
+    raise ValueError("Media model configuration belongs to Nimi App AIConfig.")
 
 
 def _resolve_search_max_results(catalog: dict[str, Any], default: int = 5) -> int:

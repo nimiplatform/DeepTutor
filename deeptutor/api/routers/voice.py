@@ -8,11 +8,13 @@ may call it; it is not gated by per-user LLM grants.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 import io
 import logging
 import wave
 
-from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field
 
 from deeptutor.services.voice import (
@@ -76,14 +78,14 @@ def _pcm16_to_wav(audio: bytes, *, sample_rate: int, channels: int) -> bytes:
 
 
 @router.post("/tts")
-async def text_to_speech(payload: TTSRequest) -> Response:
+async def text_to_speech(payload: TTSRequest, request: Request) -> Response:
     """Synthesize ``text`` to audio using the active TTS provider."""
     try:
-        audio, content_type = await synthesize_speech(
+        audio, content_type = await while_connected(request, synthesize_speech(
             payload.text,
             voice=payload.voice,
             response_format=payload.format,
-        )
+        ))
     except ValueError as exc:  # missing/invalid configuration
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except VoiceProviderError as exc:
@@ -103,6 +105,7 @@ async def text_to_speech(payload: TTSRequest) -> Response:
 
 @router.post("/stt")
 async def speech_to_text(
+    request: Request,
     file: UploadFile = File(...),
     language: str | None = Form(default=None),
 ) -> dict[str, str]:
@@ -116,15 +119,31 @@ async def speech_to_text(
             detail="Audio exceeds the 25 MB limit.",
         )
     try:
-        text = await transcribe_audio(
+        text = await while_connected(request, transcribe_audio(
             audio,
             filename=file.filename or "audio.webm",
             content_type=file.content_type or "application/octet-stream",
             language=language,
-        )
+        ))
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except VoiceProviderError as exc:
         logger.warning("STT provider error: %s", exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     return {"text": text}
+
+
+async def while_connected(request: Request, operation):
+    """An abandoned microphone/read-aloud request cancels its admitted Job."""
+    task = asyncio.create_task(operation)
+    try:
+        while not task.done():
+            if await request.is_disconnected():
+                raise HTTPException(status_code=499, detail="Media request was canceled.")
+            await asyncio.wait({task}, timeout=0.2)
+        return await task
+    finally:
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task

@@ -13,6 +13,10 @@ app_access:
 capability_contract_refs:
   - text.generate
   - text.embed
+  - audio.synthesize
+  - audio.transcribe
+  - image.generate
+  - video.generate
 required_standardized_feature_refs: []
 storage_policy:
   kind: app-owned-os-storage

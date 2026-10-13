@@ -1,5 +1,7 @@
 # 1.6.14 — Windows candidate (unreleased)
 
+The current source also moves the existing read-aloud, microphone transcription and image/video chat tools to Nimi model configuration and protected Jobs. Media transfer is chunked, and conversation-backed task recovery observes the original submission rather than repeating generation. The old App media-provider configuration and direct execution are closed. This media source checkpoint passes 14 Node tests, 50 Python tests and Host/frontend typechecks; production packaging and real media acceptance remain NOT-VERIFIED. Previously generated packages do not contain these changes.
+
 Adds the Windows production target and correct executable/venv paths. The App-owned worker uses one UTF-8 stdin/stdout protocol on both platforms, and shutdown terminates the exact owned Windows child tree. Python setup, renderer builds and guarded development use portable entry points. Public SDK 0.21.0, Kit/native 0.19.3 and App Tools 0.12.2 are used. The real frozen Windows backend passed authenticated HTTP, origin rejection and Chinese notebook persistence checks. Supervised MiMo learning chat passed; Catalog installation of this candidate remains NOT-VERIFIED.
 
 # Nimi release 1.6.13 — Packaged knowledge indexing

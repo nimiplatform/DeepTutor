@@ -2,7 +2,7 @@
 
 import { useTranslation } from "react-i18next";
 
-import { ServiceConfigEditor } from "@/components/settings/ServiceConfigEditor";
+import { NimiModelSettings } from "@/components/settings/NimiModelSettings";
 import { SettingsPageHeader } from "@/components/settings/shared";
 
 export default function ImageGenSettingsPage() {
@@ -12,10 +12,10 @@ export default function ImageGenSettingsPage() {
       <SettingsPageHeader
         title={t("Image Generation")}
         description={t(
-          "Text-to-image model used by the chat 'imagegen' tool. Works with any OpenAI-compatible /images/generations API — OpenAI, Volcengine Seedream, or compatible gateways.",
+          "Choose the Nimi image model used by the chat image-generation tool.",
         )}
       />
-      <ServiceConfigEditor service="imagegen" />
+      <NimiModelSettings capability="image.generate" />
     </div>
   );
 }

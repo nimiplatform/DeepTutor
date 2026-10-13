@@ -17,27 +17,9 @@ GENERATION_TOOL_SERVICES: dict[str, str] = {
 }
 
 
-def drop_unconfigured_generation_tools(tools: list[str]) -> list[str]:
-    """Hide generation tools that cannot succeed with current settings."""
-
-    present = [name for name in tools if name in GENERATION_TOOL_SERVICES]
-    if not present:
-        return tools
-    try:
-        from deeptutor.services.config.model_catalog import get_model_catalog_service
-
-        service = get_model_catalog_service()
-        catalog = service.load()
-        configured = {
-            name
-            for name in present
-            if (service.get_active_model(catalog, GENERATION_TOOL_SERVICES[name]) or {}).get(
-                "model"
-            )
-        }
-    except Exception:
-        logger.debug("generation-tool config probe failed; dropping them", exc_info=True)
-        configured = set()
+def drop_unconfigured_generation_tools(tools: list[str], ready: list[str] = ()) -> list[str]:
+    """Mount media tools only from this turn's public Nimi configuration read."""
+    configured = {name for name, capability in {"imagegen": "image.generate", "videogen": "video.generate"}.items() if capability in ready}
     return [name for name in tools if name not in GENERATION_TOOL_SERVICES or name in configured]
 
 
@@ -100,6 +82,9 @@ def bind_workspace_tool_runtime(
         return kwargs
 
     if tool_name in GENERATION_TOOL_SERVICES and task_dir is not None:
+        kwargs["_nimi_session_id"] = context.session_id
+        kwargs["_nimi_turn_id"] = context.runtime.turn_id or str(context.metadata.get("turn_id") or "")
+        kwargs["_nimi_logical_output"] = workspace.logical_output_dir if workspace else ""
         media_dir = task_dir / "media"
         media_dir.mkdir(parents=True, exist_ok=True)
         kwargs["_workspace_dir"] = str(media_dir)

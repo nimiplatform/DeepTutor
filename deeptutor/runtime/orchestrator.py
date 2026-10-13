@@ -134,6 +134,13 @@ class ChatOrchestrator:
             status = "completed"
             terminal_error_metadata: dict[str, Any] = {}
             try:
+                from deeptutor.nimi.media import ready_capabilities
+                try:
+                    context.metadata["nimi_media_ready"] = list(await ready_capabilities())
+                except Exception:
+                    # Missing media configuration never makes text appear ready
+                    # or prevents independent tutoring work.
+                    context.metadata["nimi_media_ready"] = []
                 await capability.run(context, bus)
             except Exception as exc:
                 status = "failed"

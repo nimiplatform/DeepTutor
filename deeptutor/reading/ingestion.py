@@ -511,7 +511,7 @@ class ReadingIngestionService:
             )
         display_name = manifest.filename
         stem = Path(display_name).stem
-        missing = _probe_stt_configuration() if self._probes_stt else ""
+        missing = await _probe_stt_configuration() if self._probes_stt else ""
         if missing:
             # Check before spending ffmpeg on a file that cannot be transcribed,
             # and say which setting is missing rather than reporting a generic
@@ -529,8 +529,8 @@ class ReadingIngestionService:
             for index, (start, end, audio) in enumerate(chunks, start=1):
                 spoken = await self._transcriber(
                     audio,
-                    filename=f"{stem}-{index:04d}.mp3",
-                    content_type="audio/mpeg",
+                    filename=f"{stem}-{index:04d}.wav",
+                    content_type="audio/wav",
                     language=language,
                 )
                 cues.extend(_rebase_cues(spoken, start, end))
@@ -980,7 +980,7 @@ def _preferred_bilibili_subtitle(
     return min(candidates, key=score)
 
 
-def _probe_stt_configuration() -> str:
+async def _probe_stt_configuration() -> str:
     """Why speech-to-text cannot run, or "" when it can.
 
     Asked before ffmpeg touches the file: without a provider the work is
@@ -988,9 +988,10 @@ def _probe_stt_configuration() -> str:
     something the user can act on, unlike a generic transcription failure.
     """
     try:
-        from deeptutor.services.config.provider_runtime import resolve_stt_runtime_config
+        from deeptutor.nimi.media import ready_capabilities
 
-        resolve_stt_runtime_config()
+        if "audio.transcribe" not in await ready_capabilities():
+            return "Choose a speech-to-text model in Nimi models."
     except Exception as exc:
         return str(exc) or "No speech-to-text model is configured."
     return ""
@@ -1003,7 +1004,7 @@ async def _chunk_media_audio(path: Path) -> list[tuple[float, float, bytes]]:
     def run() -> list[tuple[float, float, bytes]]:
         tmp_dir = Path(tempfile.mkdtemp(prefix="dt-reading-audio-"))
         try:
-            pattern = tmp_dir / "chunk-%04d.mp3"
+            pattern = tmp_dir / "chunk-%04d.wav"
             listing = tmp_dir / "segments.csv"
             command = [
                 "ffmpeg",
@@ -1017,7 +1018,7 @@ async def _chunk_media_audio(path: Path) -> list[tuple[float, float, bytes]]:
                 "-ac",
                 "1",
                 "-ar",
-                "16000",
+                "24000",
                 "-f",
                 "segment",
                 "-segment_time",
@@ -1030,7 +1031,7 @@ async def _chunk_media_audio(path: Path) -> list[tuple[float, float, bytes]]:
                 "-segment_list_type",
                 "csv",
                 "-c:a",
-                "libmp3lame",
+                "pcm_s16le",
                 str(pattern),
             ]
             completed = subprocess.run(
@@ -1040,7 +1041,7 @@ async def _chunk_media_audio(path: Path) -> list[tuple[float, float, bytes]]:
                 raise ReadingError(completed.stderr.strip() or "ffmpeg could not read this media")
             spans = _segment_list_spans(listing)
             chunks: list[tuple[float, float, bytes]] = []
-            for index, chunk in enumerate(sorted(tmp_dir.glob("chunk-*.mp3"))):
+            for index, chunk in enumerate(sorted(tmp_dir.glob("chunk-*.wav"))):
                 if not chunk.stat().st_size:
                     continue
                 start, end = spans.get(

@@ -2,7 +2,7 @@
 
 import { useTranslation } from "react-i18next";
 
-import { ServiceConfigEditor } from "@/components/settings/ServiceConfigEditor";
+import { NimiModelSettings } from "@/components/settings/NimiModelSettings";
 import { SettingsPageHeader } from "@/components/settings/shared";
 
 export default function VideoGenSettingsPage() {
@@ -12,10 +12,10 @@ export default function VideoGenSettingsPage() {
       <SettingsPageHeader
         title={t("Video Generation")}
         description={t(
-          "Text-to-video model used by the chat 'videogen' tool. Rendering is asynchronous and may take a minute or more. Uses async task providers like Volcengine Seedance.",
+          "Choose the Nimi video model used by the chat video-generation tool. Completed videos are saved in the conversation workspace.",
         )}
       />
-      <ServiceConfigEditor service="videogen" />
+      <NimiModelSettings capability="video.generate" />
     </div>
   );
 }

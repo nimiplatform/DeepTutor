@@ -12,7 +12,7 @@ export default function ConnectionsSettingsPage() {
       <SettingsPageHeader
         title={t("Connections")}
         description={t(
-          "Text and retrieval models are managed by Nimi for this app. Configure search credentials in Search settings.",
+          "Text, retrieval, speech, image and video models are managed by Nimi for this app. Configure search credentials in Search settings.",
         )}
       />
       <NimiModelSettings />

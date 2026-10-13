@@ -33,7 +33,7 @@ export function NimiModelSettings({ capability = "text.generate" }: { capability
       <div className="nimi-model-settings">
         <ModelConfigAIConfigSurface
           context={{ owner: "app-ai-config", appId: DEEPTUTOR_APP_ID }}
-          capabilityContracts={["text.generate", "text.embed"]}
+          capabilityContracts={["text.generate", "text.embed", "audio.synthesize", "audio.transcribe", "image.generate", "video.generate"]}
           initialCapabilityContract={capability}
           capabilities={snapshot?.config ? snapshot.config.capabilities as never : snapshot ? null : undefined}
           revision={snapshot?.revision}

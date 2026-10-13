@@ -28,6 +28,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+@router.get("/{session_id}/nimi-media")
+async def list_nimi_media_actions(session_id: str):
+    session = await get_session_store().get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"actions": [value for key, value in (session.get("preferences") or {}).items()
+                        if key.startswith("nimi_media_") and isinstance(value, dict)]}
+
+
+@router.post("/{session_id}/nimi-media/{request_id}")
+async def recover_nimi_media_action(session_id: str, request_id: str, cancel: bool = False):
+    from deeptutor.nimi.media import recover_action
+    try:
+        return await recover_action(session_id, request_id, cancel=cancel)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 class SessionRenameRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=100)
 

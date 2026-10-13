@@ -7,6 +7,7 @@ import {
   type NimiGenerateTextRequest,
 } from '@nimiplatform/sdk/ai';
 import type { NimiElectronAppBusinessServices } from '@nimiplatform/kit/shell/electron/main';
+import { DeepTutorBusinessMedia } from './business-media.js';
 
 const MAX_FRAME_BYTES = 2 * 1024 * 1024;
 const encode = (value: unknown) => JSON.stringify(value, (_key, item) => item instanceof Uint8Array ? Buffer.from(item).toString('base64') : item) + '\n';
@@ -25,6 +26,7 @@ export class DeepTutorBusinessAI {
   private pipe: Duplex | undefined;
   private readonly active = new Map<string, AbortController>();
   private services: NimiElectronAppBusinessServices | undefined;
+  private readonly media = new DeepTutorBusinessMedia();
   constructor(private readonly failureDirectory?: string) {}
 
   bind(services: NimiElectronAppBusinessServices): void { this.services = services; }
@@ -36,11 +38,11 @@ export class DeepTutorBusinessAI {
     pipe.on('data', (chunk: Buffer) => {
       try {
         buffered += decoder.decode(chunk, { stream: true });
-        if (Buffer.byteLength(buffered, 'utf8') > MAX_FRAME_BYTES) throw new Error('Business request exceeds the frame limit.');
         let newline: number;
         while ((newline = buffered.indexOf('\n')) >= 0) {
           const line = buffered.slice(0, newline);
           buffered = buffered.slice(newline + 1);
+          if (Buffer.byteLength(line, 'utf8') > MAX_FRAME_BYTES) throw new Error('Business request exceeds the frame limit.');
           const frame = JSON.parse(line);
           if (frame.v !== 1 || typeof frame.id !== 'string' || frame.id.length > 80) throw new Error('Invalid business envelope.');
           if (frame.kind === 'cancel') {
@@ -49,6 +51,7 @@ export class DeepTutorBusinessAI {
             void this.request(frame);
           } else throw new Error('Unknown business envelope.');
         }
+        if (Buffer.byteLength(buffered, 'utf8') > MAX_FRAME_BYTES) throw new Error('Business request exceeds the frame limit.');
       } catch (error) {
         this.invalidate();
         pipe.destroy(error instanceof Error ? error : new Error('Invalid business stream.'));
@@ -60,6 +63,7 @@ export class DeepTutorBusinessAI {
 
   invalidate(): void {
     this.services = undefined;
+    this.media.clear();
     this.generation += 1;
     for (const controller of this.active.values()) controller.abort();
     this.active.clear();
@@ -124,6 +128,8 @@ export class DeepTutorBusinessAI {
         guard();
         if (result.output.type !== 'text-embed') throw new Error('Unexpected embedding output.');
         emit('result', result.output);
+      } else if (frame.operation.startsWith('media.')) {
+        emit('result', await this.media.request(frame.operation, frame.input, services, guard));
       } else {
         throw new Error('Unsupported DeepTutor business operation.');
       }
