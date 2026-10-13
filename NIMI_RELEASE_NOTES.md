@@ -1,11 +1,13 @@
-# Unreleased — Windows knowledge-index startup
+# 1.6.18 — Windows knowledge-index startup
 
 Loads the required FAISS native library before starting the Host's background
 stdin reader on Windows. The installed 1.6.17 worker stalled inside FAISS's
 OpenBLAS DLL import after document embedding, then reported an indexing timeout.
 A real subprocess regression reproduces the hang before this change and completes
 native vector insertion/search afterward. All 15 Nimi Node tests and 55 Python
-tests pass.
+tests pass. The rebuilt frozen Windows backend also passes authenticated startup
+and Chinese notebook persistence. Local production packaging completes with the
+isolated Next resource startup check passing.
 
 On Nimi 0.2.3, the existing Desktop-supervised development registration passed
 the real workflow through its own loopback CDP: upload the 696-byte Chinese Q58
