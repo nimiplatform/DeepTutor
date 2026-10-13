@@ -55,7 +55,7 @@ test("TypeScript includes canonical source roots and no named build output", () 
   assert.equal(include.includes("**/*.ts"), false);
   assert.equal(include.includes("**/*.tsx"), false);
   assert.equal(
-    include.some((entry) => /^\.next-[^/]+\//.test(entry)),
+    include.some((entry) => /^\.next-[^/]+\//.test(entry) && !entry.startsWith(".next-nimi/")),
     false,
     "named one-off Next.js build directories must not enter typecheck",
   );
@@ -65,8 +65,8 @@ test("TypeScript includes canonical source roots and no named build output", () 
 test("Next's checked-in environment declaration uses the canonical dev cache", () => {
   const nextEnv = readFileSync(path.resolve(webRoot, "next-env.d.ts"), "utf8");
 
-  assert.match(nextEnv, /import "\.\/\.next\/dev\/types\/routes\.d\.ts";/);
-  assert.doesNotMatch(nextEnv, /\.next-[^/]+\//);
+  assert.match(nextEnv, /import "\.\/\.next-nimi\/dev\/types\/routes\.d\.ts";/);
+  assert.doesNotMatch(nextEnv, /\.next-nimi-production\//);
 });
 
 test("package exposes deterministic frontend checks", () => {

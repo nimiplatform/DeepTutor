@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { createRequire } from "node:module";
 
 const webRoot = process.cwd();
+const require = createRequire(path.join(webRoot, "package.json"));
 const read = (...parts: string[]) =>
   readFileSync(path.join(webRoot, ...parts), "utf8");
 
@@ -24,11 +26,6 @@ test("the build publishes PDF.js decoder assets for standalone deployments", () 
   assert.equal(scripts.predev, "node ./scripts/copy-pdfjs-assets.mjs");
   assert.equal(scripts["predev:turbo"], "node ./scripts/copy-pdfjs-assets.mjs");
 
-  const source = read("scripts", "copy-pdfjs-assets.mjs");
-  assert.match(source, /node_modules.*pdfjs-dist.*wasm/);
-  assert.match(source, /public.*pdfjs.*wasm/);
-  assert.match(source, /cpSync\(sourceDir, targetDir, \{ recursive: true \}\)/);
-
   const result = spawnSync(
     process.execPath,
     ["scripts/copy-pdfjs-assets.mjs"],
@@ -44,6 +41,11 @@ test("the build publishes PDF.js decoder assets for standalone deployments", () 
     assert.ok(
       existsSync(path.join(webRoot, "public", "pdfjs", "wasm", name)),
       name,
+    );
+    assert.deepEqual(
+      readFileSync(path.join(webRoot, "public", "pdfjs", "wasm", name)),
+      readFileSync(path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "wasm", name)),
+      `published decoder must match the installed dependency: ${name}`,
     );
   }
 });
@@ -96,9 +98,9 @@ test("the build wrapper restores every generated checked-in input", () => {
   );
 });
 
-test("the standalone bundle is rooted where the Python launcher expects it", () => {
-  const source = read("next.config.js");
-  assert.match(source, /output:\s*"standalone"/);
-  assert.match(source, /outputFileTracingRoot:\s*__dirname/);
-  assert.match(source, /tsconfigPath:\s*process\.env\.DEEPTUTOR_NEXT_TSCONFIG/);
+test("the standalone bundle follows the Nimi workspace root", () => {
+  const config = require(path.join(webRoot, "next.config.js"));
+  assert.equal(config.output, "standalone");
+  assert.equal(config.outputFileTracingRoot, path.resolve(webRoot, ".."));
+  assert.equal(config.typescript.tsconfigPath, process.env.DEEPTUTOR_NEXT_TSCONFIG || "tsconfig.json");
 });

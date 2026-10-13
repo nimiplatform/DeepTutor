@@ -1,13 +1,14 @@
-import { readdirSync, rmSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const webRoot = path.resolve(__dirname, "..");
-const distRoot = path.join(webRoot, "dist", "node-tests");
-const testRoot = path.join(distRoot, "tests");
+const testRoot = path.join(webRoot, "tests");
+const require = createRequire(import.meta.url);
 
 function run(cmd, args) {
   const result = spawnSync(cmd, args, {
@@ -22,7 +23,7 @@ function run(cmd, args) {
 
 function collectTests(dir) {
   const entries = readdirSync(dir)
-    .map((name) => path.join(dir, name))
+    .map(name => path.join(dir, name))
     .sort((a, b) => a.localeCompare(b));
   const files = [];
   for (const entry of entries) {
@@ -31,30 +32,27 @@ function collectTests(dir) {
       files.push(...collectTests(entry));
       continue;
     }
-    if (entry.endsWith(".test.js")) {
+    if (entry.endsWith(".test.ts")) {
       files.push(entry);
     }
   }
   return files;
 }
 
-rmSync(distRoot, { recursive: true, force: true });
-
 run(process.execPath, [
-  path.join(webRoot, "node_modules", "typescript", "bin", "tsc"),
-  "-p",
-  "tsconfig.node-tests.json",
+  path.join(webRoot, "scripts", "typecheck.mjs"),
 ]);
 
 const testFiles = collectTests(testRoot);
 if (testFiles.length === 0) {
-  console.error("No compiled node tests found.");
+  console.error("No node tests found.");
   process.exit(1);
 }
 
 run(process.execPath, [
-  "-r",
-  "./scripts/register-node-test-aliases.cjs",
+  require.resolve("tsx/cli"),
+  "--tsconfig",
+  "tsconfig.json",
   "--test",
   ...testFiles,
 ]);

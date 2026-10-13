@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { configureTypeIncludes } from "./next-type-includes.mjs";
@@ -12,14 +13,7 @@ const webRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const nextBin = path.join(
-  webRoot,
-  "node_modules",
-  "next",
-  "dist",
-  "bin",
-  "next",
-);
+const nextBin = createRequire(import.meta.url).resolve("next/dist/bin/next");
 
 // Next 16 rewrites these checked-in generated inputs when it type-checks. The
 // launcher used to repair them only after `npm run build` returned; moving the

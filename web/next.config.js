@@ -186,14 +186,10 @@ const nextConfig = {
   },
 
   // Webpack configuration (used for production builds - next build)
-  webpack: (config) => {
-    const path = require("path");
+  webpack: config => {
     config.resolve.alias = {
       ...config.resolve.alias,
-      cytoscape: path.resolve(
-        __dirname,
-        "node_modules/cytoscape/dist/cytoscape.cjs.js",
-      ),
+      cytoscape: require.resolve("cytoscape"),
     };
     return config;
   },

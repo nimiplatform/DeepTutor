@@ -3,19 +3,14 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { removeNextTypeIncludes } from "./next-type-includes.mjs";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const tsconfigPath = path.join(webRoot, "tsconfig.json");
-const tscBin = path.join(
-  webRoot,
-  "node_modules",
-  "typescript",
-  "bin",
-  "tsc",
-);
+const tscBin = createRequire(import.meta.url).resolve("typescript/bin/tsc");
 const original = readFileSync(tsconfigPath, "utf8");
 const isolatedTsconfigPath = path.join(
   webRoot,

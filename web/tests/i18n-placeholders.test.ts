@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-// Resolve <web>/locales by walking up from the compiled test location
-// (dist/node-tests/tests/*.js) until we find the locales directory.
+// Resolve <web>/locales from the source test location.
 function findLocalesRoot(): string {
   let dir = __dirname;
   for (let i = 0; i < 8; i++) {

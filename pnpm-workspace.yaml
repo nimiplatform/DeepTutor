@@ -1,5 +1,9 @@
 packages:
   - .
   - web
+# Windows packages materialize files rather than pnpm junctions. Trace Next
+# from this layout so dereferencing cannot move it away from its dependencies.
+nodeLinker: hoisted
+
 overrides:
   'epubjs>@xmldom/xmldom': ^0.9.12

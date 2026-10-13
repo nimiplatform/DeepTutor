@@ -1,12 +1,18 @@
 import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const webRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const sourceDir = path.join(webRoot, "node_modules", "pdfjs-dist", "wasm");
+const sourceDir = path.join(
+  path.dirname(
+    createRequire(import.meta.url).resolve("pdfjs-dist/package.json"),
+  ),
+  "wasm",
+);
 const targetDir = path.join(webRoot, "public", "pdfjs", "wasm");
 
 /**

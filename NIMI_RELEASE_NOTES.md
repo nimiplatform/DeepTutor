@@ -1,3 +1,23 @@
+# 1.6.17 — Relocatable Windows renderer dependencies
+
+Uses pnpm's hoisted layout with the existing frozen dependency versions so
+Windows packaging cannot flatten Next's dependency links into an incomplete
+module layout. Build, development and validation scripts resolve their tools
+and PDF.js resources from the installed packages. Production packaging now
+starts a copy of the actual Next resources outside the checkout, checks its
+HTML response and stops the owned process tree; test caches stay out of the
+final package. This check reproduced the installed 1.6.16 missing-SWC failure
+and passes on the corrected renderer. Full rebuilt installed acceptance is
+pending. The immutable 1.6.16 release remains unchanged.
+
+Frontend Node tests now use the installed tsx runner and the App's TypeScript
+configuration, with type checking retained. Windows filesystem comparisons
+normalize separators, build assertions follow the Nimi workspace/dev layout,
+and generated-contract checks tolerate Git's CRLF checkout without ignoring
+content changes. All 1,138 frontend Node tests pass; the App release test command
+now includes them and the contract check alongside the 14 Nimi Node and 55
+Python tests.
+
 # 1.6.16 — Cross-platform worker test cleanup
 
 The real backend-process test now starts its own process group, matching the

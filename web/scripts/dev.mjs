@@ -25,11 +25,12 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const HEAP_CEILING_MB = 4096;
 const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const NEXT_BIN = path.join(WEB_DIR, "node_modules", "next", "dist", "bin", "next");
+const NEXT_BIN = createRequire(import.meta.url).resolve("next/dist/bin/next");
 
 /** Memory this process may actually use, in MB — cgroup limit included so the
  *  container dev stage sizes to its own budget rather than the host's RAM. */

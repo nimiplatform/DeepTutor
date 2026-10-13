@@ -69,6 +69,7 @@
     }
   },
   "devDependencies": {
+    "tsx": "4.23.13",
     "@playwright/test": "^1.53.2",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.1",

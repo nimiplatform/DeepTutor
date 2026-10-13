@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { packager } from '@electron/packager';
 import { build } from 'esbuild';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { verifyNextStandalone } from './verify-next-standalone.mjs';
 
 const APP_EXECUTABLE_NAME = "deeptutor-shell";
 const APP_PRODUCT_NAME = "DeepTutor";
@@ -170,6 +171,7 @@ try {
       const packagedWeb = path.join(resourcesPath, 'deeptutor-web');
       await rm(packagedWeb, { recursive: true, force: true });
       await cp(webResources, packagedWeb, { recursive: true, dereference: !MACOS_BUILD, verbatimSymlinks: MACOS_BUILD });
+      await verifyNextStandalone(packagedWeb);
     }],
     prune: false,
     quiet: true,

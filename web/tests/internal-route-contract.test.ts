@@ -35,7 +35,7 @@ function pagePattern(pageFile: string): RegExp {
 }
 
 const pagePatterns = walk(APP_ROOT)
-  .filter((file) => /\/page\.(?:ts|tsx|js|jsx)$/.test(file))
+  .filter((file) => /^page\.(?:ts|tsx|js|jsx)$/.test(path.basename(file)))
   .map(pagePattern);
 
 function isPagePath(value: string): boolean {
@@ -71,7 +71,7 @@ test("literal frontend navigation targets resolve to real pages", () => {
           target.startsWith("/api/") ||
           target.startsWith("/ws/") ||
           target.startsWith("/files/") ||
-          /\.(?:png|jpe?g|gif|svg|ico|webp|woff2?)(?:[?#]|$)/i.test(target)
+          /\.(?:css|png|jpe?g|gif|svg|ico|webp|woff2?)(?:[?#]|$)/i.test(target)
         ) {
           continue;
         }

@@ -1,7 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { format } from "prettier";
 
@@ -11,11 +18,21 @@ const schemaRoot = path.join(webRoot, "contracts", "schema");
 const generatedRoot = path.join(webRoot, "contracts", "generated");
 const check = process.argv.includes("--check");
 const temporaryRoot = mkdtempSync(path.join(tmpdir(), "deeptutor-contracts-"));
+const require = createRequire(import.meta.url);
+
+function packageBin(name, command) {
+  const manifestPath = require.resolve(`${name}/package.json`);
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const executable = manifest.bin?.[command];
+  if (typeof executable !== "string")
+    throw new Error(`${name} does not declare ${command}`);
+  return path.resolve(path.dirname(manifestPath), executable);
+}
 
 const outputs = [
   {
     name: "api.ts",
-    command: path.join(webRoot, "node_modules", "openapi-typescript", "bin", "cli.js"),
+    command: packageBin("openapi-typescript", "openapi-typescript"),
     args: [
       path.join(schemaRoot, "openapi.json"),
       "--output",
@@ -27,14 +44,7 @@ const outputs = [
   },
   {
     name: "turn-protocol.ts",
-    command: path.join(
-      webRoot,
-      "node_modules",
-      "json-schema-to-typescript",
-      "dist",
-      "src",
-      "cli.js",
-    ),
+    command: packageBin("json-schema-to-typescript", "json2ts"),
     args: [
       "--input",
       path.join(schemaRoot, "turn-protocol.json"),
@@ -51,10 +61,14 @@ let hasDrift = false;
 
 try {
   for (const output of outputs) {
-    const result = spawnSync(process.execPath, [output.command, ...output.args], {
-      cwd: webRoot,
-      encoding: "utf8",
-    });
+    const result = spawnSync(
+      process.execPath,
+      [output.command, ...output.args],
+      {
+        cwd: webRoot,
+        encoding: "utf8",
+      },
+    );
     if (result.status !== 0) {
       process.stderr.write(result.stderr || result.stdout);
       process.exit(result.status ?? 1);
@@ -63,7 +77,9 @@ try {
     const target = path.join(generatedRoot, output.name);
     const generated = await format(
       readFileSync(path.join(temporaryRoot, output.name), "utf8"),
-      { filepath: target },
+      {
+        filepath: target,
+      },
     );
     let current = null;
     try {
@@ -72,10 +88,13 @@ try {
       if (error.code !== "ENOENT") throw error;
     }
 
-    if (current === generated) continue;
+    // Git can check these text files out with CRLF on Windows.
+    if (current?.replace(/\r\n/g, "\n") === generated.replace(/\r\n/g, "\n")) continue;
     hasDrift = true;
     if (check) {
-      console.error(`Generated contract is stale: contracts/generated/${output.name}`);
+      console.error(
+        `Generated contract is stale: contracts/generated/${output.name}`,
+      );
       continue;
     }
     mkdirSync(generatedRoot, { recursive: true });
