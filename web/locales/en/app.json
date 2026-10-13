@@ -4076,5 +4076,20 @@
   "saved": "saved",
   "canceled": "canceled",
   "timeout": "timeout",
-  "Text, retrieval, speech, image and video models are managed by Nimi for this app. Configure search credentials in Search settings.": "Text, retrieval, speech, image and video models are managed by Nimi for this app. Configure search credentials in Search settings."
+  "Text, retrieval, speech, image and video models are managed by Nimi for this app. Configure search credentials in Search settings.": "Text, retrieval, speech, image and video models are managed by Nimi for this app. Configure search credentials in Search settings.",
+  "Read-aloud voice": "Read-aloud voice",
+  "Choose a voice": "Choose a voice",
+  "Refresh voices": "Refresh voices",
+  "Voices could not be loaded.": "Voices could not be loaded.",
+  "The voice choice could not be saved.": "The voice choice could not be saved.",
+  "readiness.detail.nimi_model_unavailable": "the selected Nimi model is unavailable; review Nimi models",
+  "mediaTask.status.submitting": "Submission being checked",
+  "mediaTask.status.submitted": "Submitted",
+  "mediaTask.status.queued": "Queued",
+  "mediaTask.status.running": "Generating",
+  "mediaTask.status.completed": "Ready to save",
+  "mediaTask.status.saved": "Saved",
+  "mediaTask.status.canceled": "Canceled",
+  "mediaTask.status.timeout": "Timed out",
+  "mediaTask.status.failed": "Failed"
 }

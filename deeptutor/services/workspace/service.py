@@ -32,6 +32,17 @@ _MAX_SEARCH_SCAN_ENTRIES = 10_000
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+def _windows_io_path(path: Path) -> Path:
+    """Private publication files need Win32 extended paths without changing
+    the canonical workspace root or the ids derived from that root."""
+    if os.name != "nt":
+        return path
+    absolute = os.path.abspath(path)
+    if absolute.startswith("\\\\?\\"):
+        return Path(absolute)
+    return Path("\\\\?\\UNC\\" + absolute[2:] if absolute.startswith("\\\\") else "\\\\?\\" + absolute)
+
+
 class WorkspaceError(ValueError):
     """A workspace path, binding, or operation is not allowed."""
 
@@ -390,16 +401,16 @@ class ContentWorkspaceService:
         root = presentations / binding.workspace_id
         if create:
             for candidate in (base, presentations, root):
-                if candidate.is_symlink():
+                if _windows_io_path(candidate).is_symlink():
                     raise WorkspaceError(
                         "The private workspace presentation path cannot contain symbolic links."
                     )
-                ensure_private_directory(candidate)
+                ensure_private_directory(_windows_io_path(candidate))
         try:
-            root.resolve().relative_to(base.resolve())
+            _windows_io_path(root).resolve().relative_to(_windows_io_path(base).resolve())
         except ValueError as exc:
             raise WorkspaceError("The private workspace presentation path is invalid.") from exc
-        return root
+        return _windows_io_path(root)
 
     @staticmethod
     def _walk_workspace(

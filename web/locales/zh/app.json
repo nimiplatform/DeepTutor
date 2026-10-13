@@ -4076,5 +4076,20 @@
   "saved": "已保存",
   "canceled": "已取消",
   "timeout": "已超时",
-  "Text, retrieval, speech, image and video models are managed by Nimi for this app. Configure search credentials in Search settings.": "本应用的文本、检索、语音、图像与视频模型均由 Nimi 管理。搜索服务凭据请在搜索设置中配置。"
+  "Text, retrieval, speech, image and video models are managed by Nimi for this app. Configure search credentials in Search settings.": "本应用的文本、检索、语音、图像与视频模型均由 Nimi 管理。搜索服务凭据请在搜索设置中配置。",
+  "Read-aloud voice": "朗读声音",
+  "Choose a voice": "选择声音",
+  "Refresh voices": "刷新声音列表",
+  "Voices could not be loaded.": "无法加载声音列表。",
+  "The voice choice could not be saved.": "无法保存声音选择。",
+  "readiness.detail.nimi_model_unavailable": "所选 Nimi 模型尚不可用，请检查 Nimi 模型设置",
+  "mediaTask.status.submitting": "提交结果待确认",
+  "mediaTask.status.submitted": "已提交",
+  "mediaTask.status.queued": "排队中",
+  "mediaTask.status.running": "生成中",
+  "mediaTask.status.completed": "生成完成，待保存",
+  "mediaTask.status.saved": "已保存",
+  "mediaTask.status.canceled": "已取消",
+  "mediaTask.status.timeout": "已超时",
+  "mediaTask.status.failed": "失败"
 }

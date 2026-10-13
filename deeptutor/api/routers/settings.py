@@ -174,6 +174,10 @@ class VoiceAutoplayUpdate(BaseModel):
     voice_autoplay: bool
 
 
+class NimiSpeechVoiceUpdate(BaseModel):
+    voice_id: str = Field(max_length=256)
+
+
 class ChatResponseTimeoutUpdate(BaseModel):
     chat_response_timeout: int = Field(ge=CHAT_RESPONSE_TIMEOUT_MIN, le=CHAT_RESPONSE_TIMEOUT_MAX)
 
@@ -1663,6 +1667,12 @@ async def update_voice_autoplay(update: VoiceAutoplayUpdate):
     """
     patch_ui_settings(voice_autoplay=update.voice_autoplay)
     return {"voice_autoplay": update.voice_autoplay}
+
+
+@router.put("/nimi-speech-voice")
+async def update_nimi_speech_voice(update: NimiSpeechVoiceUpdate):
+    patch_ui_settings(nimi_speech_voice=update.voice_id)
+    return {"voice_id": update.voice_id}
 
 
 @router.put("/chat-response-timeout")

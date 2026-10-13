@@ -127,7 +127,9 @@ def test_presentation_is_a_fixed_content_addressed_version(workspace_service) ->
     assert loaded.relative_path == "notes.md"
     assert loaded.title == "Notes"
     assert loaded.url.startswith("/files/workspace-items/")
-    assert blob.is_relative_to(paths.get_runtime_state_dir())
+    # Windows extended I/O paths and ordinary paths can name the same directory.
+    # Compare the filesystem identity while retaining the exact private layout.
+    assert blob.parent.parent.parent.parent.samefile(paths.get_runtime_state_dir())
     assert not (binding.root / "outputs" / ".deeptutor").exists()
 
 

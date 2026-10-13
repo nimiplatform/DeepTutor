@@ -26,7 +26,11 @@ export function NimiModelSettings({ capability = "text.generate" }: { capability
     void refresh();
     const onFocus = () => { void refresh(); };
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    window.addEventListener("deeptutor:nimi-models-changed", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("deeptutor:nimi-models-changed", onFocus);
+    };
   }, [refresh]);
   return (
     <NimiThemeProvider accentPack="nimi-accent"><TooltipProvider>
@@ -48,7 +52,10 @@ export function NimiModelSettings({ capability = "text.generate" }: { capability
           onOverwrite={async (input) => {
             const result = await getNimiLocalAppClient().aiConfig.overwrite(input);
             setSnapshot({ config: result.config, revision: result.revision, effectiveSelections: [] });
-            if (result.outcome === "committed") void refresh();
+            if (result.outcome === "committed") {
+              void refresh();
+              window.dispatchEvent(new Event("deeptutor:nimi-models-changed"));
+            }
             return result;
           }}
         />

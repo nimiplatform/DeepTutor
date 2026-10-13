@@ -78,6 +78,7 @@ DETAIL_CODES: frozenset[str] = frozenset(
         "active_model_missing",
         "model_identifier_missing",
         "provider_not_selected",
+        "nimi_model_unavailable",
         "required_credential_missing",
         # Document parsers, including the engines' own readiness reasons
         "selected_parser_unavailable",
@@ -830,6 +831,24 @@ def _module_available(name: str) -> bool:
         return False
 
 
+def nimi_catalog_service_rows(selections: list[dict[str, Any]] | None, *, required_services=REQUIRED_CATALOG_SERVICES):
+    """Project current Nimi readiness; never inspect retired provider settings."""
+    states = {row["capabilityContract"]: row["state"] for row in selections or []}
+    capabilities = {"llm": "text.generate", "task": "text.generate", "embedding": "text.embed",
+                    "tts": "audio.synthesize", "stt": "audio.transcribe", "imagegen": "image.generate", "videogen": "video.generate"}
+    rows = []
+    for name, capability in capabilities.items():
+        state = states.get(capability, "missing") if selections is not None else "unavailable"
+        ready = state == "ready"
+        missing = state == "missing"
+        rows.append(readiness_row(f"catalog.{name}", "catalog", _SERVICE_LABELS[name],
+            "enabled_verified" if ready else "not_selected" if missing else "unavailable",
+            "configuration_verified" if ready else "active_model_not_selected" if missing else "nimi_model_unavailable",
+            enabled=not missing, available=ready, configured=not missing,
+            verified=ready, required=name in required_services))
+    return rows
+
+
 async def build_settings_readiness() -> dict[str, Any]:
     """Build the current admin-scoped readiness matrix."""
 
@@ -847,10 +866,17 @@ async def build_settings_readiness() -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     # An embedding model is dead weight until something needs to be indexed,
     # and load-bearing the moment a knowledge base exists.
-    catalog_rows = catalog_service_rows(
+    search_rows = catalog_service_rows(
         get_model_catalog_service().load(),
         required_services=REQUIRED_CATALOG_SERVICES | ({"embedding"} if kb_names else set()),
     )
+    from deeptutor.nimi.transport import get_transport
+    try:
+        selections = (await get_transport().request("media.config", {}))["selections"]
+    except Exception:
+        selections = None
+    catalog_rows = [row for row in search_rows if row["id"] == "catalog.search"] + nimi_catalog_service_rows(
+        selections, required_services=REQUIRED_CATALOG_SERVICES | ({"embedding"} if kb_names else set()))
     rows.extend(catalog_rows)
 
     runtime_service = get_runtime_settings_service()

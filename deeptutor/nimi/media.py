@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from .transport import get_transport
+from .transport import NimiRequestError, get_transport
 
 CHUNK_BYTES = 512 * 1024
 TERMINAL = {"completed", "failed", "canceled", "timeout"}
@@ -55,7 +55,7 @@ def action_for_tool(kwargs: dict[str, Any], kind: str) -> MediaAction | None:
         raise MediaError("This media action has no learning workspace. Reopen the conversation before generating.")
     request_id = str(uuid5(NAMESPACE_URL, f"deeptutor:{session_id}:{turn_id}:{call_id}:{kind}"))
     return MediaAction(session_id, request_id, str(kwargs.get("_workspace_id") or ""),
-                       str(kwargs.get("_nimi_logical_output") or "") + "/media/" + request_id)
+                       "outputs/media/" + request_id)
 
 
 async def ready_capabilities() -> set[str]:
@@ -90,6 +90,8 @@ async def run_job(kind: str, parameters: dict[str, Any], *, audio: bytes | None 
                           **({"workspaceId": action.workspace_id, "outputDirectory": action.output_directory} if action else {})}
     if previous and (previous["type"] != kind or previous["parameters"] != parameters):
         raise MediaError("This action already belongs to a different media request.")
+    if previous and previous.get("rejected"):
+        raise MediaError(previous.get("reasonDetail") or "Nimi rejected this request before creating a Job.")
     job = None
     upload_id = None
     if previous:
@@ -107,6 +109,14 @@ async def run_job(kind: str, parameters: dict[str, Any], *, audio: bytes | None 
                         "bytes": base64.b64encode(audio[offset:offset + CHUNK_BYTES]).decode("ascii")})
             job = await host.request("media.submit", {"requestId": submission_id, "type": kind,
                 "parameters": parameters, **({"audioId": upload_id} if upload_id else {})})
+        except NimiRequestError as exc:
+            if action and exc.error_code.lower().replace("_", "-") in {
+                "sdk-local-app-input-invalid", "ai-input-invalid", "ai-media-spec-invalid", "ai-media-option-unsupported"
+            }:
+                # These input refusals precede Job creation. Transport failures
+                # remain uncertain and can only be resolved by original lookup.
+                await action.save({**record, "status": "failed", "rejected": True, "reasonDetail": str(exc)})
+            raise
         except asyncio.CancelledError:
             # Submit may already have reached Runtime. Look up this exact action
             # instead of assuming a canceled HTTP observer means no Job exists.
@@ -139,7 +149,10 @@ async def run_job(kind: str, parameters: dict[str, Any], *, audio: bytes | None 
     except asyncio.CancelledError:
         if job and job["status"] not in TERMINAL:
             with suppress(Exception):
-                await asyncio.shield(host.request("media.cancel", {"jobId": job["jobId"]}))
+                stopped = await asyncio.shield(host.request("media.cancel", {"jobId": job["jobId"]}))
+                if action:
+                    await asyncio.shield(action.save({**record, "status": stopped["status"],
+                        "reasonDetail": stopped.get("reasonDetail") or stopped.get("reasonCode") or ""}))
         raise
 
 
@@ -163,13 +176,17 @@ async def save_generated_media(action: MediaAction, media: list[tuple[bytes, str
         raise MediaError("The completed media format cannot be saved by this workspace.")
     workspace = get_content_workspace_service()
     binding = workspace.binding_by_id(record["workspaceId"])
-    target = workspace.resolve(binding, record["outputDirectory"], write=True)
+    # The action id already names this result. Repeating session/turn ids in the
+    # filesystem path overflowed ordinary Windows Host profile paths.
+    relative_directory = "outputs/media/" + action.request_id
+    target = workspace.resolve(binding, relative_directory, write=True)
     target.mkdir(parents=True, exist_ok=True)
     video = record["type"] == "video-generate"
     artifacts = _write_media(target, media, stem=_slug(record["parameters"]["prompt"], "video" if video else "image"),
                              default_ext="mp4" if video else "png", workspace_id=binding.workspace_id)
     published = workspace.publish(binding, [{"path": row.relative_path} for row in artifacts])
-    await action.save({**record, "status": "saved", "files": [row.to_dict() for row in published]})
+    await action.save({**record, "outputDirectory": relative_directory,
+                      "status": "saved", "files": [row.to_dict() for row in published]})
     return artifacts
 
 
@@ -178,7 +195,7 @@ async def recover_action(session_id: str, request_id: str, *, cancel: bool = Fal
     record = await action.load()
     if not record:
         raise MediaError("This conversation has no matching media action.")
-    if record["status"] == "saved":
+    if record["status"] == "saved" or record.get("rejected"):
         return record
     host = get_transport()
     job = await host.request("media.lookup", {"requestId": request_id})
@@ -189,6 +206,8 @@ async def recover_action(session_id: str, request_id: str, *, cancel: bool = Fal
     record = {**record, "jobId": job["jobId"], "status": job["status"],
               "reasonDetail": job.get("reasonDetail") or job.get("reasonCode") or ""}
     await action.save(record)
+    if cancel:
+        return record
     if job["status"] == "completed":
         prefix = "video/" if record["type"] == "video-generate" else "image/"
         if not job["artifacts"] or any(not row["mimeType"].startswith(prefix) for row in job["artifacts"]):

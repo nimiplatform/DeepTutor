@@ -4,7 +4,7 @@ import type { NimiLocalAppScenarioJobSpec } from '@nimiplatform/sdk';
 
 const CHUNK_BYTES = 512 * 1024;
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-const CAPABILITIES = ['audio.synthesize', 'audio.transcribe', 'image.generate', 'video.generate'];
+const CAPABILITIES = ['text.generate', 'text.embed', 'audio.synthesize', 'audio.transcribe', 'image.generate', 'video.generate'];
 const terminal = (status: string) => ['completed', 'failed', 'canceled', 'timeout'].includes(status);
 function object(value: unknown, keys: string[]): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -39,7 +39,9 @@ export class DeepTutorBusinessMedia {
       object(raw, []);
       const snapshot = await services.aiConfig.get();
       guard();
-      return { revision: snapshot.revision, selections: snapshot.effectiveSelections.filter(row => CAPABILITIES.includes(row.capabilityContract)) };
+      return { revision: snapshot.revision, selections: snapshot.effectiveSelections
+        .filter(row => CAPABILITIES.includes(row.capabilityContract))
+        .map(({ capabilityContract, state, reasons }) => ({ capabilityContract, state, reasons })) };
     }
     if (operation === 'media.audio.begin') {
       const input = object(raw, ['sizeBytes']);
@@ -67,6 +69,12 @@ export class DeepTutorBusinessMedia {
       let spec: NimiLocalAppScenarioJobSpec;
       if (input.type === 'speech-synthesize') {
         const p = object(input.parameters, ['text', 'voice', 'format']);
+        const voices = await services.aiConfig.listOptions({ kind: 'preset-voices' });
+        guard();
+        if (voices.kind !== 'preset-voices') throw new Error('Nimi returned an unexpected voice list.');
+        if ((voices.options.length > 0 || p.voice) && !voices.options.some(voice => voice.voiceId === p.voice)) {
+          throw new Error('Choose a voice for the selected model in Settings > Text-to-Speech.');
+        }
         spec = { type: 'speech-synthesize', text: text(p.text), language: '', audioFormat: text(p.format, true),
           emotion: '', voiceRef: p.voice ? { type: 'preset', id: text(p.voice) } : null, timingMode: 'none', voiceRenderHints: null };
       } else if (input.type === 'speech-transcribe') {

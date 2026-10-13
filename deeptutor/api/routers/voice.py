@@ -81,9 +81,11 @@ def _pcm16_to_wav(audio: bytes, *, sample_rate: int, channels: int) -> bytes:
 async def text_to_speech(payload: TTSRequest, request: Request) -> Response:
     """Synthesize ``text`` to audio using the active TTS provider."""
     try:
+        from deeptutor.services.settings.interface_settings import get_ui_settings
+        selected_voice = payload.voice if payload.voice is not None else str(get_ui_settings().get("nimi_speech_voice") or "")
         audio, content_type = await while_connected(request, synthesize_speech(
             payload.text,
-            voice=payload.voice,
+            voice=selected_voice,
             response_format=payload.format,
         ))
     except ValueError as exc:  # missing/invalid configuration

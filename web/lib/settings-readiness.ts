@@ -139,6 +139,7 @@ export const EXPLAINED_DETAIL_CODES: ReadonlySet<string> = new Set([
   "active_model_missing",
   "model_identifier_missing",
   "provider_not_selected",
+  "nimi_model_unavailable",
   "required_credential_missing",
   "connection_test_failed",
   "selected_parser_unavailable",

@@ -6,7 +6,7 @@ const { DeepTutorBusinessMedia } = await import(`data:text/javascript;base64,${B
 
 test('media uses only four closed public Jobs and preserves task controls', async () => {
   const media = new DeepTutorBusinessMedia(); const calls = [];
-  const services = { ai: { scenarioJobs: { submit: async (spec, options) => {
+  const services = { aiConfig: { listOptions: async () => ({kind:"preset-voices",options:[{voiceId:"selected-preset",name:"Selected"}]}) }, ai: { scenarioJobs: { submit: async (spec, options) => {
     calls.push({spec,options}); return {job:{jobId:'job',scenarioType:spec.type,status:'submitted',artifacts:[]}};
   } } } };
   await media.request('media.submit', {requestId:'speech',type:'speech-synthesize',parameters:{text:'中文朗读',voice:'selected-preset',format:'wav'}},services,()=>{});
@@ -16,6 +16,8 @@ test('media uses only four closed public Jobs and preserves task controls', asyn
   assert.equal(calls[1].spec.n,3); assert.equal(calls[1].spec.size,'');
   assert.equal(calls[2].spec.mode,'t2v'); assert.equal(calls[2].spec.options.durationSec,5); assert.equal(calls[2].spec.options.ratio,'16:9');
   assert.deepEqual(calls.map(c=>c.options.clientSubmissionId),['speech','image','video']);
+  await assert.rejects(media.request('media.submit',{requestId:'missing-voice',type:'speech-synthesize',parameters:{text:'hello',voice:'',format:''}},services,()=>{}),/Choose a voice/);
+  assert.equal(calls.length,3);
   await assert.rejects(media.request('media.submit',{requestId:'bad',type:'voice-create',parameters:{}},services,()=>{}),/Unsupported/);
   await assert.rejects(media.request('media.submit',{requestId:'bad',type:'image-generate',parameters:{prompt:'x',n:1,provider:'private'}},services,()=>{}),/Invalid/);
 });

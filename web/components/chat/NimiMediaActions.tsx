@@ -64,16 +64,16 @@ export default function NimiMediaActions({
       <summary className="cursor-pointer text-[var(--muted-foreground)]">
         {t('Media tasks and downloads')}
       </summary>
-      <div className="mt-2 space-y-2">
+      <div className="mt-2 max-h-60 space-y-2 overflow-y-auto">
         {actions
-          .slice(-10)
+          .slice()
           .reverse()
           .map(action => (
             <div key={action.requestId} className="rounded-lg border border-[var(--border)] p-3">
               <p className="line-clamp-2">{action.parameters.prompt}</p>
               <p className="text-xs text-[var(--muted-foreground)]">
-                {t(action.status)}
-                {action.reasonDetail ? ` — ${action.reasonDetail}` : ''}
+                {t(`mediaTask.status.${action.status}`)}
+                {action.reasonDetail && ['failed', 'canceled', 'timeout'].includes(action.status) ? ` — ${action.reasonDetail}` : ''}
               </p>
               <div className="mt-2 flex flex-wrap gap-3">
                 {action.status !== 'saved' && (
@@ -85,7 +85,7 @@ export default function NimiMediaActions({
                     {busy === action.requestId ? t('Loading...') : t('Check original task')}
                   </button>
                 )}
-                {!['saved', 'failed', 'canceled', 'timeout'].includes(action.status) && (
+                {!['completed', 'saved', 'failed', 'canceled', 'timeout'].includes(action.status) && (
                   <button
                     type="button"
                     disabled={Boolean(busy)}

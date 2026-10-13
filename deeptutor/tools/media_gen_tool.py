@@ -195,15 +195,19 @@ class ImagegenTool(BaseTool):
             logger.warning("imagegen failed: %s", exc)
             return ToolResult(content=f"Image generation failed: {exc}. Check the original task in Media tasks and downloads before starting a new generation.", success=False, terminate_turn=True)
 
-        workspace_id = str(kwargs.get("_workspace_id") or "")
-        run_dir = None
-        if not action:
-            run_dir, workspace_id = _run_dir(
-                kwargs.get("_workspace_dir"), "imagegen", workspace_id=workspace_id
+        try:
+            workspace_id = str(kwargs.get("_workspace_id") or "")
+            run_dir = None
+            if not action:
+                run_dir, workspace_id = _run_dir(
+                    kwargs.get("_workspace_dir"), "imagegen", workspace_id=workspace_id
+                )
+            artifacts = await save_generated_media(action, images) if action else _write_media(
+                run_dir, images, stem=_slug(prompt, "image"), default_ext="png", workspace_id=workspace_id,
             )
-        artifacts = await save_generated_media(action, images) if action else _write_media(
-            run_dir, images, stem=_slug(prompt, "image"), default_ext="png", workspace_id=workspace_id,
-        )
+        except Exception as exc:
+            logger.exception("Nimi media completed but workspace saving failed")
+            return ToolResult(content=f"Nimi completed the media task, but saving failed: {exc}. Use Check original task in Media tasks and downloads to recover it; do not generate again.", success=False, terminate_turn=True)
         return _artifact_result(
             artifacts,
             empty_message="Image generation produced no saved files.",
@@ -287,15 +291,19 @@ class VideogenTool(BaseTool):
             logger.warning("videogen failed: %s", exc)
             return ToolResult(content=f"Video generation failed: {exc}. Check the original task in Media tasks and downloads before starting a new generation.", success=False, terminate_turn=True)
 
-        workspace_id = str(kwargs.get("_workspace_id") or "")
-        run_dir = None
-        if not action:
-            run_dir, workspace_id = _run_dir(
-                kwargs.get("_workspace_dir"), "videogen", workspace_id=workspace_id
+        try:
+            workspace_id = str(kwargs.get("_workspace_id") or "")
+            run_dir = None
+            if not action:
+                run_dir, workspace_id = _run_dir(
+                    kwargs.get("_workspace_dir"), "videogen", workspace_id=workspace_id
+                )
+            artifacts = await save_generated_media(action, [(video, content_type)]) if action else _write_media(
+                run_dir, [(video, content_type)], stem=_slug(prompt, "video"), default_ext="mp4", workspace_id=workspace_id,
             )
-        artifacts = await save_generated_media(action, [(video, content_type)]) if action else _write_media(
-            run_dir, [(video, content_type)], stem=_slug(prompt, "video"), default_ext="mp4", workspace_id=workspace_id,
-        )
+        except Exception as exc:
+            logger.exception("Nimi media completed but workspace saving failed")
+            return ToolResult(content=f"Nimi completed the media task, but saving failed: {exc}. Use Check original task in Media tasks and downloads to recover it; do not generate again.", success=False, terminate_turn=True)
         return _artifact_result(
             artifacts,
             empty_message="Video generation produced no saved file.",

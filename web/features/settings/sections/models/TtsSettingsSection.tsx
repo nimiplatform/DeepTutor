@@ -3,6 +3,7 @@
 import { useTranslation } from "react-i18next";
 
 import { NimiModelSettings } from "@/components/settings/NimiModelSettings";
+import NimiSpeechVoice from "@/components/settings/NimiSpeechVoice";
 import { SettingsPageHeader } from "@/components/settings/shared";
 import { useVoiceAutoplayPreference } from "@/hooks/useVoiceAutoplay";
 
@@ -54,6 +55,7 @@ export default function TtsSettingsPage() {
       />
 
       <NimiModelSettings capability="audio.synthesize" />
+      <NimiSpeechVoice />
 
       <section>
         <div className="mb-3">
