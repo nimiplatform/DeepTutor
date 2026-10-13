@@ -1,3 +1,14 @@
+# 1.6.16 — Cross-platform worker test cleanup
+
+The real backend-process test now starts its own process group, matching the
+production Host. The Unix cleanup helper sends signals to that owned group;
+the previous test omitted it and hung during cleanup on macOS. Its 45-second
+test timeout did not terminate the leaked child. The Windows authenticated
+backend/notebook-persistence regression passes with the corrected fixture.
+Version 1.6.15's Windows release build passed, but the stalled macOS run was
+canceled. Its tag remains unchanged. App business code and media results are
+unchanged; installed acceptance remains pending.
+
 # 1.6.15 — Reproducible Windows decoder assets
 
 PDF.js decoder files and their licenses now come solely from the frozen dependency during development and production builds. They are already declared as generated assets in the ignore rules; removing the remaining tracked copies prevents the Windows clean-source check from failing after they are regenerated. The decoder resources remain in the packaged App. Version 1.6.14 completed its Windows build but failed the source-tree check, so its tag is retained without a completed release. The media implementation and real acceptance results below are unchanged.

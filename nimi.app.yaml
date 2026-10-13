@@ -1,6 +1,6 @@
 app_id: org.nimiplatform.deeptutor
 display_name: DeepTutor
-version: 1.6.15
+version: 1.6.16
 profile: standalone
 manifest_role: submitted-input
 metadata:

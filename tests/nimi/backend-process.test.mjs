@@ -19,7 +19,8 @@ test("the real Python worker serves only its Host's authenticated business reque
   const child = spawn(path.resolve(frozenWorker || pythonExecutable), [
     ...(frozenWorker ? [] : ["-m", "deeptutor.nimi.worker"]), "--port", String(port),
   ], {
-    stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+    // Match BackendProcess: Unix cleanup addresses the child-owned process group.
+    detached: true, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
     env: { ...childEnvironment(), DEEPTUTOR_HOME: dataRoot },
   });
   let diagnostics = "";
