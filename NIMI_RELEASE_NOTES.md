@@ -16,11 +16,24 @@ is immutable and published for both targets; its exact packages, source licenses
 and build provenance passed Registry preparation. [Candidate #100](https://github.com/nimiplatform/nimi-app-registry/pull/100)
 replaces withdrawn #98. On October 14 the user approved this existing
 dual-platform stable candidate; finalization passed and #100 merged. Installed
-Nimi 0.2.4 discovers the Catalog version. Its real download was paused at
-25.6 MB after persistently slow transfer, then resumed to the serial queue;
-pause/resume retained the downloaded bytes. Catalog installation and Catalog
-business acceptance remain NOT-VERIFIED until that task completes. The local
-package acceptance above does not substitute for the Catalog path.
+Nimi 0.2.4 downloaded and installed the original Catalog Windows package after
+the slow-transfer queue completed. Pause/resume had retained the downloaded
+bytes. Home launched its distinct Catalog release-directory Host with Nimi
+Access ready. In that new workspace, `catalog-q58` uploaded the original
+696-byte Chinese acceptance document, completed its LlamaIndex index as Ready
+with 1024 dimensions, and answered a real grounded question with ST-Q58-7429,
+贺澜, the 13-minute interval, seven observations per workday and the MISSING
+rules correctly. Cedar Ledger was identified as the indexing module; absent
+budget and team size were not invented.
+
+The answer was saved as `Catalog Q58 知识库检索验收` in notebook
+`Catalog 安装验收`. Normal close and Home relaunch restored the conversation
+`unified_1791957804615_a5ff3153`, its complete answer, one notebook record,
+the original document and the Ready 1024-dimensional index. Fresh Windows
+Catalog download/install, indexing, retrieval, saving and reopening pass.
+No earlier Catalog instance existed on this machine, so Catalog N-to-N+1
+updating was not run. The prior Imported upgrade and development media results
+retain their original scopes rather than becoming Catalog-media claims.
 
 Indexing now observes the exact embedding adapter captured for each operation.
 Its progress callbacks run on the caller's event loop, keeping WebSocket updates
