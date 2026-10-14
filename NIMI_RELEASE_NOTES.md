@@ -14,7 +14,13 @@ one notebook record and Ready index remained. The annotated v1.6.18 tag points
 to that tested implementation. The [formal release](https://github.com/nimiplatform/DeepTutor/releases/tag/v1.6.18)
 is immutable and published for both targets; its exact packages, source licenses
 and build provenance passed Registry preparation. [Candidate #100](https://github.com/nimiplatform/nimi-app-registry/pull/100)
-replaces withdrawn #98. Human admission and Catalog installation remain pending.
+replaces withdrawn #98. On October 14 the user approved this existing
+dual-platform stable candidate; finalization passed and #100 merged. Installed
+Nimi 0.2.4 discovers the Catalog version. Its real download was paused at
+25.6 MB after persistently slow transfer, then resumed to the serial queue;
+pause/resume retained the downloaded bytes. Catalog installation and Catalog
+business acceptance remain NOT-VERIFIED until that task completes. The local
+package acceptance above does not substitute for the Catalog path.
 
 Indexing now observes the exact embedding adapter captured for each operation.
 Its progress callbacks run on the caller's event loop, keeping WebSocket updates
