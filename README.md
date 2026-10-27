@@ -1,3 +1,9 @@
+Current development dependencies are SDK 0.22.2, Kit/native 0.22.1, App Tools 0.14.0 and Nimi Coding 0.7.0. The checked-in pnpm lock resolves these packages from the public registry. Run `pnpm install --frozen-lockfile`, `pnpm exec nimi-app check`, then `pnpm dev` with a matching source-built Nimi Runtime and Home. App versions and published App releases are unchanged. Earlier versioned notes retain their original acceptance scope. Home uses the App-owned root `NIMI_APP.md`; this README remains developer documentation.
+
+Upgrade verification: public-registry installation, frozen-lockfile installation, App Tools checks and the applicable type/Host build checks passed. Desktop-supervised macOS development opened chat, retained conversations, the knowledge backend and settings. New model-output journeys and packaged installation were not rerun; earlier evidence below retains its stated versions and scope.
+
+[App introduction and usage](NIMI_APP.md)
+
 ## Windows candidate 1.6.14 — 2026-10-13
 
 Current media source: speech synthesis, microphone transcription and the existing image/video chat tools use Nimi App AIConfig and protected Jobs; the old App media-provider settings and execution route are closed. Binary media uses bounded pipe chunks. Job identities and recovery remain in the original conversation preferences, while completed files stay in the original workspace. The Settings readiness view reads Nimi effective selections, and read-aloud voices come from the public preset list. Search, PageIndex and Partner accounts remain App-owned.

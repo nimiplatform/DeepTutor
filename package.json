@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "description": "DeepTutor learning workspace for Nimi Desktop",
   "author": "DeepTutor contributors",
-  "packageManager": "pnpm@10.34.5",
+  "packageManager": "pnpm@10.34.7",
   "engines": {
     "node": ">=24.0.0"
   },
@@ -27,16 +27,16 @@
     "build:nimi-styles": "tailwindcss -i styles/nimi.css -o web/public/nimi-ui.css --minify"
   },
   "dependencies": {
-    "@nimiplatform/kit": "^0.20.0",
-    "@nimiplatform/sdk": "^0.21.0",
+    "@nimiplatform/kit": "^0.22.1",
+    "@nimiplatform/sdk": "^0.22.2",
     "ai": "^6.0.85",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
-    "@nimiplatform/app-tools": "^0.12.3",
-    "@nimiplatform/nimi-coding": "0.6.5",
+    "@nimiplatform/app-tools": "^0.14.0",
+    "@nimiplatform/nimi-coding": "0.7.0",
     "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^24.13.3",
     "electron": "^44.5.1",
