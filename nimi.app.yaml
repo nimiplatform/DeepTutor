@@ -1,6 +1,6 @@
 app_id: org.nimiplatform.deeptutor
 display_name: DeepTutor
-version: 1.6.18
+version: 1.6.19
 profile: standalone
 manifest_role: submitted-input
 metadata:
@@ -9,6 +9,8 @@ metadata:
   release_notes: NIMI_RELEASE_NOTES.md
 app_access:
   - runtime.consume
+  - integration.provide
+  - integration.consume
 capability_contract_refs:
   - text.generate
   - text.embed
@@ -24,6 +26,20 @@ storage_policy:
       purpose: Desktop-prepared Host workspace on Windows and macOS for learning sessions, uploaded materials, retrieval indexes, notebooks, App settings and logs
       expected_size_band: 100 MiB–20 GiB, depending on imported materials
 local_development:
+  mobile:
+    command: pnpm run dev:android
+  web:
+    origin: ""
+    redirect_uri: ""
+    client_id: ""
+    realm_environment_id: production
+    realm_url: https://realm.nimi.ai
+    official_web_url: https://nimi.ai
+    command: pnpm run dev:web-renderer
+    local:
+      origin: https://127.0.0.1:4485
+      redirect_uri: https://127.0.0.1:4485/
+      client_id: org.nimiplatform.deeptutor.web.dev
   electron:
     renderer_origin: http://127.0.0.1:1467
     host_source_directory: electron

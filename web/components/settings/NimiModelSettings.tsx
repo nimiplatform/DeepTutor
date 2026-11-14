@@ -8,6 +8,7 @@ import type { NimiAIConfigSnapshot } from "@nimiplatform/sdk/ai";
 import { createNimiClientId } from "@nimiplatform/sdk/types";
 import { openDesktopIntent } from "@nimiplatform/kit/shell/renderer/bridge";
 import { DEEPTUTOR_APP_ID, getNimiLocalAppClient, readNimiModelConfiguration } from "@/lib/nimi-client";
+import { isWebWorkspace } from "@/lib/nimi/web-connection";
 import Modal from "@/components/common/Modal";
 
 export function NimiModelSettings({ capability = "text.generate" }: { capability?: string }) {
@@ -32,6 +33,17 @@ export function NimiModelSettings({ capability = "text.generate" }: { capability
       window.removeEventListener("deeptutor:nimi-models-changed", onFocus);
     };
   }, [refresh]);
+  if(isWebWorkspace)return <div className="space-y-3">
+    <p>Learning tasks use the models configured for DeepTutor on your PC. Change those choices in the PC App.</p>
+    {loading&&<p role="status">Reading PC model choices…</p>}{error&&<p role="alert">{error}</p>}
+    {snapshot?.effectiveSelections?.map(choice=><div key={choice.capabilityContract} className="rounded-lg border p-3">
+      <strong>{({"text.generate":"Learning and writing","text.embed":"Document retrieval","audio.transcribe":"Transcription","audio.synthesize":"Read aloud","image.generate":"Illustrations","video.generate":"Video"} as Record<string,string>)[choice.capabilityContract]||choice.capabilityContract}</strong>
+      <p>{choice.resource?.oneofKind==="local"?choice.resource.local.label:choice.resource?.oneofKind==="cloud"?choice.resource.cloud.target.label:"No model selected"}</p>
+      <p className="text-sm text-[var(--muted-foreground)]">{choice.state==="ready"?"Ready":choice.state==="missing"?"Not configured":choice.state==="blocked"?"Needs attention":"Unavailable"}{choice.resource?.oneofKind==="local"?" · On your PC":choice.resource?.oneofKind==="cloud"?" · Cloud service":""}</p>
+      {choice.reasons.length>0&&<details><summary>Connection details</summary><p>{choice.reasons.join(", ")}</p></details>}
+    </div>)}
+    <button onClick={()=>void refresh()} className="rounded-lg border px-3 py-2">Refresh PC model choices</button>
+  </div>;
   return (
     <NimiThemeProvider accentPack="nimi-accent"><TooltipProvider>
       <div className="nimi-model-settings">

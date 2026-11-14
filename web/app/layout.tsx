@@ -5,6 +5,7 @@ import ThemeScript from "@/components/ThemeScript";
 import ToastViewport from "@/components/common/ToastViewport";
 import { AppShellProvider } from "@/context/AppShellContext";
 import { I18nClientBridge } from "@/i18n/I18nClientBridge";
+import WebBoundary from "@/components/nimi/WebBoundary";
 
 // Geist matches the public site (deeptutor.info) and stays crisp at the
 // small UI sizes the composer/toolbars use, unlike the rounder Jakarta.
@@ -52,10 +53,10 @@ export default function RootLayout({
         className="font-sans bg-[var(--background)] text-[var(--foreground)]"
         suppressHydrationWarning
       >
-        <AppShellProvider>
+        {process.env.NIMI_DEEPTUTOR_CARRIER === "web" ? <WebBoundary>{children}</WebBoundary> : <AppShellProvider>
           <I18nClientBridge>{children}</I18nClientBridge>
           <ToastViewport />
-        </AppShellProvider>
+        </AppShellProvider>}
       </body>
     </html>
   );

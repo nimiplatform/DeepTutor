@@ -12,6 +12,7 @@ import {
   type RefObject,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { readMobileDraft, writeMobileDraft } from "@/shared/storage/mobile-drafts";
 import { Bot, Check, UserRound } from "lucide-react";
 import ChatSpaceMenu, {
   type ChatSpaceSelectionCounts,
@@ -22,6 +23,7 @@ import { useAutoSizedTextarea } from "@/lib/use-auto-sized-textarea";
 import { useImeComposing } from "@/lib/use-ime-composing";
 
 interface ComposerInputProps {
+  mobileDraftKey?: string;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   isVisualizeMode: boolean;
   isStreaming?: boolean;
@@ -139,6 +141,7 @@ export const ComposerInput = memo(
   forwardRef<ComposerInputHandle, ComposerInputProps>(function ComposerInput(
     {
       textareaRef,
+      mobileDraftKey,
       isVisualizeMode,
       isStreaming = false,
       canSendEmpty,
@@ -170,7 +173,7 @@ export const ComposerInput = memo(
     ref,
   ) {
     const { t } = useTranslation();
-    const [input, setInput] = useState("");
+    const [input, setInput] = useState(() => mobileDraftKey ? readMobileDraft<string>(mobileDraftKey) ?? "" : "");
     const [showAtPopup, setShowAtPopup] = useState(false);
     const [showSlashPopup, setShowSlashPopup] = useState(false);
     const [atQuery, setAtQuery] = useState("");
@@ -193,7 +196,9 @@ export const ComposerInput = memo(
     // from this ref so their identities stay stable across keystrokes,
     // letting `memo` on ChatSpaceMenu actually skip re-renders when
     // `showAtPopup` doesn't change.
-    const inputRef = useRef("");
+    const inputRef = useRef(input);
+    useEffect(() => { if (mobileDraftKey) writeMobileDraft(mobileDraftKey, input); }, [mobileDraftKey, input]);
+    useEffect(() => { if (mobileDraftKey) onInputChange(inputRef.current); }, [mobileDraftKey, onInputChange]);
     const { isComposingRef, onCompositionStart, onCompositionEnd } =
       useImeComposing();
     // Helper that always updates state and ref together so they can't drift.

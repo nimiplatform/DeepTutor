@@ -24,6 +24,7 @@ import NotebookRecordRow from "@/components/notebook/NotebookRecordRow";
 import { useNotebookLibrary } from "@/components/notebook/useNotebookLibrary";
 import { attachCourseResource } from "@/lib/courses-api";
 import { notify } from "@/lib/notifications";
+import { downloadWorkspaceFile } from "@/lib/nimi/workspace-download";
 import { exportNotebookMarkdown } from "@/lib/notebook-api";
 import { notebookRoute } from "@/lib/resource-routes";
 
@@ -217,12 +218,7 @@ export default function NotebookConsole({
       const blob = new Blob([markdown], {
         type: "text/markdown;charset=utf-8",
       });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `${selected.name || selected.id}.md`;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      await downloadWorkspaceFile(blob, `${selected.name || selected.id}.md`);
       notify(t("Notebook exported"), { tone: "success" });
     } catch (err) {
       setBanner(err instanceof Error ? err.message : String(err));

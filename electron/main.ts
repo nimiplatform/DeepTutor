@@ -10,6 +10,8 @@ catch (error) { process.stderr.write(`[deeptutor-host-profile] ${String(error)}\
 import { DeepTutorBackend } from './backend.js';
 import { DeepTutorRendererServer } from './renderer-server.js';
 import { DeepTutorBusinessAI } from './business-ai.js';
+import { DeepTutorWebProvider } from './remote-provider.js';
+import type { NimiElectronAppBusinessServices } from '@nimiplatform/kit/shell/electron/main';
 const {
   isAllowedElectronRendererUrl,
   registerNimiElectronAppAssetProtocolScheme,
@@ -34,6 +36,20 @@ const backend = new DeepTutorBackend();
 const rendererServer = new DeepTutorRendererServer();
 let businessAI: DeepTutorBusinessAI | undefined;
 let bridge: ReturnType<typeof registerNimiElectronAppBridge> | undefined;
+let remote: DeepTutorWebProvider | undefined;
+let remoteGeneration = 0;
+let remoteRetiring: Promise<void> = Promise.resolve();
+let businessServices: NimiElectronAppBusinessServices | undefined;
+function refreshRemote(services?: NimiElectronAppBusinessServices): void {
+  businessServices = services;
+  const generation = ++remoteGeneration;
+  const previous = remote; remote = undefined;
+  remoteRetiring = remoteRetiring.then(() => previous?.close()).then(() => {
+    if (generation === remoteGeneration && services && backend.ready) {
+      remote = new DeepTutorWebProvider(services, backend, path.join(app.getPath('temp'), 'deeptutor-web', String(generation)));
+    }
+  }).catch(error => console.error('DeepTutor Web workspace unavailable:', error));
+}
 
 app.setName("DeepTutor");
 app.setAppUserModelId(NATIVE_BUNDLE_IDENTIFIER);
@@ -53,8 +69,8 @@ void app.whenReady().then(async () => {
     allowedRendererUrls,
     assetMediaPlatform: { protocol, webRequest: session.defaultSession.webRequest, webContents },
     ipcMain,
-    onSessionInvalidated: () => businessAI?.invalidate(),
-    onSessionReady: (services) => businessAI?.bind(services),
+    onSessionInvalidated: () => { businessAI?.invalidate(); refreshRemote(); },
+    onSessionReady: (services) => { businessAI?.bind(services); refreshRemote(services); },
   });
   // Kit primes its verified technical session on registration. Do not defer
   // that binding until the standalone renderer or Python finishes cold start.
@@ -62,6 +78,7 @@ void app.whenReady().then(async () => {
     backend.start(appRoot, rendererUrl, businessAI),
     ...(startPackagedRenderer ? [rendererServer.start()] : []),
   ]);
+  refreshRemote(businessServices);
   await createMainWindow();
   app.on('activate', () => {
     const window = BrowserWindow.getAllWindows()[0];
@@ -87,8 +104,9 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   businessAI?.invalidate();
+  refreshRemote();
   bridge?.unregister();
-  void Promise.allSettled([backend.stop(), rendererServer.stop()]).finally(() => {
+  void remoteRetiring.then(() => Promise.allSettled([backend.stop(), rendererServer.stop()])).finally(() => {
     quitting = true; app.quit();
   });
 });

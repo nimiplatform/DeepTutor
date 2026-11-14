@@ -1,4 +1,5 @@
 "use client";
+import { createLearningSocket } from "@/lib/nimi/web-socket";
 
 import { useEffect, useRef } from "react";
 
@@ -46,7 +47,7 @@ export function useBookStream(
 
       let next: WebSocket;
       try {
-        next = new WebSocket(wsUrl(BOOK_WS_PATH));
+        next = createLearningSocket(wsUrl(BOOK_WS_PATH));
       } catch {
         scheduleReconnect();
         return;

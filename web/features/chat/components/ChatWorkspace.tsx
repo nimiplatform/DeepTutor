@@ -124,6 +124,7 @@ import {
 } from "@/features/capabilities/presentation";
 import { useCapabilityCatalog } from "@/features/capabilities/useCapabilityCatalog";
 import { browserStorage } from "@/shared/storage";
+import { readMobileDraft, writeMobileDraft } from "@/shared/storage/mobile-drafts";
 import { downloadChatMarkdown } from "@/lib/chat-export";
 import { buildChatOutline, scrollToChatTurn } from "@/lib/chat-outline";
 import { buildConversationNotebookSave } from "@/lib/conversation-notebook-save";
@@ -282,6 +283,15 @@ export default function ChatWorkspace({
     setCourseId,
   } = useChatStateAdapter();
 
+  const mobileDraftKey = `chat:${typeof window === 'undefined' ? '' : window.location.pathname + window.location.search}`;
+  const [retainedMobile] = useState(() => readMobileDraft<{
+    attachments: PendingAttachment[]; books: SelectedBookReference[]; reading: SelectedReadingReference[];
+    notebooks: SelectedRecord[]; history: SelectedHistorySession[]; agents: SelectedHistorySession[];
+    questions: SelectedQuestionEntry[]; memory: SpaceMemoryFile[];
+    config: Parameters<typeof configureSession>[0]; llm: typeof state.llmSelection; persona: string;
+  }>(mobileDraftKey));
+  const [mobileRestored, setMobileRestored] = useState(!retainedMobile);
+
   const entrySessionId = useRef(state.sessionId);
 
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
@@ -337,7 +347,7 @@ export default function ChatWorkspace({
   const [userEnabledTools, setUserEnabledTools] = useState<string[] | null>(
     null,
   );
-  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>(retainedMobile?.attachments ?? []);
   const attachmentLimits = useAttachmentLimits();
   const [dragging, setDragging] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -503,29 +513,29 @@ export default function ChatWorkspace({
   const [spaceMenuOpen, setSpaceMenuOpen] = useState(false);
   const [selectedNotebookRecords, setSelectedNotebookRecords] = useState<
     SelectedRecord[]
-  >([]);
+  >(retainedMobile?.notebooks ?? []);
   const [selectedBookReferences, setSelectedBookReferences] = useState<
     SelectedBookReference[]
-  >([]);
+  >(retainedMobile?.books ?? []);
   const [selectedReadingReferences, setSelectedReadingReferences] = useState<
     SelectedReadingReference[]
-  >([]);
+  >(retainedMobile?.reading ?? []);
   const [selectedHistorySessions, setSelectedHistorySessions] = useState<
     SelectedHistorySession[]
-  >([]);
+  >(retainedMobile?.history ?? []);
   // Imported-agent conversation references. Same shape as history sessions —
   // they fold into the same history_references payload (see below), so the
   // backend treats them identically; the separate state only keeps the
   // composer's "My Agents" group distinct from "Chat History".
   const [selectedAgentSessions, setSelectedAgentSessions] = useState<
     SelectedHistorySession[]
-  >([]);
+  >(retainedMobile?.agents ?? []);
   const [selectedQuestionEntries, setSelectedQuestionEntries] = useState<
     SelectedQuestionEntry[]
-  >([]);
+  >(retainedMobile?.questions ?? []);
   const [selectedMemoryFiles, setSelectedMemoryFiles] = useState<
     SpaceMemoryFile[]
-  >([]);
+  >(retainedMobile?.memory ?? []);
   const dragCounter = useRef(0);
   const capMenuRef = useRef<HTMLDivElement>(null);
   const capBtnRef = useRef<HTMLButtonElement>(null);
@@ -547,6 +557,28 @@ export default function ChatWorkspace({
   const handlePrefillComposer = useCallback((text: string) => {
     prefillInputRef.current?.(text);
   }, []);
+
+  useEffect(() => {
+    if (mobileRestored || !retainedMobile || sessionLoading || (sessionIdParam && state.sessionId !== sessionIdParam)) return;
+    let active=true;
+    queueMicrotask(() => {
+      if(!active)return;
+      configureSession(retainedMobile.config);
+      setLLMSelection(retainedMobile.llm); setPersonaSelection(retainedMobile.persona);
+      setMobileRestored(true);
+    });
+    return()=>{active=false;};
+  }, [mobileRestored, retainedMobile, sessionLoading, sessionIdParam, state.sessionId, configureSession, setLLMSelection, setPersonaSelection]);
+  useEffect(() => {
+    if(!mobileRestored || sessionLoading)return;
+    writeMobileDraft(mobileDraftKey, {attachments, books:selectedBookReferences, reading:selectedReadingReferences,
+      notebooks:selectedNotebookRecords, history:selectedHistorySessions, agents:selectedAgentSessions,
+      questions:selectedQuestionEntries, memory:selectedMemoryFiles,
+      config:{capability:state.activeCapability,knowledgeBases:state.knowledgeBases,enabledTools:state.enabledTools},
+      llm:state.llmSelection,persona:state.personaSelection});
+  }, [mobileDraftKey,mobileRestored,sessionLoading,attachments,selectedBookReferences,selectedReadingReferences,
+    selectedNotebookRecords,selectedHistorySessions,selectedAgentSessions,selectedQuestionEntries,selectedMemoryFiles,
+    state.activeCapability,state.knowledgeBases,state.enabledTools,state.llmSelection,state.personaSelection]);
 
   // A message handed over by another page (Settings' "set up with DeepTutor"
   // button). Prefilled rather than sent: the user reads what will be asked and
@@ -2536,6 +2568,7 @@ export default function ChatWorkspace({
               )}
 
               <ChatComposer
+                mobileDraftKey={mobileDraftKey+":text"}
                 composerRef={composerRef}
                 capMenuRef={capMenuRef}
                 capBtnRef={capBtnRef}

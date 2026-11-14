@@ -1,3 +1,5 @@
+import { downloadWorkspaceFile } from "@/lib/nimi/workspace-download";
+import { notify } from "@/lib/notifications";
 /**
  * Minimal message/attachment shape the markdown exporter needs. Product chat's
  * `MessageItem` satisfies it structurally, and partner conversations map into
@@ -72,11 +74,6 @@ export function downloadChatMarkdown(
   if (!messages.length) return;
   const markdown = buildChatMarkdown(messages, options);
   const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
   const date = new Date().toISOString().slice(0, 10);
-  anchor.download = `${sanitizeFilename(options.title || "chat")}-${date}.md`;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  void downloadWorkspaceFile(blob, `${sanitizeFilename(options.title || "chat")}-${date}.md`).catch(error => notify(String(error), {tone:"error"}));
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { isWebWorkspace } from "@/lib/nimi/web-connection";
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { useTranslation } from "react-i18next";
@@ -28,6 +29,7 @@ export function VersionBadge({ collapsed = false }: VersionBadgeProps) {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (isWebWorkspace) return;
     let active = true;
     const controller = new AbortController();
     const unsubscribe = subscribeAppUpdateStatus((signal) => {
@@ -57,7 +59,9 @@ export function VersionBadge({ collapsed = false }: VersionBadgeProps) {
     normalizeVersionTag(status?.current_version) ??
     normalizeVersionTag(process.env.NEXT_PUBLIC_APP_VERSION || "");
   const displayTag = tag ?? "—";
-  const state = error
+  const state = isWebWorkspace
+    ? { dot: "bg-[var(--muted-foreground)]/35", label: t("Updates are managed on your PC.") }
+    : error
     ? { dot: "bg-red-500", label: t("Status check failed") }
     : status?.update_available
       ? { dot: "bg-amber-500", label: t("Update available") }

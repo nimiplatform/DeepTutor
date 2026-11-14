@@ -1,3 +1,4 @@
+import { createLearningSocket } from "@/lib/nimi/web-socket";
 import { apiFetch, apiUrl, wsUrl } from "@/lib/api";
 import {
   BookSocketOperationError,
@@ -38,7 +39,7 @@ function requestOverSocket<T extends BookWsEvent>(
   resultType: string,
   onEvent?: (event: BookWsEvent) => void,
 ): Promise<T> {
-  return runBookSocketOperation<T>(() => new WebSocket(wsUrl(BOOK_WS_PATH)), {
+  return runBookSocketOperation<T>(() => createLearningSocket(wsUrl(BOOK_WS_PATH)), {
     message,
     resultType,
     onEvent,

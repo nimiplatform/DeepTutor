@@ -6,12 +6,28 @@ import { Duplex } from 'node:stream';
 import { app, session } from 'electron';
 import { BACKEND_PORT, BACKEND_ORIGIN, childEnvironment } from '../scripts/nimi-runtime-config.mjs';
 import { stopOwnedChild } from './owned-child.js';
+import WebSocket from 'ws';
 
 export class DeepTutorBackend {
   private child: ChildProcess | undefined;
   private stopping: Promise<void> | undefined;
   private readonly token = randomBytes(32).toString('hex');
   pipe: Duplex | undefined;
+  ready = false;
+
+  /** Internal App-owned broker only. The provider validates its closed business route before calling this. */
+  request(pathAndQuery: string, init: RequestInit, businessCookie?: string): Promise<Response> {
+    const headers = new Headers(init.headers);
+    headers.set('cookie', `deeptutor_host=${this.token}${businessCookie ? `; dt_token=${businessCookie}` : ''}`);
+    return fetch(`${BACKEND_ORIGIN}${pathAndQuery}`, { ...init, headers, redirect: 'manual' });
+  }
+
+  socket(pathAndQuery: string, businessCookie?: string): WebSocket {
+    return new WebSocket(`${BACKEND_ORIGIN.replace('http:', 'ws:')}${pathAndQuery}`, {
+      headers: { cookie: `deeptutor_host=${this.token}${businessCookie ? `; dt_token=${businessCookie}` : ''}` },
+      maxPayload: 2 * 1024 * 1024,
+    });
+  }
 
   async start(appRoot: string, rendererOrigin: string, ai?: { generation: number; attach(pipe: Duplex): void }): Promise<void> {
     const dataRoot = path.join(app.getPath('userData'), 'workspace');
@@ -48,7 +64,7 @@ export class DeepTutorBackend {
         const response = await fetch(`${BACKEND_ORIGIN}/health/ready`, {
           headers: { Cookie: `deeptutor_host=${this.token}` }, signal: AbortSignal.timeout(1000),
         });
-        if (response.ok) return;
+        if (response.ok) { this.ready = true; return; }
       } catch { /* The exact child is still starting. */ }
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
@@ -57,6 +73,7 @@ export class DeepTutorBackend {
   }
 
   stop(): Promise<void> {
+    this.ready = false;
     return this.stopping ??= this.stopChild();
   }
 

@@ -48,6 +48,11 @@ function redirectToLogin(
 
 export function proxy(req: NextRequest): NextResponse {
   const { pathname, search } = req.nextUrl;
+  if (process.env.NIMI_DEEPTUTOR_CARRIER === "web") {
+    if (/^\/api\/(runtime-access\/|auth\/runtime-clients\/)/.test(pathname)) return NextResponse.next();
+    if (isBackendPath(pathname) || pathname.startsWith("/files/")) return new NextResponse("Open this action from the connected DeepTutor workspace.",{status:403});
+    return NextResponse.next();
+  }
 
   if (isCodexCallbackPath(pathname)) {
     return NextResponse.rewrite(

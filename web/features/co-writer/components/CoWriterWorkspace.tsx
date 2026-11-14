@@ -1,4 +1,6 @@
 "use client";
+import { downloadWorkspaceFile } from "@/lib/nimi/workspace-download";
+import { workspaceLocalStorage } from "@/shared/storage/web-workspace";
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -282,7 +284,7 @@ export default function CoWriterWorkspace({ docId }: CoWriterWorkspaceProps) {
         // Prefer server content; fall back to local draft buffer if newer (rare:
         // page reloaded before debounced autosave completed).
         let content = document.content ?? "";
-        const localDraft = loadDraft(window.localStorage, docId);
+        const localDraft = loadDraft(workspaceLocalStorage, docId);
         if (localDraft && localDraft.content !== content) {
           content = localDraft.content;
           draftRevisionRef.current = localDraft.revision;
@@ -318,7 +320,7 @@ export default function CoWriterWorkspace({ docId }: CoWriterWorkspaceProps) {
   useEffect(() => {
     if (!hasLoadedDraft || !docId) return;
     draftRevisionRef.current += 1;
-    saveDraft(window.localStorage, docId, markdown, draftRevisionRef.current);
+    saveDraft(workspaceLocalStorage, docId, markdown, draftRevisionRef.current);
   }, [docId, hasLoadedDraft, isUnmountedRef, markdown]);
 
   // Debounced autosave to the server.
@@ -343,7 +345,7 @@ export default function CoWriterWorkspace({ docId }: CoWriterWorkspaceProps) {
         setLastSavedAt(
           updated.updated_at ? updated.updated_at * 1000 : Date.now(),
         );
-        clearDraft(window.localStorage, docId);
+        clearDraft(workspaceLocalStorage, docId);
         notifyCoWriterChanged();
       } catch (err) {
         if (isUnmountedRef.current) return;
@@ -779,16 +781,11 @@ export default function CoWriterWorkspace({ docId }: CoWriterWorkspaceProps) {
 
   const handleDownload = () => {
     const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
     const safeTitle = (docTitle || "co-writer")
       .trim()
       .replace(/[\\/:*?"<>|]/g, "-")
       .slice(0, 80);
-    anchor.download = `${safeTitle || "co-writer"}.md`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    void downloadWorkspaceFile(blob, `${safeTitle || "co-writer"}.md`).catch(error => setError(String(error)));
   };
 
   const handleExportDocx = useCallback(async () => {
@@ -800,16 +797,11 @@ export default function CoWriterWorkspace({ docId }: CoWriterWorkspaceProps) {
         title: docTitle || "co-writer",
         content: markdown,
       });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
       const safeTitle = (docTitle || "co-writer")
         .trim()
         .replace(/[\\/:*?"<>|]/g, "-")
         .slice(0, 80);
-      anchor.download = `${safeTitle || "co-writer"}.docx`;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      await downloadWorkspaceFile(blob, `${safeTitle || "co-writer"}.docx`);
     } catch (err) {
       setError(
         err instanceof Error

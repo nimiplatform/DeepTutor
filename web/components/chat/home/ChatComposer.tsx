@@ -168,6 +168,7 @@ const SEND_STATE_CLASS: Record<SendState, string> = {
 
 export default memo(function ChatComposer({
   composerRef,
+  mobileDraftKey,
   capMenuRef,
   capBtnRef,
   spaceMenuRef,
@@ -254,6 +255,7 @@ export default memo(function ChatComposer({
   inputPlaceholderCompletion,
   showCapabilityChip = true,
 }: {
+  mobileDraftKey?: string;
   composerRef: RefObject<HTMLDivElement | null>;
   capMenuRef: RefObject<HTMLDivElement | null>;
   capBtnRef: RefObject<HTMLButtonElement | null>;
@@ -771,6 +773,7 @@ export default memo(function ChatComposer({
           )}
           <ComposerInput
             ref={inputHandleRef}
+            mobileDraftKey={mobileDraftKey}
             textareaRef={textareaRef}
             isVisualizeMode={isVisualizeMode}
             isStreaming={isStreaming}
@@ -909,7 +912,7 @@ export default memo(function ChatComposer({
               area, no pill borders — quiet text/icon buttons that surface
               on hover. */}
           <div className="px-3 pb-2 pt-0.5">
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-x-1 gap-y-2">
               {showCapabilityChip && (
                 <div className="relative">
                   <button
@@ -1054,7 +1057,7 @@ export default memo(function ChatComposer({
                 />
               ) : null}
 
-              <div className="relative flex min-w-0 flex-1 items-center">
+              <div className="relative flex min-w-[32px] flex-1 items-center">
                 <button
                   ref={spaceBtnRef}
                   type="button"
@@ -1113,7 +1116,7 @@ export default memo(function ChatComposer({
                 </AnimatePresence>
               </div>
 
-              <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
                 {connectedAgents.length > 0 && onSelectAgent ? (
                   <AgentSelector
                     agents={connectedAgents}

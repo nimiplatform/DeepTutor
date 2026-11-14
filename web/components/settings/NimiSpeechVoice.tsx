@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { getNimiLocalAppClient } from "@/lib/nimi-client";
+import { readNimiVoices } from "@/lib/nimi-client";
 import { apiFetch, apiUrl } from "@/lib/api";
 
 export default function NimiSpeechVoice() {
@@ -14,7 +14,7 @@ export default function NimiSpeechVoice() {
     setBusy(true); setError("");
     try {
       const [options, response] = await Promise.all([
-        getNimiLocalAppClient().aiConfig.listOptions({ kind: "preset-voices" }),
+        readNimiVoices(),
         apiFetch(apiUrl("/api/settings")),
       ]);
       if (options.kind !== "preset-voices" || !response.ok) throw new Error(t("Voices could not be loaded."));

@@ -1,3 +1,4 @@
+import { isWebWorkspace, webBusinessCall } from "./nimi/web-connection";
 import { createNimiClient, type NimiLocalAppClient } from "@nimiplatform/sdk";
 import {
   createNimiLocalAppStandardShellSurface,
@@ -31,8 +32,10 @@ type ConnectionReader = {
 
 /** Formal same-Host recovery read. Never changes configuration or starts AI. */
 export async function readNimiModelConfiguration(
-  client: ConnectionReader = getNimiLocalAppClient(),
+  client?: ConnectionReader,
 ) {
+  if(isWebWorkspace)return (await webBusinessCall<{configuration:Awaited<ReturnType<ConnectionReader["aiConfig"]["get"]>>}>("inspect",{})).configuration;
+  client ??= getNimiLocalAppClient();
   const status = await client.auth.status();
   if (!status.sessionBound) {
     throw Object.assign(new Error(status.reasonCode), {
@@ -42,3 +45,5 @@ export async function readNimiModelConfiguration(
   }
   return client.aiConfig.get();
 }
+
+export function readNimiVoices(){return isWebWorkspace?webBusinessCall<Awaited<ReturnType<NimiLocalAppClient["aiConfig"]["listOptions"]>>>("voices",{}):getNimiLocalAppClient().aiConfig.listOptions({kind:"preset-voices"});}

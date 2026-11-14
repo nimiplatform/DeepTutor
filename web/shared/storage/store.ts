@@ -1,3 +1,4 @@
+import { scopedBrowserStorage, workspaceStorageKey } from "./web-workspace";
 import {
   STORAGE_NAMESPACE,
   physicalStorageKey,
@@ -131,8 +132,8 @@ export class StorageStore {
     const expected = physicalStorageKey(key);
     const storage = this.provider(key.scope);
     const onStorage = (event: StorageEventLike) => {
-      if (event.key !== expected) return;
-      if (event.storageArea && storage && event.storageArea !== storage) return;
+      if (event.key !== workspaceStorageKey(expected)) return;
+
       if (event.newValue === null) {
         listener(key.fallback);
         return;
@@ -148,7 +149,7 @@ export class StorageStore {
 export function createBrowserStorageStore(): StorageStore {
   if (typeof window === "undefined") return new StorageStore({});
   return new StorageStore(
-    { local: window.localStorage, session: window.sessionStorage },
+    { local: scopedBrowserStorage(window.localStorage), session: scopedBrowserStorage(window.sessionStorage) },
     window as unknown as StorageEventTargetLike,
   );
 }

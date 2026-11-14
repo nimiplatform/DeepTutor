@@ -1,4 +1,5 @@
 "use client";
+import { downloadWorkspaceFile } from "@/lib/nimi/workspace-download";
 
 import { browserStorage } from "@/shared/storage";
 
@@ -708,16 +709,7 @@ export function ReaderPane({
     dismissError();
     try {
       const { blob, filename } = await fetchExport(material.material_id);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      // Revoke on the next frame: revoking synchronously can cancel the download
-      // in some browsers before it has read the blob.
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      await downloadWorkspaceFile(blob, filename);
     } catch (error) {
       setError(error instanceof Error ? error.message : t("Export failed."));
     } finally {

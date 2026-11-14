@@ -1,3 +1,4 @@
+import { workspaceLocalStorage } from "../shared/storage/web-workspace";
 import type { CoWriterDocument } from "@/lib/co-writer-api";
 
 export interface ChatMarkdownNoteInput {
@@ -72,7 +73,7 @@ export function loadChatMarkdownNoteDraft(
   sessionId: string | null,
   storage: ChatMarkdownNoteStorage | null = typeof window === "undefined"
     ? null
-    : window.localStorage,
+    : workspaceLocalStorage,
 ): ChatMarkdownNoteDraft {
   if (!storage) return EMPTY_CHAT_MARKDOWN_NOTE_DRAFT;
 
@@ -102,7 +103,7 @@ export function saveChatMarkdownNoteDraft(
   draft: ChatMarkdownNoteDraft,
   storage: ChatMarkdownNoteStorage | null = typeof window === "undefined"
     ? null
-    : window.localStorage,
+    : workspaceLocalStorage,
 ): void {
   if (!storage) return;
   try {

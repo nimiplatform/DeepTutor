@@ -53,6 +53,7 @@ export async function forwardBackendUpload(
   request: Request,
   dependencies: UploadProxyDependencies = {},
 ): Promise<Response> {
+  if (process.env.NIMI_DEEPTUTOR_CARRIER === "web") return new Response("Use the connected workspace.",{status:403});
   const apiBaseUrl = dependencies.apiBaseUrl || resolveBackendApiBase();
   const fetchImpl = dependencies.fetchImpl || globalThis.fetch;
   const incomingUrl = new URL(request.url);

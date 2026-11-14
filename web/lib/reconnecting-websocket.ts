@@ -1,3 +1,4 @@
+import { createLearningSocket } from "@/lib/nimi/web-socket";
 const CONNECTING = 0;
 const OPEN = 1;
 
@@ -67,7 +68,7 @@ export class ReconnectingWebSocket {
     private readonly handlers: ReconnectingWebSocketHandlers,
     options: ReconnectingWebSocketOptions = {},
   ) {
-    this.createSocket = options.createSocket ?? ((url) => new WebSocket(url));
+    this.createSocket = options.createSocket ?? ((url) => createLearningSocket(url));
     this.shouldReconnect = options.shouldReconnect ?? (() => true);
     this.scheduler = options.scheduler ?? defaultScheduler;
     this.now = options.now ?? Date.now;

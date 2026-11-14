@@ -10,6 +10,7 @@ import { build } from "esbuild";
 async function loadOwner(file, name) {
   const result = await build({
     entryPoints: [file], bundle: true, platform: "node", format: "esm", write: false,
+    banner: { js: `import { createRequire } from 'node:module'; const require = createRequire(${JSON.stringify(import.meta.url)});` },
     plugins: [{ name: "electron-test-boundary", setup(builder) {
       builder.onResolve({ filter: /^electron$/ }, () => ({ path: "electron", namespace: "test" }));
       builder.onLoad({ filter: /.*/, namespace: "test" }, () => ({ contents: "export const app = {}; export const session = {};" }));

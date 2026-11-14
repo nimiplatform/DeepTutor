@@ -92,6 +92,7 @@ const APP_VERSION = (() => {
 })();
 
 const nextConfig = {
+  agentRules: false,
   // Keep the production build used by `deeptutor start` separate from the
   // `.next` development cache used by the explicit `deeptutor start --dev`.
   // Without separate directories either command can invalidate the other
@@ -108,13 +109,17 @@ const nextConfig = {
   // can compare it against GitHub's latest release.
   env: {
     NEXT_PUBLIC_APP_VERSION: APP_VERSION,
+    NEXT_PUBLIC_NIMI_CARRIER: process.env.NIMI_DEEPTUTOR_CARRIER || "desktop",
+    NEXT_PUBLIC_NIMI_WEB_CONFIG: process.env.DEEPTUTOR_NIMI_WEB_CONFIG || "",
+    NEXT_PUBLIC_NIMI_MOBILE_CONFIG: process.env.DEEPTUTOR_NIMI_MOBILE_CONFIG || "",
     NEXT_PUBLIC_API_BASE,
     NEXT_PUBLIC_AUTH_ENABLED,
   },
 
   // Standalone output: self-contained server.js + minimal node_modules
   // This eliminates the need to copy the full node_modules into Docker production images
-  output: "standalone",
+  output: process.env.NIMI_DEEPTUTOR_CARRIER === "web" && process.env.DEEPTUTOR_OPTIMIZED_WEB === "1"
+    ? undefined : "standalone",
   // Installed Nimi payloads are immutable. Keep image optimization available,
   // but never write its cache into the signed application resources.
   ...(NIMI_PACKAGED_BUILD ? { images: { maximumDiskCacheSize: 0 } } : {}),

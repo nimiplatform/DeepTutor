@@ -1,3 +1,4 @@
+import { workspaceStorageKey } from "../../shared/storage/web-workspace";
 /**
  * Client-side registry of imported "agents". An agent is a *named, scoped*
  * slice of one source folder (a `.claude` or `.codex` home): the user can carve
@@ -91,7 +92,7 @@ function migrate(
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = indexedDB.open(workspaceStorageKey(DB_NAME), DB_VERSION);
     request.onupgradeneeded = (event) => {
       migrate(request.result, request.transaction!, event.oldVersion);
     };

@@ -1,4 +1,5 @@
 "use client";
+import { createLearningSocket } from "@/lib/nimi/web-socket";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiUrl, wsUrl } from "@/lib/api";
@@ -157,7 +158,7 @@ export function useKnowledgeProgress(options?: UseKnowledgeProgressOptions) {
       const query = expectedTaskId
         ? `?task_id=${encodeURIComponent(expectedTaskId)}`
         : "";
-      const socket = new WebSocket(
+      const socket = createLearningSocket(
         wsUrl(
           `/ws/knowledge-bases/${encodeURIComponent(kbName)}/progress${query}`,
         ),

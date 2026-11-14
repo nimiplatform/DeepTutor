@@ -1,3 +1,4 @@
+import { createLearningSocket } from "@/lib/nimi/web-socket";
 import { wsUrl } from "@/lib/api";
 
 export interface QuizJudgeImage {
@@ -37,7 +38,7 @@ export function startQuizJudge(
   payload: QuizJudgeRequest,
   handlers: QuizJudgeHandlers,
 ): QuizJudgeHandle {
-  const ws = new WebSocket(wsUrl("/ws/questions/judge"));
+  const ws = createLearningSocket(wsUrl("/ws/questions/judge"));
   let buffer = "";
   let finished = false;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;

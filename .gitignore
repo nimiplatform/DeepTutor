@@ -339,3 +339,10 @@ celerybeat.pid
 *.wav
 *.ogg
 !demo/*.mp4
+
+# Developer-only Web TLS paths
+.env.web.local
+
+# The development callback and public loopback certificate are source inputs.
+!/android/app/src/debug/
+!/android/app/src/debug/**
