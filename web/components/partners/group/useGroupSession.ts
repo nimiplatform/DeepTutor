@@ -23,11 +23,7 @@ import {
   type PartnerInvocation,
 } from "@/lib/partner-groups-api";
 import { ReconnectingWebSocket } from "@/lib/reconnecting-websocket";
-import {
-  isNarrationMarker,
-  recomputeAnswerContent,
-  shouldAppendEventContent,
-} from "@/lib/stream";
+import { shouldAppendEventContent } from "@/lib/stream";
 import type { StreamEvent } from "@/features/chat/model/protocol";
 
 export type SeatStatus = "waiting" | "working" | "done" | "error";
@@ -92,19 +88,8 @@ type GroupFrame =
   | { type: "cancelled"; content?: string }
   | { type: "error"; content: string };
 
-/**
- * Grow a seat's visible body from one trace event.
- *
- * Answer text and narration arrive on the same ``content`` channel; a round is
- * only revealed as narration when its marker lands, so the body is appended
- * optimistically and recomputed when that happens. This is the same rule the
- * product chat uses (``lib/stream``), so a Partner's body reads identically in
- * both surfaces.
- */
+/** Grow the public body without withdrawing already published content. */
 function growBody(seat: Seat, event: StreamEvent): string {
-  if (isNarrationMarker(event)) {
-    return recomputeAnswerContent([...seat.events, event]);
-  }
   return shouldAppendEventContent(event)
     ? seat.streamed + (event.content || "")
     : seat.streamed;
@@ -437,6 +422,12 @@ export function useGroupSession(group: PartnerGroup, sessionKey: string) {
     }));
   }, [group.member_ids, live, messages, stoppedTurns]);
 
+  const reportConsultationActivity = useCallback((hasDraft: boolean, active: boolean) => {
+    socketRef.current?.send(JSON.stringify({
+      action: "consultation_activity", session_key: sessionKey, has_draft: hasDraft, active,
+    }));
+  }, [sessionKey]);
+
   const send = useCallback(
     (content: string, mentions: string[] | null) => {
       const socket = socketRef.current;
@@ -549,7 +540,9 @@ export function useGroupSession(group: PartnerGroup, sessionKey: string) {
   }, [live, messages]);
 
   return {
+    messages,
     rounds,
+    reportConsultationActivity,
     running: Boolean(live),
     progress,
     connected,

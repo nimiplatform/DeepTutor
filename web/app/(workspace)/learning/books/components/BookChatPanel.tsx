@@ -1,0 +1,739 @@
+"use client";
+
+import { browserStorage } from "@/shared/storage";
+import {
+  SUBMIT_CONNECT_RETRY_INTERVAL_MS,
+  SUBMIT_CONNECT_RETRY_LIMIT,
+} from "@/lib/send-retry";
+
+import { useEffect, useRef, useState } from "react";
+import type {
+  ChangeEvent,
+  ClipboardEvent,
+  KeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
+import {
+  FileText,
+  Loader2,
+  MessageSquare,
+  Paperclip,
+  Send,
+  X,
+} from "lucide-react";
+import { useTranslation } from "react-i18next";
+import AssistantResponse from "@/components/common/AssistantResponse";
+import {
+  AskUserOptions,
+  extractMessageSegments,
+} from "@/components/chat/home/AskUserOptions";
+import type { UserReplyPayload } from "@/hooks/use-card-submission";
+import { newCommandId } from "@/contracts/parse/turn-command";
+import { pendingAskUserKeyInMessages } from "@/lib/ask-user-state";
+import { useAppShell } from "@/context/AppShellContext";
+import { getSession } from "@/lib/session-api";
+import {
+  ATTACHMENT_ACCEPT,
+  classifyFile,
+  formatBytes,
+} from "@/lib/doc-attachments";
+import { useAttachmentLimits } from "@/lib/attachment-limits";
+import {
+  extractBase64FromDataUrl,
+  readFileAsDataUrl,
+} from "@/lib/file-attachments";
+import { shouldSubmitOnEnter } from "@/lib/composer-keyboard";
+import { useImeComposing } from "@/lib/use-ime-composing";
+import { useChatAutoScroll } from "@/hooks/useChatAutoScroll";
+import { shouldAppendEventContent } from "@/lib/stream";
+import type {
+  StartTurnMessage,
+  StreamEvent,
+} from "@/features/chat/model/protocol";
+import { UnifiedTurnClient } from "@/features/chat/transport/UnifiedTurnClient";
+import type { MessageAttachment } from "@/features/chat/ChatStateAdapter";
+import type { Page, Book } from "@/lib/book-types";
+import BookEditReview from "./BookEditReview";
+import Tooltip from "@/shared/ui/Tooltip";
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  streaming?: boolean;
+  attachments?: MessageAttachment[];
+  events?: StreamEvent[];
+  turnId?: string;
+}
+
+interface PendingAttachment {
+  type: "image" | "file" | "pdf";
+  filename: string;
+  base64: string;
+  mimeType: string;
+  size: number;
+}
+
+export interface BookChatPanelProps {
+  book: Book | null;
+  page: Page | null;
+  open: boolean;
+  onClose: () => void;
+  onBookChanged?: () => Promise<void> | void;
+  initialSessionId?: string | null;
+  onSessionResolved?: (sessionId: string) => void;
+}
+
+function attachmentTypeFor(file: File): PendingAttachment["type"] | null {
+  const kind = classifyFile(file);
+  if (!kind) return null;
+  if (kind === "image") return "image";
+  return file.type === "application/pdf" ||
+    file.name.toLowerCase().endsWith(".pdf")
+    ? "pdf"
+    : "file";
+}
+
+function outgoingAttachment(attachment: PendingAttachment) {
+  return {
+    type: attachment.type,
+    filename: attachment.filename,
+    base64: attachment.base64,
+    mime_type: attachment.mimeType,
+  };
+}
+
+function messageAttachment(attachment: PendingAttachment): MessageAttachment {
+  return {
+    type: attachment.type,
+    filename: attachment.filename,
+    base64: attachment.base64,
+    mime_type: attachment.mimeType,
+  };
+}
+
+function BookAssistantMessage({
+  message,
+  language,
+  onSubmit,
+}: {
+  message: ChatMessage;
+  language: string;
+  onSubmit: (reply: UserReplyPayload) => Promise<boolean>;
+}) {
+  const segments = extractMessageSegments(message.events, message.content, {
+    streaming: Boolean(message.streaming),
+  });
+  const response = (content: string, key?: string) => (
+    <AssistantResponse
+      key={key}
+      content={content}
+      language={language}
+      className="text-sm leading-relaxed"
+      isStreaming={Boolean(message.streaming)}
+    />
+  );
+  if (!segments.some((segment) => segment.kind === "ask_user")) {
+    return response(message.content);
+  }
+  return segments.map((segment) =>
+    segment.kind === "ask_user" ? (
+      <AskUserOptions key={segment.key} data={segment.data} onSubmit={onSubmit} />
+    ) : segment.kind === "text" ? (
+      response(segment.text, segment.key)
+    ) : null,
+  );
+}
+
+export default function BookChatPanel({
+  book,
+  page,
+  open,
+  onClose,
+  initialSessionId = null,
+  onSessionResolved,
+  onBookChanged,
+}: BookChatPanelProps) {
+  const { t } = useTranslation();
+  const { language: appLanguage } = useAppShell();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [width, setWidth] = useState(360);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const attachmentLimits = useAttachmentLimits();
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
+  const clientRef = useRef<UnifiedTurnClient | null>(null);
+  const turnIdRef = useRef<string | null>(null);
+  const replyCommandRef = useRef<{
+    fingerprint: string;
+    commandId: string;
+  } | null>(null);
+  const retryTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const lastMessage = messages.at(-1);
+  const {
+    containerRef: scrollerRef,
+    handleScroll,
+    shouldAutoScrollRef,
+  } = useChatAutoScroll({
+    hasMessages: open && messages.length > 0,
+    isStreaming: busy,
+    composerHeight: 0,
+    messageCount: messages.length,
+    lastMessageContent: lastMessage?.content,
+    lastEventCount: lastMessage?.events?.length,
+  });
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const { isComposingRef, onCompositionStart, onCompositionEnd } =
+    useImeComposing();
+
+  useEffect(() => {
+    const raw = browserStorage.readRaw("local", "deeptutor.bookChat.width");
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= 300 && parsed <= 720) {
+      // Hydrate persisted panel width after the SSR-safe default render.
+      setWidth(parsed);
+    }
+  }, []);
+
+  useEffect(() => {
+    browserStorage.writeRaw("local", "deeptutor.bookChat.width", String(width));
+  }, [width]);
+
+  useEffect(() => {
+    const retryTimers = retryTimersRef.current;
+    return () => {
+      retryTimers.forEach((timer) => clearTimeout(timer));
+      retryTimers.clear();
+      clientRef.current?.disconnect();
+      clientRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    // The first turn creates its session server-side. Persisting that same id
+    // back onto the book rerenders this component, but it is not a session
+    // switch: resetting here would disconnect the turn before its reply arrives.
+    if (initialSessionId && initialSessionId === sessionIdRef.current) return;
+    retryTimersRef.current.forEach((timer) => clearTimeout(timer));
+    retryTimersRef.current.clear();
+    clientRef.current?.disconnect();
+    clientRef.current = null;
+    sessionIdRef.current = initialSessionId || null;
+    shouldAutoScrollRef.current = true;
+    turnIdRef.current = null;
+    replyCommandRef.current = null;
+    // Reset local chat state when the backing page/session changes.
+    setMessages([]);
+    setAttachments([]);
+    setAttachmentError(null);
+    setBusy(false);
+
+    if (!open || !initialSessionId) return;
+    let settled = false;
+    void getSession(initialSessionId)
+      .then((session) => {
+        if (cancelled) return;
+        settled = true;
+        const activeTurn = session.active_turns?.[0];
+        const activeTurnId = activeTurn?.turn_id || activeTurn?.id;
+        const restored = (session.messages || [])
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .filter((m) => !(
+            activeTurnId && m.role === "assistant" && m.metadata?.turn_id === activeTurnId
+          ))
+          .map((m) => ({
+            turnId: typeof m.metadata?.turn_id === "string" ? m.metadata.turn_id : undefined,
+            role: m.role as "user" | "assistant",
+            content: String(m.content || ""),
+            attachments: m.attachments || [],
+            events: m.events || [],
+          }));
+        setMessages(restored);
+        if (activeTurnId) {
+          turnIdRef.current = activeTurnId;
+          setBusy(true);
+          // A paused turn's question only exists in its event log until it finishes.
+          ensureClient().send({
+            type: "subscribe_turn", turn_id: activeTurnId, after_seq: 0,
+          });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) sessionIdRef.current = null;
+      });
+
+    return () => {
+      cancelled = true;
+      // A restore cut short (a re-render, StrictMode's second pass) has not
+      // shown this conversation yet: let the next run load it again rather
+      // than mistake it for the session this panel's own turn created.
+      if (!settled && sessionIdRef.current === initialSessionId) sessionIdRef.current = null;
+    };
+    // Restore only at the page/session boundary, not on message renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [book?.id, page?.id, initialSessionId, open, shouldAutoScrollRef]);
+
+  function handleEvent(event: StreamEvent) {
+    if (event.turn_id) turnIdRef.current = event.turn_id;
+    if (event.type === "session") {
+      const metadata = (event.metadata || {}) as Record<string, unknown>;
+      const sessionId =
+        typeof metadata.session_id === "string"
+          ? metadata.session_id
+          : typeof event.session_id === "string"
+            ? event.session_id
+            : "";
+      if (sessionId) {
+        sessionIdRef.current = sessionId;
+        onSessionResolved?.(sessionId);
+      }
+      return;
+    }
+
+    if (event.type === "done") {
+      turnIdRef.current = null;
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last?.role === "assistant") {
+          next[next.length - 1] = { ...last, streaming: false };
+        }
+        return next;
+      });
+      setBusy(false);
+      return;
+    }
+
+    if (event.type === "error") {
+      turnIdRef.current = null;
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: event.content || t("Error"),
+          streaming: false,
+        },
+      ]);
+      setBusy(false);
+      return;
+    }
+
+    setMessages((prev) => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      const contentDelta = shouldAppendEventContent(event)
+        ? event.content || ""
+        : "";
+      if (last && last.role === "assistant" && last.streaming) {
+        next[next.length - 1] = {
+          ...last,
+          turnId: event.turn_id || last.turnId,
+          content: last.content + contentDelta,
+          events: [...(last.events || []), event],
+        };
+      } else if (contentDelta || event.type !== "content") {
+        next.push({
+          role: "assistant",
+          content: contentDelta,
+          turnId: event.turn_id,
+          streaming: true,
+          events: [event],
+        });
+      }
+      return next;
+    });
+  }
+
+  async function submitUserReply(turnId: string | undefined, reply: UserReplyPayload) {
+    if (!turnId || turnId !== turnIdRef.current) return false;
+    const fingerprint = JSON.stringify([
+      turnId, reply, pendingAskUserKeyInMessages(messages, turnId),
+    ]);
+    const commandId = replyCommandRef.current?.fingerprint === fingerprint
+      ? replyCommandRef.current.commandId : newCommandId();
+    replyCommandRef.current = { fingerprint, commandId };
+    const accepted = await ensureClient().sendAwaitingAck({
+      type: "submit_user_reply",
+      turn_id: turnId,
+      command_id: commandId,
+      ...reply,
+    });
+    if (!accepted && turnIdRef.current === turnId) {
+      turnIdRef.current = null;
+      setBusy(false);
+    }
+    return accepted;
+  }
+
+  function ensureClient(): UnifiedTurnClient {
+    if (clientRef.current) return clientRef.current;
+    const client = new UnifiedTurnClient(handleEvent, () => setBusy(false));
+    clientRef.current = client;
+    client.connect();
+    return client;
+  }
+
+  function sendWithRetry(
+    client: UnifiedTurnClient,
+    payload: StartTurnMessage,
+    attempt = 0,
+  ) {
+    if (client.connected) {
+      client.send(payload);
+      return;
+    }
+    if (attempt >= SUBMIT_CONNECT_RETRY_LIMIT) {
+      setBusy(false);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: t("Connection failed. Please try again."),
+        },
+      ]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      retryTimersRef.current.delete(timer);
+      sendWithRetry(client, payload, attempt + 1);
+    }, SUBMIT_CONNECT_RETRY_INTERVAL_MS);
+    retryTimersRef.current.add(timer);
+  }
+
+  function beginResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { startX: event.clientX, startWidth: width };
+  }
+
+  function moveResize(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = dragRef.current;
+    if (!drag) return;
+    setWidth(
+      Math.max(300, Math.min(720, drag.startWidth + drag.startX - event.clientX)),
+    );
+  }
+
+  function filterFiles(files: File[]): File[] {
+    setAttachmentError(null);
+    const currentTotal = attachments.reduce((sum, file) => sum + file.size, 0);
+    let nextTotal = currentTotal;
+    const accepted: File[] = [];
+    for (const file of files) {
+      const type = attachmentTypeFor(file);
+      if (!type) {
+        setAttachmentError(t("Unsupported file type."));
+        continue;
+      }
+      if (file.size > attachmentLimits.maxFileBytes) {
+        setAttachmentError(
+          t("File is too large ({{size}}).", { size: formatBytes(file.size) }),
+        );
+        continue;
+      }
+      if (nextTotal + file.size > attachmentLimits.maxTotalBytes) {
+        setAttachmentError(t("Attachments exceed the total upload limit."));
+        continue;
+      }
+      nextTotal += file.size;
+      accepted.push(file);
+    }
+    return accepted;
+  }
+
+  async function addFiles(files: File[]) {
+    const accepted = filterFiles(files);
+    if (!accepted.length) return;
+    const next = await Promise.all(
+      accepted.map(async (file) => {
+        const dataUrl = await readFileAsDataUrl(file);
+        return {
+          type: attachmentTypeFor(file) || "file",
+          filename: file.name,
+          base64: extractBase64FromDataUrl(dataUrl),
+          mimeType: file.type || "application/octet-stream",
+          size: file.size,
+        } satisfies PendingAttachment;
+      }),
+    );
+    setAttachments((prev) => [...prev, ...next]);
+  }
+
+  function handleFileInputChange(event: ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(event.target.files || []);
+    if (picked.length) void addFiles(picked);
+    event.target.value = "";
+  }
+
+  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files || []);
+    if (!files.length) return;
+    event.preventDefault();
+    void addFiles(files);
+  }
+
+  async function send() {
+    const text = input.trim();
+    if ((!text && attachments.length === 0) || busy || !book || !page) return;
+    const userContent =
+      text ||
+      (attachments.some((item) => item.type === "image")
+        ? t(
+            "Please analyze the attached image(s) using this chapter as context.",
+          )
+        : t("Please use the attached file(s) and this chapter as context."));
+    const sentAttachments = attachments.map(messageAttachment);
+    shouldAutoScrollRef.current = true;
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: userContent, attachments: sentAttachments },
+    ]);
+    setInput("");
+    setAttachments([]);
+    setAttachmentError(null);
+    setBusy(true);
+
+    const client = ensureClient();
+    const payload: StartTurnMessage = {
+      type: "start_turn",
+      content: userContent,
+      session_id: sessionIdRef.current,
+      capability: "chat",
+      // No `tools` field: the backend back-fills the reader's own Settings
+      // selection when it is absent (turn_runtime treats an explicit list —
+      // including []) as a deliberate override), and `rag` mounts itself from
+      // `knowledge_bases`. Pinning ["rag"] here disabled every other tool the
+      // reader had switched on.
+      knowledge_bases: book.knowledge_bases || [],
+      attachments: attachments.map(outgoingAttachment),
+      // The book, not the UI chrome, decides the language of this conversation.
+      language: book.language || appLanguage,
+      book_references: [{ book_id: book.id, page_ids: [page.id] }],
+    };
+    sendWithRetry(client, payload);
+  }
+
+  if (!open) return null;
+
+  return (
+    <aside
+      className="relative flex h-full shrink-0 flex-col bg-[rgb(var(--dt-ink,55_53_47)/0.022)]"
+      style={{ width }}
+    >
+      <div className="absolute inset-y-0 left-0 z-10 flex w-2">
+        <Tooltip label={t("Drag to resize")}>
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t("Drag to resize")}
+            aria-valuemin={300}
+            aria-valuemax={720}
+            aria-valuenow={width}
+            tabIndex={0}
+            onPointerDown={beginResize}
+            onPointerMove={moveResize}
+            onPointerUp={() => {
+              dragRef.current = null;
+            }}
+            onPointerCancel={() => {
+              dragRef.current = null;
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.preventDefault();
+                setWidth((current) =>
+                  Math.max(
+                    300,
+                    Math.min(720, current + (event.key === "ArrowLeft" ? 16 : -16)),
+                  ),
+                );
+              } else if (event.key === "Home" || event.key === "End") {
+                event.preventDefault();
+                setWidth(event.key === "Home" ? 300 : 720);
+              }
+            }}
+            className="h-full w-2 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-[color-mix(in_srgb,var(--primary)_30%,transparent)] focus-visible:bg-[color-mix(in_srgb,var(--primary)_30%,transparent)] focus-visible:outline-2 focus-visible:outline-[var(--primary)]"
+          />
+        </Tooltip>
+      </div>
+      <header className="flex items-center justify-between px-4 pb-2 pt-3.5">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium text-[var(--foreground)]">
+            <MessageSquare className="h-4 w-4 text-[var(--primary)]" />
+            {t("Page Chat")}
+          </div>
+          {page?.title && (
+            <div className="mt-1 truncate text-[11px] text-[var(--muted-foreground)]">
+              {t("Context")}: {page.title}
+            </div>
+          )}
+        </div>
+        <button
+          onClick={onClose}
+          className="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--background)] hover:text-[var(--foreground)]"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </header>
+
+      <div
+        ref={scrollerRef}
+        data-chat-scroll-root="true"
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto px-4 py-3"
+        style={{ overflowAnchor: "none" }}
+      >
+          {book && page && book.can_edit !== false && onBookChanged && <BookEditReview key={`${book.id}:${page.id}`} bookId={book.id} pageId={page.id} revision={book.revision || 1} refreshKey={busy} onChanged={onBookChanged} />}
+        {messages.length === 0 ? (
+          <div className="rounded-2xl bg-[var(--background)] p-4 text-xs leading-5 text-[var(--muted-foreground)]">
+            {t(
+              "Ask a question about this page. The current chapter content is sent to the assistant automatically.",
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {messages.map((m, i) => (
+              <div
+                key={i}
+                className={
+                  m.role === "user" ? "flex justify-end" : "flex justify-start"
+                }
+              >
+                <div
+                  className={
+                    m.role === "user"
+                      ? "max-w-[82%] rounded-2xl rounded-tr-sm bg-[var(--primary)] px-3 py-2 text-sm text-[var(--primary-foreground)] shadow-sm"
+                      : "max-w-[88%] rounded-2xl rounded-tl-sm bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] shadow-sm"
+                  }
+                >
+                  {m.role === "user" && (
+                    <div className="mb-1 text-right text-[10px] font-medium uppercase tracking-wide opacity-75">
+                      {t("You")}
+                    </div>
+                  )}
+                  {m.attachments?.length ? (
+                    <div className="mb-2 flex flex-wrap justify-end gap-1.5">
+                      {m.attachments.map((attachment, idx) => (
+                        <span
+                          key={`${attachment.filename || idx}-${idx}`}
+                          className="inline-flex max-w-full items-center gap-1 rounded-lg bg-black/10 px-2 py-1 text-[10px]"
+                        >
+                          <FileText className="h-3 w-3 shrink-0" />
+                          <span className="truncate">
+                            {attachment.filename || t("Attachment")}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {m.role === "assistant" ? (
+                    <BookAssistantMessage
+                      message={m}
+                      language={book?.language || appLanguage}
+                      onSubmit={(reply) => submitUserReply(m.turnId, reply)}
+                    />
+                  ) : (
+                    <div className="whitespace-pre-wrap break-words">
+                      {m.content}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void send();
+        }}
+        className="px-3 pb-3 pt-1"
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={ATTACHMENT_ACCEPT}
+          onChange={handleFileInputChange}
+          className="hidden"
+          aria-hidden="true"
+          tabIndex={-1}
+        />
+        {attachments.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {attachments.map((attachment, index) => (
+              <span
+                key={`${attachment.filename}-${index}`}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--background)] px-2 py-1 text-[11px] text-[var(--foreground)] shadow-[0_0_0_1px_rgb(var(--dt-ink,55_53_47)/0.08)]"
+              >
+                <FileText className="h-3 w-3 shrink-0 text-[var(--muted-foreground)]" />
+                <span className="truncate">{attachment.filename}</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAttachments((prev) => prev.filter((_, i) => i !== index))
+                  }
+                  className="opacity-60 hover:opacity-100"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        {attachmentError && (
+          <div className="mb-2 text-[11px] text-red-500">{attachmentError}</div>
+        )}
+        <div className="dt-soft-input flex items-end gap-2 rounded-2xl bg-[var(--background)] px-2 py-2">
+          <Tooltip label={t("Attach files")}>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="mb-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+              aria-label={t("Attach files")}
+            >
+              <Paperclip className="h-4 w-4" />
+            </button>
+          </Tooltip>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={t("Ask about this page…")}
+            rows={1}
+            onPaste={handlePaste}
+            onCompositionStart={onCompositionStart}
+            onCompositionEnd={onCompositionEnd}
+            onKeyDown={(e: KeyboardEvent<HTMLTextAreaElement>) => {
+              if (shouldSubmitOnEnter(e, isComposingRef.current)) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+            className="max-h-32 min-h-8 flex-1 resize-none bg-transparent px-1 py-1.5 text-sm text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
+          />
+          <button
+            type="submit"
+            disabled={
+              busy ||
+              (!input.trim() && attachments.length === 0) ||
+              !book ||
+              !page
+            }
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--primary)] text-[var(--primary-foreground)] transition-opacity disabled:opacity-50"
+          >
+            {busy ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+          </button>
+        </div>
+      </form>
+    </aside>
+  );
+}

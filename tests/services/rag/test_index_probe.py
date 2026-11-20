@@ -52,6 +52,15 @@ def test_llamaindex_requires_real_storage_files(tmp_path: Path) -> None:
     assert probe.doc_count == 1
 
 
+def test_empty_kb_has_no_failure_summary(tmp_path: Path) -> None:
+    (tmp_path / "raw").mkdir()
+
+    assert inspect_kb_versions(tmp_path, "llamaindex") == []
+    assert has_ready_provider_index(tmp_path, "llamaindex") is False
+    assert provider_failure_summary(tmp_path, "llamaindex") == ""
+    assert provider_failure_summary(tmp_path, "llamaindex", versions=[]) == ""
+
+
 def test_kb_versions_overrule_fake_llamaindex_ready_marker(tmp_path: Path) -> None:
     version_dir = tmp_path / "version-1"
     version_dir.mkdir()
@@ -159,6 +168,42 @@ def test_lightrag_uses_doc_status_as_truth(tmp_path: Path) -> None:
     probe = inspect_provider_index("lightrag", version_dir)
     assert probe.ready is True
     assert probe.doc_count == 1
+
+
+def test_lightrag_native_layout_counts_docs_in_workspace_subdir(tmp_path: Path) -> None:
+    # Native LightRAG keeps its KV stores under a ``deeptutor_<hash>`` workspace
+    # subdir, not at the version root. The probe must resolve that store before
+    # counting, otherwise a ready index reports ``doc_count=None``.
+    version_dir = tmp_path / "version-1"
+    version_dir.mkdir()
+    workspace = "deeptutor_" + "ab" * 8  # matches deeptutor_[0-9a-f]{16}
+    (version_dir / "meta.json").write_text(
+        json.dumps(
+            {
+                "version": "version-1",
+                "provider": "lightrag",
+                "signature": "lightrag",
+                "state": "published",
+                "workspace": workspace,
+            }
+        ),
+        encoding="utf-8",
+    )
+    store_root = version_dir / workspace
+    store_root.mkdir()
+    (store_root / "kv_store_doc_status.json").write_text(
+        json.dumps(
+            {
+                "doc-1": {"status": "processed", "chunks_list": ["chunk-1"]},
+                "doc-2": {"status": "processed", "chunks_list": ["chunk-2", "chunk-3"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    probe = inspect_provider_index("lightrag", version_dir)
+    assert probe.ready is True
+    assert probe.doc_count == 2
 
 
 def test_provider_mismatch_is_not_ready(tmp_path: Path) -> None:

@@ -5,10 +5,13 @@ import type {
 } from "@/contracts/generated/turn-protocol";
 import {
   buildPing,
+  buildCancelTurn,
   buildResumeTurn,
   newCommandId,
 } from "@/contracts/parse/turn-command";
 import { parseTurnEvent } from "@/contracts/parse/turn-event";
+import { scopedUrl } from "@/lib/workspace-scope";
+import { NO_LLM_ACCESS } from "../model/protocol";
 
 import {
   browserSocketFactory,
@@ -18,6 +21,7 @@ import {
   type TurnSocketFactory,
 } from "./socket";
 import { reconnectDelay, shouldReconnect } from "./reconnect-policy";
+import { CommandDeliveryError } from "./command-delivery";
 
 export type RuntimeConnectionState =
   | "idle"
@@ -38,6 +42,7 @@ export interface TurnRuntimeClientOptions {
   random?: () => number;
   maxBufferedGap?: number;
   replayProbeDelayMs?: number;
+  commandAckTimeoutMs?: number;
   onEvent: (event: ServerEvent) => void;
   onStateChange?: (state: RuntimeConnectionState) => void;
   onDiagnostic?: (diagnostic: string) => void;
@@ -52,6 +57,8 @@ interface PendingCommand {
   sentGeneration: number;
   /** Settled with the server's verdict, for callers that await one. */
   settle?: (accepted: boolean) => void;
+  fail?: (error: Error) => void;
+  timeoutHandle?: unknown;
 }
 
 const ACKNOWLEDGED_COMMAND_TYPES = new Set([
@@ -96,6 +103,7 @@ export class TurnRuntimeClient {
       | "random"
       | "maxBufferedGap"
       | "replayProbeDelayMs"
+      | "commandAckTimeoutMs"
     >
   > &
     Omit<
@@ -106,6 +114,7 @@ export class TurnRuntimeClient {
       | "random"
       | "maxBufferedGap"
       | "replayProbeDelayMs"
+      | "commandAckTimeoutMs"
     >;
   private socket: TurnSocket | null = null;
   private reconnectHandle: unknown = null;
@@ -120,15 +129,25 @@ export class TurnRuntimeClient {
   private pending: PendingCommand[] = [];
   private connectionState: RuntimeConnectionState = "idle";
   private terminalObserved = false;
+  private cancellation: {
+    promise: Promise<boolean>;
+    resolve: (accepted: boolean) => void;
+    reject: (error: Error) => void;
+    timer: unknown;
+    dispatched: boolean;
+  } | null = null;
+  private stoppingTurn = false;
+  private stoppedFrames: ServerEvent[] = [];
 
   constructor(options: TurnRuntimeClientOptions) {
     this.options = {
-      url: "/ws",
+      url: scopedUrl("/ws"),
       socketFactory: browserSocketFactory,
       scheduler: defaultScheduler,
       random: Math.random,
       maxBufferedGap: 32,
       replayProbeDelayMs: 5_000,
+      commandAckTimeoutMs: 30_000,
       ...options,
     };
   }
@@ -146,7 +165,18 @@ export class TurnRuntimeClient {
     if (this.socket && this.socket.readyState <= SOCKET_OPEN) return;
     this.clearReconnect();
     this.setState(this.turnId ? "recovering" : "connecting");
-    const socket = this.options.socketFactory(this.options.url);
+    let socket: TurnSocket;
+    try {
+      socket = this.options.socketFactory(this.options.url);
+    } catch {
+      this.socket = null;
+      this.clearReplayProbe();
+      this.options.onDiagnostic?.(
+        "turn socket factory failed; scheduling reconnect",
+      );
+      this.scheduleReconnect();
+      return;
+    }
     this.socket = socket;
 
     socket.addEventListener("open", () => this.handleOpen(socket));
@@ -203,17 +233,31 @@ export class TurnRuntimeClient {
    * waiting, most often because the backend restarted since the question was
    * asked — is otherwise only a console diagnostic, which leaves whatever UI
    * is waiting on it pending forever. Resolves ``false`` for a rejection and
-   * for a client that stops before the acknowledgement arrives; a command
+   * throws a delivery error when no acknowledgement arrives; a command
    * type the protocol never acknowledges resolves ``true`` on dispatch.
    */
   sendAwaitingAck(command: ClientCommand): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
-      const pending = this.enqueue(command);
-      if (!pending.requiresAck) {
-        resolve(true);
-        return;
+    return new Promise<boolean>((resolve, reject) => {
+      const prepared = prepareCommand(command);
+      const pending: PendingCommand = {
+        ...prepared,
+        acknowledgedAfter: this.lastSeq,
+        sentGeneration: -1,
+        settle: resolve,
+        fail: reject,
+      };
+      if (pending.requiresAck) {
+        // A live connection can still lose its ACK. Reopen the card without
+        // declaring the server's question expired, and don't send a timed-out
+        // answer later behind the learner's back (#1648).
+        pending.timeoutHandle = this.options.scheduler.setTimeout(() => {
+          this.pending = this.pending.filter((item) => item !== pending);
+          reject(new CommandDeliveryError());
+        }, this.options.commandAckTimeoutMs);
       }
-      pending.settle = resolve;
+      this.pending.push(pending);
+      this.flushPending();
+      if (!pending.requiresAck) resolve(true);
     });
   }
 
@@ -227,6 +271,79 @@ export class TurnRuntimeClient {
     this.pending.push(pending);
     this.flushPending();
     return pending;
+  }
+
+  private clearCommandTimeout(pending: PendingCommand): void {
+    if (pending.timeoutHandle === undefined) return;
+    this.options.scheduler.clearTimeout(pending.timeoutHandle);
+    pending.timeoutHandle = undefined;
+  }
+
+  /** Keep admission and the socket alive until cancellation has released ownership. */
+  cancelCurrentTurn(): Promise<boolean> {
+    if (this.cancellation) return this.cancellation.promise;
+    const starts = this.pending.filter(
+      (item) =>
+        typeof item.command.type === "string" &&
+        ["start_turn", "message", "regenerate"].includes(item.command.type),
+    );
+    if (!this.turnId && !starts.some((item) => item.sentGeneration >= 0)) {
+      this.pending = this.pending.filter((item) => !starts.includes(item));
+      return Promise.resolve(true);
+    }
+    this.stoppingTurn = true;
+    let resolve!: (accepted: boolean) => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<boolean>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    const flight = {
+      promise,
+      resolve,
+      reject,
+      timer: undefined as unknown,
+      dispatched: false,
+    };
+    this.cancellation = flight;
+    flight.timer = this.options.scheduler.setTimeout(() => {
+      if (this.cancellation !== flight) return;
+      this.cancellation = null;
+      reject(new CommandDeliveryError());
+    }, this.options.commandAckTimeoutMs);
+    this.dispatchCancellation();
+    return promise;
+  }
+
+  private dispatchCancellation(): void {
+    const flight = this.cancellation;
+    if (!flight || flight.dispatched || !this.turnId) return;
+    flight.dispatched = true;
+    void this.sendAwaitingAck(buildCancelTurn(this.turnId)).then(
+      (accepted) => {
+        if (this.cancellation !== flight) return;
+        this.finishCancellation(accepted);
+      },
+      (error) => {
+        if (this.cancellation !== flight) return;
+        this.options.scheduler.clearTimeout(flight.timer);
+        this.cancellation = null;
+        flight.reject(error);
+      },
+    );
+  }
+
+  private finishCancellation(accepted: boolean): void {
+    const flight = this.cancellation;
+    if (!flight) return;
+    this.options.scheduler.clearTimeout(flight.timer);
+    this.cancellation = null;
+    if (accepted) {
+      this.stoppingTurn = false;
+      for (const event of this.stoppedFrames.splice(0))
+        this.options.onEvent(event);
+    }
+    flight.resolve(accepted);
   }
 
   cancel(command: ClientCommand): void {
@@ -247,6 +364,13 @@ export class TurnRuntimeClient {
   }
 
   stop(): void {
+    if (this.cancellation) {
+      this.options.scheduler.clearTimeout(this.cancellation.timer);
+      this.cancellation.reject(new CommandDeliveryError());
+      this.cancellation = null;
+    }
+    this.stoppingTurn = false;
+    this.stoppedFrames = [];
     this.stopped = true;
     this.clearReconnect();
     this.clearReplayProbe();
@@ -255,7 +379,10 @@ export class TurnRuntimeClient {
     socket?.close(1000, "client stopped");
     // Nobody is left to acknowledge these, so release their waiters rather
     // than leaving the UI that sent them pending forever.
-    for (const pending of this.pending) pending.settle?.(false);
+    for (const pending of this.pending) {
+      this.clearCommandTimeout(pending);
+      pending.fail?.(new CommandDeliveryError());
+    }
     this.pending = [];
     this.buffered.clear();
     this.setState("stopped");
@@ -286,8 +413,10 @@ export class TurnRuntimeClient {
     if (event.type === "command_ack") {
       const remaining: PendingCommand[] = [];
       for (const item of this.pending) {
-        if (item.commandId === event.command_id) item.settle?.(event.accepted);
-        else remaining.push(item);
+        if (item.commandId === event.command_id) {
+          this.clearCommandTimeout(item);
+          item.settle?.(event.accepted);
+        } else remaining.push(item);
       }
       this.pending = remaining;
       if (!event.accepted) {
@@ -299,6 +428,9 @@ export class TurnRuntimeClient {
       return;
     }
     if (event.type === "protocol_error") {
+      if (!this.turnId &&
+          (event.error_code === "start_turn_rejected" || event.error_code === NO_LLM_ACCESS))
+        this.finishCancellation(true);
       this.options.onDiagnostic?.(
         `turn protocol error; code=${event.error_code}; retryable=${String(event.retryable)}`,
       );
@@ -307,6 +439,7 @@ export class TurnRuntimeClient {
     }
     if (event.type === "active_turn_info") {
       if (event.turn_id) this.turnId = event.turn_id;
+      this.dispatchCancellation();
       this.options.onEvent(event);
       return;
     }
@@ -363,7 +496,14 @@ export class TurnRuntimeClient {
       this.terminalObserved = true;
       this.clearReplayProbe();
     }
-    this.options.onEvent(event);
+    this.dispatchCancellation();
+    if (
+      this.stoppingTurn &&
+      (event.type === "done" ||
+        (event.type === "error" && event.metadata?.turn_terminal === true))
+    ) {
+      this.stoppedFrames.push(event);
+    } else this.options.onEvent(event);
     if (event.type === "done") return;
     if (!this.terminalObserved) this.scheduleReplayProbe();
   }

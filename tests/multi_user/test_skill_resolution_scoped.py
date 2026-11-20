@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import HTTPException
 import pytest
 
+from deeptutor.core.errors import AccessError
 from deeptutor.multi_user import grants as grants_mod
 from deeptutor.multi_user.skill_access import (
     assert_skill_allowed,
@@ -57,7 +58,7 @@ def test_assigned_skill_loads_admin_skill_body(mu_isolated_root, as_user):
 
 def test_unassigned_skill_rejected(mu_isolated_root, as_user):
     with as_user("u_bob", role="user"):
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(AccessError) as exc:
             assert_skill_allowed("forbidden-skill")
         assert exc.value.status_code == 403
 
@@ -66,3 +67,28 @@ def test_admin_skip_grant_check(mu_isolated_root, as_user):
     with as_user("u_root", role="admin"):
         # Admin doesn't go through grant filtering at all.
         assert_skill_allowed("anything")
+
+
+def test_assigned_skills_follow_admin_system_workspace_move(mu_isolated_root, as_user):
+    from types import SimpleNamespace
+
+    from deeptutor.multi_user.context import user_from_token_payload
+    from deeptutor.multi_user.paths import user_context
+    from deeptutor.services.skill.service import get_admin_skill_service, get_skill_service
+    from deeptutor.services.workspace import ContentWorkspaceService
+
+    # Admin account tokens share the canonical admin scope and system root.
+    admin = user_from_token_payload(
+        SimpleNamespace(user_id="account-admin", username="admin", role="admin")
+    )
+    with user_context(admin):
+        skills = get_skill_service()
+        _write_skill(skills.root, "moved-skill", "Read the new location.")
+        service = ContentWorkspaceService()
+        target = mu_isolated_root / "moved-system"
+        with service.maintenance():
+            service.migrate_workspace(service._builtin_id("system"), str(target))
+        assert get_admin_skill_service().root == target / "skills"
+    _grant_skills("u_alice", ["moved-skill"])
+    with as_user("u_alice", role="user"):
+        assert "Read the new location." in assigned_skill_detail("moved-skill")["content"]

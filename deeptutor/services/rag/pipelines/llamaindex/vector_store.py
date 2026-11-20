@@ -259,16 +259,34 @@ def load_index(storage_dir: Path) -> Any:
 
     from deeptutor.services.embedding import get_embedding_config
 
-    from .embedding_adapter import CustomEmbedding
+    from .embedding_adapter import CustomEmbedding, current_embedding
 
-    metadata = json.loads((storage_dir / "meta.json").read_text(encoding="utf-8"))
-    if not metadata.get("space_id"):
-        raise ValueError("This index has no Nimi embedding space. Re-index it before retrieval.")
-    embedding_model = CustomEmbedding(
-        embedding_config=replace(
-            get_embedding_config(), space_id=metadata["space_id"], dim=metadata["dimension"]
-        )
-    )
+    meta_path = storage_dir / "meta.json"
+    if meta_path.is_file():
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        if metadata.get("binding") == "nimi" or get_embedding_config().binding == "nimi":
+            if not metadata.get("space_id"):
+                raise ValueError(
+                    "This index has no Nimi embedding space. Re-index it before retrieval."
+                )
+            embedding_model = CustomEmbedding(
+                embedding_config=replace(
+                    get_embedding_config(),
+                    space_id=metadata["space_id"],
+                    dim=metadata["dimension"],
+                )
+            )
+        else:
+            embedding_model = current_embedding()
+    else:
+        active = current_embedding()
+        active_cfg = getattr(getattr(active, "_client", None), "config", None)
+        if get_embedding_config().binding == "nimi":
+            if active_cfg is None or not getattr(active_cfg, "space_id", None):
+                raise ValueError(
+                    "This index has no Nimi embedding space. Re-index it before retrieval."
+                )
+        embedding_model = active
 
     if detect_backend(storage_dir) == BACKEND_FAISS:
         cosine_cls = _cosine_faiss_cls()

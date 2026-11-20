@@ -23,6 +23,7 @@ from typing import Any
 from deeptutor.capabilities.protocol import PromptBlock
 from deeptutor.services.llm.context_window import (
     coerce_positive_int,
+    known_context_window,
     resolve_effective_context_window,
 )
 
@@ -38,9 +39,11 @@ _BLOCK_SEGMENTS: dict[str, str] = {
     "general": "system_prompt",
     "runtime_policy": "system_prompt",
     "loop": "system_prompt",
+    "runtime_snapshot_policy": "system_prompt",
     "persona_style": "persona_style",
     "partner_turn_policy": "partner_turn_policy",
     "memory": "memory",
+    "learning_journal": "learning_journal",
     "tools": "tool_manifest",
     "knowledge_base_note": "knowledge_base_note",
     "skills": "skills",
@@ -48,6 +51,7 @@ _BLOCK_SEGMENTS: dict[str, str] = {
     "extended_tools": "extended_tools",
     "notebooks": "notebooks",
     "workspace": "workspace",
+    "workspace_instructions": "workspace_instructions",
 }
 _CAPABILITY_SEGMENT = "capability"
 
@@ -203,6 +207,9 @@ def resolve_window_info(
     configured = coerce_positive_int(context_window)
     if configured is not None:
         return ContextWindowInfo(window=configured, estimated=False)
+    known = known_context_window(model)
+    if known is not None:
+        return ContextWindowInfo(window=known, estimated=False)
     return ContextWindowInfo(
         window=resolve_effective_context_window(model=model, max_tokens=max_tokens),
         estimated=True,
@@ -212,17 +219,20 @@ def resolve_window_info(
 def detect_counter_name() -> str:
     """Name of the tokenizer ``count_tokens`` will actually use in this process.
 
-    ``count_tokens`` swallows a missing or broken tiktoken and silently drops to
-    a chars/4 estimate; probing the same import keeps the reported counter from
-    claiming an accuracy the numbers do not have.
+    Both share the offline-safe acquisition in
+    :mod:`deeptutor.services.session.token_encoding`: the name is
+    ``cl100k_base`` only once a verified local encoding has been acquired in
+    the background, and ``heuristic`` whenever the chars/4 estimate is in
+    play — missing tiktoken, cold cache, or acquisition still pending or
+    failed. Probing that way can neither start the no-timeout CDN download
+    nor block the loop (#2522).
     """
-    try:
-        import tiktoken
+    # Imported lazily, like ``_default_counter`` below: the session package
+    # pulls in the agent base classes, so a module-level import would close a
+    # cycle.
+    from deeptutor.services.session.token_encoding import ENCODING_NAME, get_local_encoding
 
-        tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        return "heuristic"
-    return "cl100k_base"
+    return ENCODING_NAME if get_local_encoding() is not None else "heuristic"
 
 
 def count_conversation_tokens(
@@ -286,11 +296,31 @@ def _build(
     counter: TokenCounter,
 ) -> dict[str, Any]:
     block_totals = _prompt_block_tokens(blocks, counter)
+    from .prompt_blocks import RUNTIME_BLOCK_NAMES
+
+    runtime_snapshot = next(
+        (m for m in reversed(request.messages) if m.get("_context_snapshot")), None
+    )
+    dynamic_blocks = (
+        [b for b in blocks if b.name in RUNTIME_BLOCK_NAMES] if runtime_snapshot else []
+    )
+    system_blocks = [b for b in blocks if b not in dynamic_blocks]
+    dynamic_tokens = sum(_prompt_block_tokens(dynamic_blocks, counter).values())
     totals: dict[str, int] = {}
     _merge(totals, block_totals)
-    _merge(totals, {"system_prompt": _render_overhead(request.messages, block_totals, counter)})
+    _merge(
+        totals,
+        {
+            "system_prompt": _render_overhead(
+                request.messages, _prompt_block_tokens(system_blocks, counter), counter
+            )
+        },
+    )
     _merge(totals, _tool_schema_tokens(request.tool_schemas, set(loaded_deferred_names), counter))
-    _merge(totals, {"messages": count_conversation_tokens(request.messages, counter)})
+    _merge(
+        totals,
+        {"messages": max(0, count_conversation_tokens(request.messages, counter) - dynamic_tokens)},
+    )
 
     # Rank once, then derive both the emitted segments and the total from it,
     # so ``used_tokens == sum(segments[].tokens)`` holds by construction rather

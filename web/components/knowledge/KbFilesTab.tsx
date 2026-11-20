@@ -1,5 +1,6 @@
 "use client";
 
+import { knowledgeBaseRef } from "@/lib/knowledge-helpers";
 import { useEffect, useMemo, useState } from "react";
 import {
   knowledgeBaseFilePath,
@@ -12,6 +13,7 @@ import type { FilePreviewSource } from "@/components/chat/preview/previewerFor";
 import { useCollapsiblePanel } from "@/hooks/useCollapsiblePanel";
 import KbDocumentList from "./KbDocumentList";
 import KbFilePreview from "./KbFilePreview";
+import KbVisualCoverage from "./KbVisualCoverage";
 
 interface KbFilesTabProps {
   kb: KnowledgeBase;
@@ -25,6 +27,7 @@ interface KbFilesTabProps {
  * to reclaim horizontal space for the actual preview content.
  */
 export default function KbFilesTab({ kb, task }: KbFilesTabProps) {
+  const kbRef = knowledgeBaseRef(kb);
   const [selectedFile, setSelectedFile] = useState<KnowledgeBaseFile | null>(
     null,
   );
@@ -46,20 +49,20 @@ export default function KbFilesTab({ kb, task }: KbFilesTabProps) {
     return {
       filename: selectedFile.name,
       mimeType: selectedFile.mime_type ?? undefined,
-      url: knowledgeBaseFilePath(kb.name, selectedFile.name),
+      url: knowledgeBaseFilePath(kbRef, selectedFile.name),
       extractedTextUrl: knowledgeBaseFilePreviewTextPath(
-        kb.name,
+        kbRef,
         selectedFile.name,
       ),
       size: selectedFile.size,
-      id: `${kb.name}/${selectedFile.name}`,
+      id: `${kbRef}/${selectedFile.name}`,
     };
-  }, [kb.name, selectedFile]);
+  }, [kbRef, selectedFile]);
 
   return (
     <div className="flex h-full min-h-0">
       <KbDocumentList
-        kbName={kb.name}
+        kbName={kbRef}
         refreshKey={refreshKey}
         selectedFile={selectedFile?.name ?? null}
         onSelect={setSelectedFile}
@@ -67,6 +70,7 @@ export default function KbFilesTab({ kb, task }: KbFilesTabProps) {
         onToggleCollapsed={fileListPanel.toggle}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {selectedFile && <KbVisualCoverage key={`${kbRef}/${selectedFile.name}`} kbName={kbRef} sourcePath={selectedFile.name} revision={refreshKey} />}
         <KbFilePreview
           source={previewSource}
           fileListCollapsed={fileListPanel.collapsed}

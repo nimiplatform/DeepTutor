@@ -1,6 +1,10 @@
 "use client";
 
+import { scopedUrl } from "@/lib/workspace-scope";
+import { MASTERY_HOME, masterySessionsRoute, masteryTopicRoute } from "@/lib/learning-routes";
+
 import { browserStorage } from "@/shared/storage";
+import Tooltip from "@/shared/ui/Tooltip";
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -19,18 +23,19 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import { ChatMessageList } from "@/features/chat/messages";
+import { SelectionSpeechToolbar } from "@/components/voice/SelectionSpeechToolbar";
 import { ChatViewerBridges } from "@/components/chat/home/ChatViewerBridges";
-import { buildSessionActivity } from "@/components/chat/home/SessionActivityPanel";
+import { buildSessionActivity } from "@/lib/session-activity";
 import { TurnNavigator } from "@/components/chat/home/TurnNavigator";
 import SessionViewerPanel, {
   type SessionViewerPanelHandle,
-} from "@/components/chat/home/SessionViewerPanel";
+} from "@/components/chat/home/LazySessionViewerPanel";
 import {
   type MessageAttachment,
   useChatStateAdapter,
 } from "@/features/chat/ChatStateAdapter";
 import { useChatAutoScroll } from "@/hooks/useChatAutoScroll";
+import { useMasteryOpening } from "@/hooks/useMasteryOpening";
 import { useMasteryStudySession } from "@/hooks/useMasteryStudySession";
 import { useMeasuredHeight } from "@/hooks/useMeasuredHeight";
 import { useResearchOutlineContinuation } from "@/hooks/useResearchOutlineContinuation";
@@ -45,8 +50,6 @@ import { consumePendingPrompt } from "@/lib/pending-prompt";
 import { buildChatOutline, scrollToChatTurn } from "@/lib/chat-outline";
 import { buildConversationNotebookSave } from "@/lib/conversation-notebook-save";
 import {
-  MASTERY_OPENING_SCOPE,
-  masteryOpeningMessage,
   masterySessionRoute,
   type MasteryMode,
 } from "@/lib/mastery-mode";
@@ -55,9 +58,11 @@ import { workspaceActionNeedsConfiguration } from "@/lib/workspace-mode";
 import { ActivityHeader } from "@/components/activity";
 
 import { ModeSwitch } from "./ModeSwitch";
+import { MasteryPathCrumb } from "@/components/layout/instance-crumbs";
+import { PageBarSlot, usePageBarOffers } from "@/components/layout/PageChrome";
 import { topicDisplayName, type Translate } from "./format";
-import { LevelUpCelebration } from "./LevelUpCelebration";
-import { MasteryComposer } from "./MasteryComposer";
+
+
 import { ProgressRing } from "./ProgressRing";
 import { StudyOutline } from "./StudyOutline";
 
@@ -105,6 +110,18 @@ const MODE_PRESENTATION: Record<
       "Review re-tests what you have already mastered. Due items come first, but you can revisit anything.",
   },
 };
+
+const MasteryComposer = dynamic(
+  () => import("./MasteryComposer").then(module => module.MasteryComposer),
+);
+const LevelUpCelebration = dynamic(
+  () => import("./LevelUpCelebration").then(module => module.LevelUpCelebration),
+  { ssr: false },
+);
+
+const ChatMessageList = dynamic(
+  () => import("@/features/chat/messages").then(module => module.ChatMessageList),
+);
 
 const SaveToNotebookModal = dynamic(
   () => import("@/components/notebook/SaveToNotebookModal"),
@@ -160,12 +177,10 @@ function currentWaypoint(topic: MasteryTopic, fallback: string, t: Translate) {
 export function MasteryStudy({
   pathId,
   routeSessionId,
-  courseId = "",
   requestedMode = "study",
 }: {
   pathId: string;
   routeSessionId?: string;
-  courseId?: string;
   /** What a conversation opened here is for; ignored for an existing one. */
   requestedMode?: MasteryMode;
 }) {
@@ -175,7 +190,10 @@ export function MasteryStudy({
     sendMessage,
     submitUserReply,
     regenerateLastMessage,
+    resendLastMessage,
     deleteTurn,
+    discardFailedSubmission,
+    retryFailedSubmission,
     editMessage,
     switchBranch,
     loadMessageTrace,
@@ -193,7 +211,6 @@ export function MasteryStudy({
   } = useMasteryStudySession(
     pathId,
     routeSessionId,
-    courseId,
     requestedMode,
   );
   const hasMessages = state.messages.length > 0;
@@ -237,6 +254,21 @@ export function MasteryStudy({
   const chatOutline = useMemo(
     () => buildChatOutline(state.messages, state.selectedBranches),
     [state.messages, state.selectedBranches],
+  );
+  // The study composer lists KB sources by label, but the stored request
+  // snapshot keeps the qualified ref — resolve it so sent-message reference
+  // chips read the same way.
+  const kbDisplayNames = useMemo(
+    () =>
+      Object.fromEntries(
+        (topic?.sources ?? [])
+          .filter(
+            (source) =>
+              source.kind === "knowledge_base" && source.source_id && source.label,
+          )
+          .map((source) => [source.source_id as string, source.label]),
+      ),
+    [topic],
   );
   const jumpToTurn = useCallback(
     (key: string) => {
@@ -312,7 +344,7 @@ export function MasteryStudy({
     });
   }, []);
 
-  // A Course Study hand-off may have written the opening line before sending
+  // A Mastery hand-off may have written the opening line before sending
   // the learner here. Consumed once, so a refresh does not retype it — but
   // held until the composer exists: on the first render this screen is still
   // waiting on the topic and has nothing to type into.
@@ -412,13 +444,17 @@ export function MasteryStudy({
   // backend, and returning ``false`` here reopens the card instead of showing
   // the learner that refusal.
   const answerMasteryQuestion = useCallback(
-    (answer: { questionId: string; text: string }) => {
+    (answer: { questionId: string; text: string; answers?: Array<{ questionId: string; text: string }> }) => {
       const text = answer.text.trim();
       if (!text || state.isStreaming || sessionLoading || sessionError) {
         return false;
       }
       sendMessage(text, undefined, undefined, undefined, undefined, {
-        masteryAnswer: { question_id: answer.questionId, text },
+        masteryAnswer: {
+          question_id: answer.questionId,
+          text,
+          ...(answer.answers ? { answers: Object.fromEntries(answer.answers.map((item) => [item.questionId, item.text])) } : {}),
+        },
       });
       shouldAutoScrollRef.current = true;
       return true;
@@ -471,42 +507,16 @@ export function MasteryStudy({
     [state.activeCapability, submit],
   );
 
-  // A conversation that opens with nothing to say says the thing it was
-  // opened to say.
-  //
-  // Derived from the mode rather than handed across the navigation. The
-  // hand-off channel that used to carry it reads *destructively*, so a send
-  // refused for any reason (a turn still settling, a session still resolving)
-  // consumed the message and left the screen insisting work was under way
-  // forever — the same dead end twice, in two different places. There is no
-  // channel to lose now: an empty outline conversation always knows what it
-  // is for. The hand-off is still read, but only to *enrich* the opening (the
-  // review card names what is due), never to supply it.
-  const openingSentRef = useRef("");
-  useEffect(() => {
-    if (!topic || hasMessages || sessionLoading || sessionError) return;
-    if (state.isStreaming || openingSentRef.current === pathId) return;
-    const opening =
-      consumePendingPrompt(MASTERY_OPENING_SCOPE).trim() ||
-      masteryOpeningMessage(sessionMode, t as Translate);
-    // A study conversation opens with nothing on purpose: "start learning"
-    // does not say what to start with, so the screen offers ways in instead.
-    if (!opening) return;
-    // Latch on the send, never before it: ``submit`` refuses silently while a
-    // turn is live or the session is still resolving, and the next render
-    // tries again.
-    if (submit(opening)) openingSentRef.current = pathId;
-  }, [
-    hasMessages,
+  useMasteryOpening({
     pathId,
-    sessionError,
+    topicReady: Boolean(topic),
+    hasMessages,
     sessionLoading,
+    sessionError,
     sessionMode,
-    state.isStreaming,
+    isStreaming: state.isStreaming,
     submit,
-    t,
-    topic,
-  ]);
+  });
 
   // The learner pressing one of the three modes above the transcript. The same
   // move the tutor makes with ``mastery_mode``, through the same admission
@@ -541,6 +551,7 @@ export function MasteryStudy({
     (content: string) => copyText(content),
     [],
   );
+  const locationInBar = usePageBarOffers("instance");
 
   if (!topic && !topicError) {
     return (
@@ -561,7 +572,7 @@ export function MasteryStudy({
           {topicError}
         </p>
         <Link
-          href="/mastery"
+          href={scopedUrl(MASTERY_HOME)}
           className="mt-5 text-sm font-medium text-[var(--primary)] hover:underline"
         >
           {t("Back to topics")}
@@ -581,37 +592,58 @@ export function MasteryStudy({
           as a single "where am I" statement, and the ring + count are one
           unit rather than a ring on the left and its own number on the
           right saying the same thing twice. */}
-      <header className="flex h-[56px] shrink-0 items-center gap-1 border-b border-[var(--border)] bg-[var(--background)]/95 px-3 backdrop-blur sm:px-4">
-        <Link
-          href={`/mastery/${encodeURIComponent(pathId)}`}
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/60 hover:text-[var(--foreground)]"
-          title={t("Learning topics")}
-          aria-label={t("Learning topics")}
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </Link>
+      {/* 「精通之路 / the path / the waypoint」 and the session's controls go
+          up into the page bar; without one this row keeps them, with its own
+          way back to the path. */}
+      <header className="dt-study-head flex h-[56px] shrink-0 items-center gap-1 bg-[var(--background)] px-3 sm:px-4">
+        {locationInBar ? (
+          <PageBarSlot name="instance">
+            <MasteryPathCrumb id={pathId} label={displayName} bare />
+            {sessionMode === "study" ? (
+              <>
+                <span aria-hidden className="dt-crumb-sep">
+                  /
+                </span>
+                <span className="dt-crumb-tail">{waypoint.name}</span>
+              </>
+            ) : null}
+          </PageBarSlot>
+        ) : (
+          <>
+            <Tooltip label={t("Learning topics")} side="bottom">
+              <Link
+                href={masteryTopicRoute(pathId)}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/60 hover:text-[var(--foreground)]"
+                aria-label={t("Learning topics")}
+              >
+                <ArrowLeft className="h-4 w-4" />
+              </Link>
+            </Tooltip>
 
-        <div className="ml-1.5 flex min-w-0 flex-1 items-baseline gap-2">
-          <h1 className="shrink-0 truncate text-[14.5px] font-semibold tracking-[-0.01em] text-[var(--foreground)]">
-            {displayName}
-          </h1>
-          <span
-            aria-hidden="true"
-            className="hidden shrink-0 text-[var(--muted-foreground)]/40 sm:inline"
-          >
-            /
-          </span>
-          {sessionMode === "study" ? (
-            <span className="hidden min-w-0 truncate text-[12.5px] text-[var(--muted-foreground)] sm:inline">
-              {waypoint.name}
-            </span>
-          ) : null}
-        </div>
+            <div className="ml-1.5 flex min-w-0 flex-1 items-baseline gap-2">
+              <h1 className="shrink-0 truncate text-[14.5px] font-semibold tracking-[-0.01em] text-[var(--foreground)]">
+                {displayName}
+              </h1>
+              <span
+                aria-hidden="true"
+                className="hidden shrink-0 text-[var(--muted-foreground)]/40 sm:inline"
+              >
+                /
+              </span>
+              {sessionMode === "study" ? (
+                <span className="hidden min-w-0 truncate text-[12.5px] text-[var(--muted-foreground)] sm:inline">
+                  {waypoint.name}
+                </span>
+              ) : null}
+            </div>
+          </>
+        )}
 
         {/* All three modes, with the live one marked. The mode decides which
             tools the tutor may use, so it is the answer to "why can't it just
             fix that for me" — and that question can only be asked by someone
             who can see the other two exist. */}
+        <PageBarSlot name="actions" className="contents">
         <ModeSwitch
           mode={sessionMode}
           onSelect={changeMode}
@@ -620,16 +652,17 @@ export function MasteryStudy({
         />
 
         <div className="flex shrink-0 items-center gap-1.5 pl-2">
-          <button
-            type="button"
-            onClick={() => setShowSaveModal(true)}
-            disabled={!notebookSavePayload}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/60 hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
-            title={t("Save to Notebook")}
-            aria-label={t("Save to Notebook")}
-          >
-            <BookmarkPlus className="h-4 w-4" />
-          </button>
+          <Tooltip label={t("Save to Notebook")}>
+            <button
+              type="button"
+              onClick={() => setShowSaveModal(true)}
+              disabled={!notebookSavePayload}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/60 hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label={t("Save to Notebook")}
+            >
+              <BookmarkPlus className="h-4 w-4" />
+            </button>
+          </Tooltip>
           <button
             type="button"
             onClick={() => setViewerOpen((open) => !open)}
@@ -649,11 +682,12 @@ export function MasteryStudy({
             {completed}/{total}
           </span>
         </div>
+        </PageBarSlot>
       </header>
 
       <div className="flex min-h-0 flex-1">
         <aside
-          className={`hidden shrink-0 overflow-y-auto border-r border-[var(--border)] bg-[var(--card)]/30 transition-[width] duration-200 xl:block ${
+          className={`hidden shrink-0 overflow-y-auto transition-[width] duration-200 xl:block ${
             outlineOpen ? "w-[252px] px-5 py-5" : "w-9"
           }`}
         >
@@ -703,7 +737,7 @@ export function MasteryStudy({
                     someone scrolled halfway down, not by someone looking at a
                     blank screen. */}
                 {MODE_PRESENTATION[sessionMode].noteKey && (
-                  <p className="mb-6 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-3.5 py-2.5 text-[12px] leading-5 text-[var(--muted-foreground)]">
+                  <p className="mb-6 rounded-xl bg-[rgb(var(--dt-ink,55_53_47)/0.035)] px-3.5 py-2.5 text-[12px] leading-5 text-[var(--muted-foreground)]">
                     {t(MODE_PRESENTATION[sessionMode].noteKey)}
                   </p>
                 )}
@@ -722,7 +756,7 @@ export function MasteryStudy({
                       {sessionError}
                     </p>
                     <Link
-                      href={`/mastery/${encodeURIComponent(pathId)}/sessions`}
+                      href={masterySessionsRoute(pathId)}
                       className="mt-4 inline-flex rounded-xl bg-[var(--primary)] px-3 py-2 text-xs font-medium text-[var(--primary-foreground)]"
                     >
                       {t("Start a new session")}
@@ -757,7 +791,7 @@ export function MasteryStudy({
                             type="button"
                             onClick={() => startFromPrompt(label)}
                             disabled={state.isStreaming || sessionLoading}
-                            className="group rounded-lg border border-[var(--border)] bg-[var(--card)] p-4 text-left transition hover:-translate-y-0.5 hover:border-[var(--primary)]/35 disabled:opacity-50"
+                            className="group rounded-[14px] bg-[rgb(var(--dt-ink,55_53_47)/0.03)] p-4 text-left transition hover:-translate-y-0.5 hover:bg-[rgb(var(--dt-ink,55_53_47)/0.055)] disabled:opacity-50"
                           >
                             <Icon className="h-4 w-4 text-[var(--primary)]" />
                             <span className="mt-3 block text-xs font-medium leading-5 text-[var(--foreground)]">
@@ -790,7 +824,7 @@ export function MasteryStudy({
                           </p>
                         </div>
                         <Link
-                          href={masterySessionRoute(pathId, "study", courseId)}
+                          href={masterySessionRoute(pathId, "study")}
                           className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3.5 text-[13px] font-medium text-[var(--primary-foreground)] transition hover:opacity-90"
                         >
                           {t("Start learning")}
@@ -805,13 +839,22 @@ export function MasteryStudy({
                       language={state.language}
                       onCopyAssistantMessage={copyAssistantMessage}
                       onRegenerateMessage={regenerateLastMessage}
+                      canResendLastTurn={state.lastTurnFailed}
+                      onResendLastTurn={resendLastMessage}
                       onDeleteTurn={deleteTurn}
+                      onDiscardFailedSubmission={discardFailedSubmission}
+                      onRetryFailedSubmission={retryFailedSubmission}
                       selectedBranches={state.selectedBranches}
                       onEditMessage={editMessage}
                       onSwitchBranch={switchBranch}
                       onSubmitUserReply={submitUserReply}
                       onAnswerMasteryQuestion={answerMasteryQuestion}
                       onSkipMasteryQuestion={skipMasteryQuestion}
+                      onChallengeMasteryQuestion={(questionId) => {
+                        if (state.isStreaming || sessionLoading || sessionError) return false;
+                        sendMessage(t('Please review assessment {{questionId}} against its original source evidence. If it is unsupported, invalidate it and recompute learning state. Do not grant mastery merely because I challenged it.', { questionId }));
+                        return true;
+                      }}
                       onPreviewAttachment={handlePreviewMessageAttachment}
                       onConfirmOutline={confirmResearchOutline}
                       onLoadMessageTrace={(messageId) =>
@@ -825,6 +868,7 @@ export function MasteryStudy({
                         }
                       }}
                       availableKbNames={new Set(knowledgeBases)}
+                      kbDisplayNames={kbDisplayNames}
                       showModeBadge={false}
                     />
                   </div>
@@ -838,6 +882,7 @@ export function MasteryStudy({
               onJump={jumpToTurn}
               onJumpToBottom={resumeFollowingLatest}
             />
+            <SelectionSpeechToolbar rootRef={messagesContainerRef} />
           </div>
 
           {!sessionError && (
@@ -864,12 +909,12 @@ export function MasteryStudy({
           onDone={() => setCelebration(null)}
         />
       )}
-      <SaveToNotebookModal
+      {showSaveModal && <SaveToNotebookModal
         open={showSaveModal}
         payload={notebookSavePayload}
         messages={notebookSaveMessages}
         onClose={() => setShowSaveModal(false)}
-      />
+      />}
       <SessionViewerPanel
         ref={viewerPanelRef}
         open={viewerOpen}

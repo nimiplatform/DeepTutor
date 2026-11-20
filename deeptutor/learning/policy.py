@@ -25,6 +25,7 @@ from deeptutor.learning.models import (
     KnowledgePoint,
     KnowledgeType,
     LearningProgress,
+    RepetitionState,
     ReviewTask,
 )
 from deeptutor.learning.pending import PublicPendingQuestion, public_pending_question
@@ -84,9 +85,56 @@ def is_assessed_mastered(progress: LearningProgress, kp: KnowledgePoint) -> bool
     * MEMORY / PROCEDURE: recency-weighted accuracy ≥ the type's threshold.
     * CONCEPT / DESIGN: a recorded qualitative pass (``mastery_assess``).
     """
+    if not set(kp.required_visual_tasks).issubset(visual_achievements(progress, kp.id)):
+        return False
     if kp.type in QUALITATIVE_TYPES:
         return bool(progress.qualitative_mastery.get(kp.id, False))
     return progress.mastery_levels.get(kp.id, 0.0) >= gate_threshold(kp.type)
+
+
+def visual_achievements(progress: LearningProgress, kp_id: str) -> list[str]:
+    """Independent source-verified visual tasks, separate from generic text scores."""
+    return sorted(
+        {
+            event.visual_context["task"]
+            for event in progress.learning_evidence
+            if event.knowledge_point_id == kp_id
+            and event.result == "correct"
+            and event.visual_context.get("task")
+            and event.visual_context.get("key_status") == "verified"
+            and not event.hints_used
+        }
+    )
+
+
+def learning_stage(progress: LearningProgress, kp_id: str) -> str:
+    attempts = [
+        item
+        for item in progress.quiz_attempts
+        if item.knowledge_point_id == kp_id and not item.voided
+    ]
+    evidence = [item for item in progress.learning_evidence if item.knowledge_point_id == kp_id]
+    if any(item.independent and item.is_correct for item in attempts) or any(
+        item.assessment_type == "qualitative" and item.result == "correct" and not item.hints_used
+        for item in evidence
+    ):
+        return "independently_demonstrated"
+    if any(not item.independent for item in attempts) or any(item.hints_used for item in evidence):
+        return "practiced_with_help"
+    if attempts or evidence:
+        return "practiced_not_demonstrated"
+    explained = progress.explained_objectives.get(kp_id)
+    if not explained:
+        return "not_yet_covered"
+    if (
+        explained.get("coverage") == "partial"
+        and explained.get("explanation_quote")
+        and explained.get("delivery", {}).get("turn_id")
+    ):
+        return "partially_explained"
+    # Keep historical notes, but do not invent proof of published teaching or
+    # imply that a summary covered every part of a composite objective.
+    return "teaching_record_unverified"
 
 
 def mastery_source(progress: LearningProgress, kp: KnowledgePoint) -> str:
@@ -128,12 +176,29 @@ def objective_status(progress: LearningProgress, kp: KnowledgePoint) -> str:
     return "learning" if seen else "new"
 
 
+def reviewable_tasks(progress: LearningProgress) -> list[ReviewTask]:
+    """Scheduled items for objectives that have cleared the mastery gate.
+
+    Failed attempts can also carry retry schedules, but review mode is limited
+    to work the learner has already mastered.
+    """
+    mastered_ids = {
+        kp.id
+        for module in progress.modules
+        for kp in module.knowledge_points
+        if is_mastered(progress, kp)
+    }
+    return [task for task in progress.review_queue if task.knowledge_point_id in mastered_ids]
+
+
 def due_reviews(progress: LearningProgress, *, now: float | None = None) -> list[ReviewTask]:
-    """Spaced-repetition tasks whose ``due_at`` has passed, highest priority
-    first. Pure read over ``progress.review_queue`` (built by the scheduler)."""
+    """Mastered spaced-repetition tasks whose ``due_at`` has passed, highest forgetting
+    risk first. Pure read over ``progress.review_queue`` (built by the scheduler)."""
+    from deeptutor.learning.scheduler import review_sort_key
+
     moment = time.time() if now is None else now
-    due = [task for task in progress.review_queue if task.due_at <= moment]
-    due.sort(key=lambda task: task.priority)
+    due = [task for task in reviewable_tasks(progress) if task.due_at <= moment]
+    due.sort(key=lambda task: review_sort_key(task, now=moment))
     return due
 
 
@@ -147,6 +212,7 @@ class NextStep:
     * ``answer_pending`` — a posed question awaits the learner's answer.
     * ``review`` — a spaced-repetition item is due.
     * ``probe`` — an untouched objective; test out before teaching.
+    * ``teach`` — teach an untouched objective before assessing it, by request.
     * ``practice`` — a quantitative objective below its gate.
     * ``assess`` — a qualitative objective awaiting a Feynman-style check.
     * ``complete`` — every objective mastered, nothing due.
@@ -163,6 +229,7 @@ class NextStep:
     mastery: float = 0.0
     threshold: float = 0.0
     reason: str = ""
+    forgetting_risk: float = 0.0
     pending_prompt: str = ""
     pending_question: PublicPendingQuestion | None = None
     session_id: str = ""
@@ -180,6 +247,7 @@ class NextStep:
             "mastery": round(self.mastery, 3),
             "threshold": round(self.threshold, 3),
             "reason": self.reason,
+            "forgetting_risk": round(self.forgetting_risk, 3),
             "pending_prompt": self.pending_prompt,
             "pending_question": (
                 self.pending_question.to_dict() if self.pending_question is not None else None
@@ -244,10 +312,16 @@ def next_objective(
             session_id=str(pending_session_id or ""),
         )
 
-    due = due_reviews(progress, now=now)
+    deferred_ids = set(progress.deferred_objectives)
+    due = [
+        task
+        for task in due_reviews(progress, now=now)
+        if task.knowledge_point_id not in deferred_ids
+    ]
     if due:
         kp, module_id, module_name = find_knowledge_point(progress, due[0].knowledge_point_id)
         if kp is not None:
+            task = due[0]
             return NextStep(
                 action="review",
                 module_id=module_id,
@@ -259,9 +333,11 @@ def next_objective(
                 gate=gate_kind(kp),
                 mastery=display_mastery(progress, kp),
                 threshold=gate_threshold(kp.type),
-                reason="This objective is due for spaced-repetition review.",
+                reason=(task.reason or "This objective is due for spaced-repetition review."),
+                forgetting_risk=task.forgetting_risk,
             )
 
+    deferred_fallback: NextStep | None = None
     for module in sorted(progress.modules, key=lambda m: m.order):
         for kp in module.knowledge_points:
             if is_mastered(progress, kp):
@@ -269,12 +345,17 @@ def next_objective(
             status = objective_status(progress, kp)
             gate = gate_kind(kp)
             if status == "new":
-                action = "probe"
+                action = (
+                    "teach"
+                    if progress.learner_profile is not None
+                    and progress.learner_profile.teaching_strategy == "teach_first"
+                    else "probe"
+                )
             elif gate == "qualitative":
                 action = "assess"
             else:
                 action = "practice"
-            return NextStep(
+            step = NextStep(
                 action=action,
                 module_id=module.id,
                 module_name=module.name,
@@ -286,11 +367,23 @@ def next_objective(
                 mastery=display_mastery(progress, kp),
                 threshold=gate_threshold(kp.type),
                 reason=(
-                    "Untouched objective — probe first to let the learner test out."
+                    (
+                        "Untouched objective — teach before assessing, as the learner requested."
+                        if action == "teach"
+                        else "Untouched objective — probe first to let the learner test out."
+                    )
                     if status == "new"
                     else "Objective is below its mastery gate; keep working it until it clears."
                 ),
             )
+            if kp.id in deferred_ids:
+                if deferred_fallback is None:
+                    deferred_fallback = step
+                continue
+            return step
+
+    if deferred_fallback is not None:
+        return deferred_fallback
 
     return NextStep(action="complete", reason="All objectives are mastered and no reviews are due.")
 
@@ -314,6 +407,8 @@ def map_summary(progress: LearningProgress, *, now: float | None = None) -> dict
                     "id": kp.id,
                     "name": kp.name,
                     "type": kp.type.value,
+                    "prerequisite_ids": list(kp.prerequisite_ids),
+                    "topic_source_ids": list(kp.topic_source_ids),
                     "status": status,
                     "mastery": round(display_mastery(progress, kp), 3),
                     "mastery_source": mastery_source(progress, kp),
@@ -322,6 +417,7 @@ def map_summary(progress: LearningProgress, *, now: float | None = None) -> dict
                         if kp.id in progress.learner_mastery_overrides
                         else ""
                     ),
+                    "deferred": kp.id in progress.deferred_objectives,
                 }
             )
         modules_out.append(
@@ -346,7 +442,55 @@ def map_summary(progress: LearningProgress, *, now: float | None = None) -> dict
     }
 
 
-def objective_report(progress: LearningProgress, kp_id: str) -> dict | None:
+def _review_report(
+    progress: LearningProgress,
+    kp_id: str,
+    state: RepetitionState | None,
+    due_at: float | None,
+    *,
+    now: float,
+) -> dict | None:
+    if state is None:
+        return None
+    task = next((item for item in progress.review_queue if item.knowledge_point_id == kp_id), None)
+    from deeptutor.learning.review_strategy import scheduler_for_progress
+
+    scheduler = scheduler_for_progress(progress)
+    recall = scheduler.retrievability(state, now=now)
+    risk = (
+        task.forgetting_risk
+        if task is not None
+        else scheduler.forgetting_risk(state, progress, kp_id, now=now)
+    )
+    reason = (
+        task.reason
+        if task is not None
+        else scheduler.review_reason(state, progress, kp_id, now=now)
+    )
+    return {
+        "due_at": due_at,
+        "interval_index": state.interval_index,
+        "consecutive_correct": state.consecutive_correct,
+        "consecutive_wrong": state.consecutive_wrong,
+        "stability": round(state.stability, 3),
+        "retrievability": round(recall, 3),
+        "desired_retention": state.desired_retention,
+        "lapse_count": state.lapse_count,
+        "forgetting_risk": round(risk, 3),
+        "reason": reason,
+        "recent_failure": bool(
+            state.consecutive_wrong
+            or any(
+                record.knowledge_point_id == kp_id and record.status in ("active", "retrying")
+                for record in progress.error_records
+            )
+        ),
+    }
+
+
+def objective_report(
+    progress: LearningProgress, kp_id: str, *, now: float | None = None
+) -> dict | None:
     """Everything the engine knows about one objective, for review.
 
     ``map_summary`` stays deliberately thin because the tutor reads it on every
@@ -362,6 +506,7 @@ def objective_report(progress: LearningProgress, kp_id: str) -> dict | None:
         {
             "question_id": attempt.question_id,
             "is_correct": attempt.is_correct,
+            "independent": attempt.independent,
             "answer": str(attempt.user_answer or ""),
             "error_type": attempt.error_type.value if attempt.error_type else "",
             "at": attempt.timestamp,
@@ -374,6 +519,7 @@ def objective_report(progress: LearningProgress, kp_id: str) -> dict | None:
         (task.due_at for task in progress.review_queue if task.knowledge_point_id == kp_id),
         None,
     )
+    moment = time.time() if now is None else now
     return {
         "id": kp.id,
         "name": kp.name,
@@ -396,16 +542,10 @@ def objective_report(progress: LearningProgress, kp_id: str) -> dict | None:
         "correct_count": sum(1 for attempt in attempts if attempt["is_correct"]),
         # The learner's own words, kept as the evidence behind a qualitative pass.
         "explanation": progress.feynman_explanations.get(kp_id, ""),
-        "review": (
-            {
-                "due_at": due_at,
-                "interval_index": state.interval_index,
-                "consecutive_correct": state.consecutive_correct,
-                "consecutive_wrong": state.consecutive_wrong,
-            }
-            if state is not None
-            else None
-        ),
+        "explained": progress.explained_objectives.get(kp_id),
+        "required_visual_tasks": kp.required_visual_tasks,
+        "demonstrated_visual_tasks": visual_achievements(progress, kp_id),
+        "review": _review_report(progress, kp_id, state, due_at, now=moment),
         "errors": [
             {
                 "id": record.id,

@@ -1,9 +1,12 @@
 "use client";
 import { downloadWorkspaceFile } from "@/lib/nimi/workspace-download";
 
+import dynamic from "next/dynamic";
 import { browserStorage } from "@/shared/storage";
+import Tooltip from "@/shared/ui/Tooltip";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   ArrowRight,
@@ -12,6 +15,7 @@ import {
   Crosshair,
   Download,
   FileText,
+  MoreHorizontal,
   Loader2,
   History,
   PanelRightClose,
@@ -25,7 +29,8 @@ import {
   READER_TURN_END_EVENT,
   type ReaderActionPayload,
 } from "@/lib/reading-reader-action";
-import { citationTargetFromHref } from "@/lib/reading-citations";
+import { scopedUrl } from "@/lib/workspace-scope";
+import { citationTargetFromHref, readingPassageHref } from "@/lib/reading-citations";
 import {
   fetchExport,
   getMaterial,
@@ -37,14 +42,23 @@ import {
   type ReadingBookmark,
 } from "@/lib/reading-api";
 import { AnnotationList } from "./AnnotationList";
-import { AnnotationPopover } from "./AnnotationPopover";
-import { EpubDocumentView } from "./EpubDocumentView";
+import { AnnotationPopover, type PopoverAiAction } from "./AnnotationPopover";
+import { passagePrompts } from "@/lib/reading-passage-prompts";
 import {
   PdfDocumentView,
   type JumpRequest,
   type SelectionPayload,
 } from "./PdfDocumentView";
 import { ReadingExtensionBar } from "./ReadingExtensionBar";
+import {
+  READER_ASK_EVENT,
+  useReadingActions,
+  type ReadingActionEntry,
+} from "./reading-actions-context";
+import {
+  useWorkspaceMenuSection,
+  type WorkspaceMenuItem,
+} from "./workspace-menu-context";
 import { TextUnitView, unitLabel } from "./TextUnitView";
 import type { ReaderHeading } from "@/lib/reading-outline";
 import {
@@ -59,8 +73,22 @@ import {
   type ReadingLocationHistory,
 } from "@/lib/reading-location-history";
 
+function EpubLoading() {
+  const { t } = useTranslation();
+  return (
+    <div role="status" aria-label={t("Loading")} className="flex h-full items-center justify-center">
+      <Loader2 aria-hidden="true" className="h-5 w-5 animate-spin text-[var(--muted-foreground)]" />
+    </div>
+  );
+}
+
+const EpubDocumentView = dynamic(
+  () => import("./EpubDocumentView").then(module => module.EpubDocumentView),
+  { ssr: false, loading: EpubLoading },
+);
+
 /** Event the reader dispatches to prefill the composer from a selection. */
-export const READER_ASK_EVENT = "dt:reader-ask";
+export { READER_ASK_EVENT } from "./reading-actions-context";
 const AUTO_JUMP_KEY = "dt.reader.autoJump";
 
 function locationEntry(
@@ -116,6 +144,20 @@ export interface ReaderPaneProps {
    * clicked while the header counted up (#1447).
    */
   onLocatorChange?: (locator: number) => void;
+  /**
+   * Whether the pane shows its own annotation column beside the document.
+   * The workspace turns it off and lists notes in its navigator instead: a
+   * fourth column between the page and the companion left the page itself
+   * the narrowest thing on screen.
+   */
+  ownAnnotationList?: boolean;
+  /**
+   * Where the document's title row goes when the host has a bar for it. The
+   * workspace gives its own top bar, so the title, place and bookmark read on
+   * one line with the collection rather than as a second strip under it.
+   * Without one the row renders here, at the top of the pane.
+   */
+  headSlot?: HTMLElement | null;
 }
 
 /**
@@ -147,8 +189,10 @@ export function ReaderPane({
   bookmarks = [],
   onToggleBookmark,
   onLocatorChange,
+  ownAnnotationList = true,
+  headSlot = null,
 }: ReaderPaneProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   // Document + annotations live in the provider (workspace layout), so they
   // survive the remount that sending the first message causes.
   const {
@@ -201,6 +245,12 @@ export function ReaderPane({
   const [autoJump, setAutoJump] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [currentLocator, setCurrentLocator] = useState(1);
+  const [epubPosition, setEpubPosition] = useState<{
+    materialId: string; percentage: number | null;
+  } | null>(null);
+  const handleEpubProgress = useCallback((percentage: number | null) => {
+    if (material) setEpubPosition({ materialId: material.material_id, percentage });
+  }, [material]);
   const nonceRef = useRef(0);
   const headingLocatorRef = useRef(1);
   const jumpMaterialIdRef = useRef<string | null>(null);
@@ -210,9 +260,66 @@ export function ReaderPane({
     string | null | undefined
   >(undefined);
   const [showHistory, setShowHistory] = useState(false);
+  const [showMoreTools, setShowMoreTools] = useState(false);
+  const moreToolsButtonRef = useRef<HTMLButtonElement>(null);
+  const moreToolsMenuRef = useRef<HTMLDivElement>(null);
   const [unavailableMaterials, setUnavailableMaterials] = useState<Set<string>>(
     new Set(),
   );
+
+  useEffect(() => {
+    if (!showMoreTools) return;
+    moreToolsMenuRef.current?.querySelector<HTMLElement>("[role^='menuitem']")?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setShowMoreTools(false);
+      moreToolsButtonRef.current?.focus();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        !moreToolsMenuRef.current?.contains(target) &&
+        !moreToolsButtonRef.current?.contains(target)
+      ) {
+        setShowMoreTools(false);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [showMoreTools]);
+  // The history list used to close only by picking an entry or by the ⋯ that
+  // opened it. Opened from the workspace's menu there is no ⋯ here to click
+  // again, so it closes the way the menu does: click away, or Escape.
+  const historyPanelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showHistory) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setShowHistory(false);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        !historyPanelRef.current?.contains(target) &&
+        !moreToolsMenuRef.current?.contains(target)
+      ) {
+        setShowHistory(false);
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [showHistory]);
   const navigationNonceRef = useRef(0);
   const pendingNavigationRef = useRef<{
     mode: "push" | "replay";
@@ -534,6 +641,19 @@ export function ReaderPane({
     ],
   );
 
+  const followedSource = useRef('');
+  useEffect(() => {
+    const follow = () => {
+      const href = window.location.hash;
+      if (!material || !citationTargetFromHref(href) || followedSource.current === href) return;
+      followedSource.current = href;
+      void navigateCitation(href);
+    };
+    follow();
+    window.addEventListener('hashchange', follow);
+    return () => window.removeEventListener('hashchange', follow);
+  }, [material, navigateCitation]);
+
   useEffect(() => {
     if (!externalJump) return;
     if (externalJumpNonceRef.current === externalJump.nonce) return;
@@ -686,20 +806,73 @@ export function ReaderPane({
     [selection, material, saveMark, clearSelection],
   );
 
-  const askAboutSelection = useCallback(() => {
-    if (!selection || !material) return;
-    window.dispatchEvent(
-      new CustomEvent(READER_ASK_EVENT, {
-        detail: {
-          quote: selection.quote,
-          locator: selection.locator,
-          unit: material.unit,
-        },
+  // The text a question about the selection carries: the reading text where
+  // the view could tell it apart from the page furniture (margin line
+  // numbers), the raw selection otherwise. Marks keep the raw text, which is
+  // what re-anchors them on the page.
+  const selectionText = selection ? selection.text || selection.quote : "";
+
+  const askAboutSelection = useCallback(
+    (prompt?: string) => {
+      if (!selection || !material) return;
+      window.dispatchEvent(
+        new CustomEvent(READER_ASK_EVENT, {
+          detail: {
+            quote: selectionText,
+            locator: selection.locator,
+            unit: material.unit,
+            ...(prompt ? { prompt } : {}),
+          },
+        }),
+      );
+      clearSelection();
+      window.getSelection()?.removeAllRanges();
+    },
+    [selection, selectionText, material, clearSelection],
+  );
+
+  // Inside a workspace the selection's AI actions sit on the popover, next to
+  // the text they act on. Explain, translate and guide are messages in the
+  // reading conversation (see reading-passage-prompts); an installed
+  // extension's own selection actions follow them and answer as cards.
+  const readingActions = useReadingActions();
+  const aiActions = useMemo<PopoverAiAction[] | undefined>(() => {
+    if (!readingActions || readingActions.ageMode !== "default") return undefined;
+    if (!selection || !material) return undefined;
+    const target = { locator: selection.locator, selection: selectionText };
+    const prompts = passagePrompts(selectionText, i18n.language, t).map(
+      (prompt): PopoverAiAction => ({
+        key: prompt.key,
+        label: prompt.label,
+        title: prompt.message,
+        onClick: () => askAboutSelection(prompt.message),
       }),
     );
-    clearSelection();
-    window.getSelection()?.removeAllRanges();
-  }, [selection, material, clearSelection]);
+    const extensions = readingActions.actions
+      .filter((entry) => entry.needsSelection)
+      .map(
+        (entry: ReadingActionEntry): PopoverAiAction => ({
+          key: entry.key,
+          label: entry.label,
+          title: entry.label,
+          onClick: () => {
+            void readingActions.run(entry, target);
+            clearSelection();
+            window.getSelection()?.removeAllRanges();
+          },
+        }),
+      );
+    return [...prompts, ...extensions];
+  }, [
+    readingActions,
+    selection,
+    selectionText,
+    material,
+    askAboutSelection,
+    clearSelection,
+    i18n.language,
+    t,
+  ]);
 
   // -- export --------------------------------------------------------------
 
@@ -721,6 +894,13 @@ export function ReaderPane({
 
   const showAnnotations = annotationPanel ?? annotations.length > 0;
   const unitWord = material ? t(unitLabel(material.unit)) : "";
+  const isEpub = material?.render_mode === "epub";
+  const currentUnitTitle = isEpub
+    ? material?.unit_refs.find((row) => row.locator === currentLocator)?.title
+    : undefined;
+  const epubProgress = epubPosition?.materialId === material?.material_id
+    && epubPosition?.percentage != null
+    ? Math.round(epubPosition.percentage * 100) : null;
   const bookmarkedHere = bookmarks.some(
     (row) => row.locator === currentLocator,
   );
@@ -729,26 +909,111 @@ export function ReaderPane({
       ? jump
       : null;
 
-  return (
-    <div className="relative flex h-full min-w-0 flex-col border-r border-[var(--border)] bg-[var(--background)]">
-      <header className="flex h-11 shrink-0 items-center gap-1 border-b border-[var(--border)] px-2.5">
-        <FileText
-          size={14}
-          className="shrink-0 text-[var(--muted-foreground)]"
-        />
-        {/* The title, not the filename. A material saved from the web is
-            stored under its content hash, so this line read
-            "65228f9f372d6e9b.md" for every page the learner opened — the one
-            place in the reader that names what they are reading, spelling it
-            as a checksum. The filename is worth keeping for uploads, where it
-            is what the learner recognises, so it stays as the tooltip. */}
-        <span
-          className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-[var(--foreground)]"
-          title={material?.filename || material?.title}
-        >
-          {material?.title || material?.filename || t("Immersive reading")}
-        </span>
+  // Inside a workspace these go to the top bar's ⋯, next to the collection's
+  // and the conversation's actions; standing alone, the pane keeps its own.
+  const hasHistory = locationHistory.entries.length > 0;
+  const menuItems = useMemo<WorkspaceMenuItem[] | null>(() => {
+    if (!material) return null;
+    const items: WorkspaceMenuItem[] = [];
+    if (hasHistory) {
+      items.push({
+        key: "history",
+        icon: History,
+        label: t("History"),
+        onSelect: () => setShowHistory(true),
+      });
+      // The header's Forward button is desktop-only; on a phone the menu is
+      // where a learner comes back to it after following a citation.
+      items.push({
+        key: "forward",
+        icon: ArrowRight,
+        label: t("Forward"),
+        disabled:
+          locationHistory.index < 0 ||
+          locationHistory.index >= locationHistory.entries.length - 1,
+        onSelect: () => stepHistory(1),
+        mobileOnly: true,
+      });
+    }
+    items.push({
+      key: "follow",
+      icon: Crosshair,
+      label: t("Follow the assistant"),
+      hint: autoJump
+        ? t("Auto-jump on — the view follows what the assistant reads")
+        : t("Auto-jump off — the assistant will not move your view"),
+      active: autoJump,
+      onSelect: toggleAutoJump,
+    });
+    if (ownAnnotationList) {
+      items.push({
+        key: "annotations",
+        icon: showAnnotations ? PanelRightClose : PanelRightOpen,
+        label: t("Annotations"),
+        active: showAnnotations,
+        onSelect: () => setAnnotationPanel(!showAnnotations),
+      });
+    }
+    items.push({
+      key: "export",
+      icon: exporting ? Loader2 : Download,
+      label: t("Export annotated file"),
+      spinning: exporting,
+      disabled: exporting,
+      onSelect: () => void runExport(),
+    });
+    return items;
+  }, [
+    autoJump,
+    exporting,
+    hasHistory,
+    locationHistory,
+    material,
+    ownAnnotationList,
+    runExport,
+    showAnnotations,
+    stepHistory,
+    t,
+    toggleAutoJump,
+  ]);
+  const menuHosted = useWorkspaceMenuSection("material", menuItems);
 
+  return (
+    <div className="dt-reader-pane relative flex h-full min-w-0 flex-col bg-[var(--background)]">
+      <ReaderHead slot={headSlot}>
+        {/* Under the workspace's bar the document is a crumb of that bar
+            (it switches between the collection's files), so the head only
+            brings its place, history and bookmark. */}
+        {!headSlot && (
+          <>
+            <FileText
+              size={14}
+              className="hidden shrink-0 text-[var(--muted-foreground)] md:block"
+            />
+            {/* The title, not the filename. A material saved from the web is
+                stored under its content hash, so this line read
+                "65228f9f372d6e9b.md" for every page the learner opened — the one
+                place in the reader that names what they are reading, spelling it
+                as a checksum. The filename is worth keeping for uploads, where it
+                is what the learner recognises, so it stays as the tooltip. */}
+            <span
+              className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-[var(--foreground)]"
+              title={material?.filename || material?.title}
+            >
+              {material?.title || material?.filename || t("Immersive reading")}
+            </span>
+          </>
+        )}
+
+        {/* Back and Forward stay in the bar because they are how a learner
+            returns from a citation the assistant jumped to. Everything else
+            that used to sit here — history, auto-jump, export, the notes
+            panel — is a setting or a once-a-session action, and seven small
+            grey icons beside the title read as noise. They live under ⋯.
+            Below 768px the bar converges further (#916): back, title +
+            chapter, bookmark, ⋯. Forward is a secondary command there and
+            moves into the menu, and the file icon gives its width to the
+            chapter indicator. */}
         {locationHistory.entries.length > 0 && (
           <>
             <HeaderButton
@@ -764,13 +1029,8 @@ export function ReaderPane({
                 locationHistory.index < 0 ||
                 locationHistory.index >= locationHistory.entries.length - 1
               }
+              className="hidden md:inline-flex"
               onClick={() => stepHistory(1)}
-            />
-            <HeaderButton
-              icon={History}
-              label={t("History")}
-              active={showHistory}
-              onClick={() => setShowHistory((current) => !current)}
             />
           </>
         )}
@@ -779,13 +1039,25 @@ export function ReaderPane({
           <>
             {/* The one place the reader's position is stated. Monospace is for
                 code, not for a line of UI copy; tabular figures alone stop the
-                number from jittering as the learner scrolls. */}
-            <span className="shrink-0 whitespace-nowrap text-[10.5px] tabular-nums text-[var(--muted-foreground)]">
-              {t("{{unit}} {{n}} / {{total}}", {
-                unit: unitWord,
-                n: currentLocator,
-                total: material.unit_count,
-              })}
+                number from jittering as the learner scrolls. Below md it is the
+                "chapter" half of the converged title — title and indicator each
+                truncate inside their own share of the row, so together they
+                can never push the buttons past the edge. */}
+            <span className="min-w-0 max-w-[45%] shrink truncate whitespace-nowrap px-1 text-[11.5px] tabular-nums text-[var(--muted-foreground)] md:max-w-none md:shrink-0">
+              {isEpub ? (
+                <>
+                  <span className="max-w-[180px] truncate">
+                    {currentUnitTitle || material.title}
+                  </span>
+                  {epubProgress !== null && <span>{` · ${epubProgress}%`}</span>}
+                </>
+              ) : (
+                t("{{unit}} {{n}} / {{total}}", {
+                  unit: unitWord,
+                  n: currentLocator,
+                  total: material.unit_count,
+                })
+              )}
             </span>
             {onToggleBookmark && (
               <HeaderButton
@@ -803,40 +1075,94 @@ export function ReaderPane({
                 onClick={() => onToggleBookmark(currentLocator)}
               />
             )}
-            <HeaderButton
-              icon={Crosshair}
-              label={
-                autoJump
-                  ? t(
-                      "Auto-jump on — the view follows what the assistant reads",
-                    )
-                  : t("Auto-jump off — the assistant will not move your view")
+            {!menuHosted && (
+              <HeaderButton
+                icon={MoreHorizontal}
+                label={t("More")}
+                active={showMoreTools}
+                menu
+                buttonRef={moreToolsButtonRef}
+                onClick={() => {
+                  setShowMoreTools(!showMoreTools);
+                  if (!showMoreTools) setShowHistory(false);
+                }}
+              />
+            )}
+          </>
+        )}
+      </ReaderHead>
+
+      {showMoreTools && material && !menuHosted && (
+        <div
+          ref={moreToolsMenuRef}
+          role="menu"
+          aria-label={t("More")}
+          className={`absolute ${headSlot ? "top-2" : "top-11"} right-2 z-40 w-64 rounded-xl border border-[var(--border)] bg-[var(--background)] p-1.5 shadow-xl`}
+        >
+          {locationHistory.entries.length > 0 && (
+            <MenuToolButton
+              icon={History}
+              label={t("History")}
+              onClick={() => {
+                setShowHistory(true);
+                setShowMoreTools(false);
+              }}
+            />
+          )}
+          {locationHistory.entries.length > 0 && (
+            <MenuToolButton
+              icon={ArrowRight}
+              label={t("Forward")}
+              disabled={
+                locationHistory.index < 0 ||
+                locationHistory.index >= locationHistory.entries.length - 1
               }
-              active={autoJump}
-              onClick={toggleAutoJump}
+              className="md:hidden"
+              onClick={() => {
+                stepHistory(1);
+                setShowMoreTools(false);
+              }}
             />
-            <HeaderButton
-              icon={exporting ? Loader2 : Download}
-              label={t("Export annotated file")}
-              spinning={exporting}
-              onClick={() => void runExport()}
-            />
-            <HeaderButton
+          )}
+          <MenuToolButton
+            icon={Crosshair}
+            label={t("Follow the assistant")}
+            hint={
+              autoJump
+                ? t("Auto-jump on — the view follows what the assistant reads")
+                : t("Auto-jump off — the assistant will not move your view")
+            }
+            active={autoJump}
+            onClick={toggleAutoJump}
+          />
+          {ownAnnotationList && (
+            <MenuToolButton
               icon={showAnnotations ? PanelRightClose : PanelRightOpen}
               label={t("Annotations")}
               active={showAnnotations}
-              onClick={() => setAnnotationPanel(!showAnnotations)}
-              // The panel itself only exists at `lg` and up — there is no room
-              // for it beside the document on a narrow screen. Hiding the
-              // trigger too keeps it from being a button that does nothing.
-              className="hidden lg:inline-flex"
+              onClick={() => {
+                setAnnotationPanel(!showAnnotations);
+                setShowMoreTools(false);
+              }}
             />
-          </>
-        )}
-      </header>
+          )}
+          <div className="my-1 h-px bg-[var(--border)]" aria-hidden />
+          <MenuToolButton
+            icon={exporting ? Loader2 : Download}
+            label={t("Export annotated file")}
+            spinning={exporting}
+            onClick={() => {
+              void runExport();
+              setShowMoreTools(false);
+            }}
+          />
+        </div>
+      )}
 
       {showHistory && locationHistory.entries.length > 0 && (
-        <div className="absolute top-11 right-2 z-30 max-h-72 w-72 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--background)] p-1.5 shadow-xl">
+        <div
+          ref={historyPanelRef}
+          className={`absolute ${headSlot ? "top-2" : "top-11"} right-2 z-30 max-h-72 w-72 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--background)] p-1.5 shadow-xl`}>
           {[...locationHistory.entries]
             .map((entry, index) => ({ entry, index }))
             .reverse()
@@ -897,6 +1223,7 @@ export function ReaderPane({
           locator={currentLocator}
           selectionLocator={selection?.locator}
           selection={selection?.quote}
+          sessionId={sessionId}
           onError={setError}
         />
       )}
@@ -935,6 +1262,7 @@ export function ReaderPane({
                 setActiveAnnotationId(annotation.annotation_id)
               }
               onVisibleLocatorChange={handleVisibleLocator}
+              onProgressChange={handleEpubProgress}
               onHeadingsChange={onHeadingsChange}
               headingJump={headingJump}
               onError={setError}
@@ -960,6 +1288,7 @@ export function ReaderPane({
               unit={material.unit}
               unitCount={material.unit_count}
               contentFormat={material.content_format}
+              sourceType={material.source_type}
               annotations={annotations}
               jump={materialJump}
               highlightedAnnotationId={activeAnnotationId}
@@ -975,8 +1304,8 @@ export function ReaderPane({
           )}
         </div>
 
-        {material && showAnnotations && (
-          <aside className="hidden w-[248px] shrink-0 border-l border-[var(--border)] bg-[var(--background)] lg:block">
+        {material && ownAnnotationList && showAnnotations && (
+          <aside className="hidden w-[248px] shrink-0 bg-[var(--background)] lg:block">
             <AnnotationList
               annotations={annotations}
               unit={material.unit}
@@ -998,11 +1327,13 @@ export function ReaderPane({
         <AnnotationPopover
           anchor={selection.anchor}
           quote={selection.quote}
+          noteSource={{title: `${material.title} · ${unitLabel(material.unit)} ${selection.locator}`, url: scopedUrl(window.location.pathname + window.location.search) + readingPassageHref(material.material_id, selection.locator, material.revision), id: `${material.material_id}:${selection.locator}`}}
           onHighlight={(color) => commitSelection("highlight", color)}
           onUnderline={(color) => commitSelection("underline", color)}
           onNote={(note, color) => commitSelection("note", color, note)}
           onCitation={(color) => commitSelection("citation", color)}
-          onAsk={askAboutSelection}
+          onAsk={() => askAboutSelection()}
+          aiActions={aiActions}
           // Closes the popover WITHOUT dropping the selection, so the
           // toolbar's selection-gated actions stay reachable.
           onDismiss={() => setPopoverOpen(false)}
@@ -1019,6 +1350,8 @@ function HeaderButton({
   active,
   spinning,
   disabled,
+  menu = false,
+  buttonRef,
   className = "",
 }: {
   icon: typeof FileText;
@@ -1027,25 +1360,95 @@ function HeaderButton({
   active?: boolean;
   spinning?: boolean;
   disabled?: boolean;
+  menu?: boolean;
+  buttonRef?: RefObject<HTMLButtonElement | null>;
+  className?: string;
+}) {
+  return (
+    <Tooltip label={label} suppressed={Boolean(menu && active)}>
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-label={label}
+        aria-pressed={menu ? undefined : active}
+        aria-haspopup={menu ? "menu" : undefined}
+        aria-expanded={menu ? active : undefined}
+        disabled={spinning || disabled}
+        onClick={onClick}
+        className={`h-7 w-7 shrink-0 items-center justify-center rounded-lg transition disabled:cursor-default ${
+          className || "inline-flex"
+        } ${
+          active
+            ? "bg-[color-mix(in_srgb,var(--primary)_12%,transparent)] text-[var(--primary)]"
+            : "text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-35 disabled:hover:bg-transparent"
+        }`}
+      >
+        <Icon size={14} className={spinning ? "animate-spin" : undefined} />
+      </button>
+    </Tooltip>
+  );
+}
+
+function MenuToolButton({
+  icon: Icon,
+  label,
+  onClick,
+  active,
+  spinning,
+  disabled,
+  hint,
+  className = "",
+}: {
+  icon: typeof FileText;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+  spinning?: boolean;
+  disabled?: boolean;
+  /** A second line saying what the setting currently does. */
+  hint?: string;
   className?: string;
 }) {
   return (
     <button
       type="button"
-      title={label}
-      aria-label={label}
-      aria-pressed={active}
+      role={active === undefined ? "menuitem" : "menuitemcheckbox"}
+      aria-label={hint ? `${label}. ${hint}` : label}
+      aria-checked={active}
       disabled={spinning || disabled}
       onClick={onClick}
-      className={`h-7 w-7 shrink-0 items-center justify-center rounded-lg transition disabled:cursor-default ${
-        className || "inline-flex"
-      } ${
+      className={`${className} flex w-full items-center gap-2 rounded-lg px-2.5 text-left text-[12px] transition disabled:cursor-default ${hint ? "py-1.5" : "h-9"} ${
         active
           ? "bg-[color-mix(in_srgb,var(--primary)_12%,transparent)] text-[var(--primary)]"
-          : "text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-35 disabled:hover:bg-transparent"
+          : "text-[var(--foreground)] hover:bg-[var(--muted)] disabled:opacity-35 disabled:hover:bg-transparent"
       }`}
     >
-      <Icon size={14} className={spinning ? "animate-spin" : undefined} />
+      <Icon
+        size={14}
+        className={
+          spinning
+            ? "animate-spin text-[var(--muted-foreground)]"
+            : "text-[var(--muted-foreground)]"
+        }
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">{label}</span>
+        {hint ? (
+          <span className="block text-[10.5px] leading-snug opacity-75">
+            {hint}
+          </span>
+        ) : null}
+      </span>
     </button>
+  );
+}
+
+/** The title row: in the host's bar when it offers one, else atop the pane. */
+function ReaderHead({ slot, children }: { slot: HTMLElement | null; children: ReactNode }) {
+  if (slot) return createPortal(children, slot);
+  return (
+    <header className="dt-reader-head flex h-11 shrink-0 items-center gap-1 px-3">
+      {children}
+    </header>
   );
 }

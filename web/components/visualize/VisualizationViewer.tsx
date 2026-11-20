@@ -6,7 +6,13 @@ import { createPortal } from "react-dom";
 import { Code2, Copy, Check, ExternalLink, Maximize2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Mermaid } from "@/components/Mermaid";
-import { prepareIframeHtml } from "@/lib/iframe-html";
+import { prepareIframeHtml, type WidgetColorScheme } from "@/lib/iframe-html";
+import {
+  getStoredThemePreference,
+  resolveTheme,
+  subscribeToThemeChanges,
+  type Theme,
+} from "@/lib/theme";
 import {
   isManimResult,
   type VisualizeCanvasResult,
@@ -115,12 +121,30 @@ function ChartJsRenderer({ config }: { config: string }) {
   );
 }
 
+/**
+ * The widget canvas follows the app's resolved palette: Dark and Glass are
+ * dark canvases, everything else is light. Re-preparing on a resolved-theme
+ * change rewrites the srcdoc, which reloads the widget — the whole app just
+ * re-themed, so that is the expected moment to re-render it (#2600).
+ */
+function colorSchemeForTheme(theme: Theme): WidgetColorScheme {
+  return theme === "dark" || theme === "glass" ? "dark" : "light";
+}
+
 function HtmlRenderer({ html }: { html: string }) {
   const { t } = useTranslation();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState(560);
+  const [theme, setTheme] = useState<Theme>(() =>
+    resolveTheme(getStoredThemePreference()),
+  );
 
-  const prepared = useMemo(() => prepareIframeHtml(html || ""), [html]);
+  useEffect(() => subscribeToThemeChanges(setTheme), []);
+
+  const prepared = useMemo(
+    () => prepareIframeHtml(html || "", colorSchemeForTheme(theme)),
+    [html, theme],
+  );
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -157,7 +181,7 @@ function HtmlRenderer({ html }: { html: string }) {
       const contentUrl = URL.createObjectURL(
         new Blob([prepared], { type: "text/html" }),
       );
-      const wrapper = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Visualization</title><style>html,body,iframe{height:100%;width:100%;margin:0;border:0;}</style></head><body><iframe sandbox="allow-scripts" src="${contentUrl}"></iframe></body></html>`;
+      const wrapper = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${t("Visualization").replace(/[&<>]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[char]!)}</title><style>html,body,iframe{height:100%;width:100%;margin:0;border:0;}</style></head><body><iframe sandbox="allow-scripts" src="${contentUrl}"></iframe></body></html>`;
       const url = URL.createObjectURL(
         new Blob([wrapper], { type: "text/html" }),
       );
@@ -177,10 +201,9 @@ function HtmlRenderer({ html }: { html: string }) {
         type="button"
         onClick={handleOpenInNewTab}
         className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--background)]/90 px-2 py-1 text-[10px] font-medium text-[var(--muted-foreground)] backdrop-blur transition-colors hover:text-[var(--foreground)]"
-        title={t("Open in new tab")}
       >
         <ExternalLink size={10} strokeWidth={1.8} />
-        {t("Open")}
+        {t("Open in new tab")}
       </button>
       <iframe
         ref={iframeRef}
@@ -450,7 +473,7 @@ function CanvasVisualization({ result }: { result: VisualizeCanvasResult }) {
   if (renderer === "svg") {
     return <SvgRenderer svg={result.code.content} />;
   }
-  if (renderer === "mermaid") {
+  if (renderer === "mermaid" || renderer === "mindmap") {
     return <Mermaid chart={result.code.content} />;
   }
   if (renderer === "html") {
@@ -500,6 +523,9 @@ function visualizationLabel(result: VisualizeCanvasResult): string {
   }
   if (renderer === "mermaid") {
     return `Mermaid · ${result.analysis.chart_type || "diagram"}`;
+  }
+  if (renderer === "mindmap") {
+    return `Mind map · ${result.presentation.title || "topics"}`;
   }
   return result.presentation.title
     ? `${result.renderer.id} · ${result.presentation.title}`
@@ -571,7 +597,6 @@ export default function VisualizationViewer({
           <button
             type="button"
             onClick={() => setFullscreen(true)}
-            title={t("Fullscreen")}
             className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--background)]/90 px-2 py-1 text-[10px] font-medium text-[var(--muted-foreground)] backdrop-blur transition-colors hover:text-[var(--foreground)]"
           >
             <Maximize2 size={10} strokeWidth={1.8} />
@@ -652,7 +677,6 @@ export default function VisualizationViewer({
                   e.stopPropagation();
                   setFullscreen(false);
                 }}
-                title={t("Close")}
                 className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-white/20"
               >
                 <X size={12} strokeWidth={1.8} />

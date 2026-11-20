@@ -81,6 +81,7 @@ from deeptutor.services.config import parse_language
 from deeptutor.services.config.loader import get_capability_params
 from deeptutor.services.llm import get_llm_config, prepare_multimodal_messages
 from deeptutor.services.llm.reasoning_params import RETRY_REASONING_EFFORT
+from deeptutor.services.llm.request_compat import is_stream_options_unsupported
 from deeptutor.services.prompt import get_prompt_manager
 from deeptutor.services.prompt.language import append_language_directive
 from deeptutor.services.sandbox import exec_capability_available
@@ -1014,6 +1015,33 @@ class QuestionPipeline:
             iter_meta=iter_meta,
             max_tokens=self._budgets["repair"]["max_tokens"],
         )
+        if step.reasoning_only:
+            # The round that exists to rescue a starved question is itself an
+            # LLM round and starves the same way (#1508), and nothing after it
+            # will ever ask again. Turn the thinking down, once.
+            await stream.progress(
+                self._t(
+                    "notices.repair_reasoning_retry",
+                    default=(
+                        "The repair round spent its whole budget reasoning; "
+                        "asking again with less thinking."
+                    ),
+                ),
+                source=SOURCE,
+                stage=STAGE_QUIZZING,
+                metadata={"trace_kind": "warning"},
+            )
+            step = await self._run_labeled_step(
+                client=client,
+                messages=messages,
+                tool_schemas=None,
+                protocol=_PROTOCOL_REPAIR,
+                stream=stream,
+                stage=STAGE_QUIZZING,
+                iter_meta=iter_meta,
+                max_tokens=self._budgets["repair"]["max_tokens"],
+                reasoning_effort=RETRY_REASONING_EFFORT,
+            )
         return self._parse_quiz_payload(step.text)
 
     # ------------------------------------------------------------------
@@ -1094,7 +1122,15 @@ class QuestionPipeline:
         # multiple stream chunks; recording each one would N× inflate calls.
         usage_seen = None
         try:
-            response_stream = await client.chat.completions.create(**kwargs)
+            try:
+                response_stream = await client.chat.completions.create(**kwargs)
+            except Exception as create_exc:
+                if not is_stream_options_unsupported(create_exc):
+                    raise
+                # Provider rejected ``stream_options``; retry once without it
+                # (same fallback as ``agent_loop`` / ``labeled_step``).
+                kwargs.pop("stream_options", None)
+                response_stream = await client.chat.completions.create(**kwargs)
             async for chunk in response_stream:
                 usage_frame = getattr(chunk, "usage", None)
                 if usage_frame is not None:
@@ -1321,7 +1357,11 @@ class QuestionPipeline:
             }
             for qa_pair in qa_pairs
         ]
-        successful = sum(1 for qa in qa_pairs if not qa.metadata.get("error"))
+        # ``issues`` is what survives the repair attempt, so a non-empty list
+        # means the learner got a question that is still broken. ``error`` was
+        # read here but is written nowhere, so an all-placeholder quiz reported
+        # success=True / failed=0 and #1508 left no trace of having failed.
+        successful = sum(1 for qa in qa_pairs if not qa.metadata.get("issues"))
         markdown = self._render_summary_markdown(qa_pairs)
         finish_block = finish_text.strip()
         if finish_block:
@@ -1354,15 +1394,31 @@ class QuestionPipeline:
     # ------------------------------------------------------------------
     # Quiz payload parsing / validation / normalization
     # ------------------------------------------------------------------
-    @staticmethod
-    def _parse_quiz_payload(raw: str) -> dict[str, Any]:
+    @classmethod
+    def _parse_quiz_payload(cls, raw: str) -> dict[str, Any]:
         text = (raw or "").strip()
         if not text:
             return {}
+        # ``question`` is Markdown and a coding answer is code, so a fence in the
+        # reply can sit inside a field. A complete object is taken as it is
+        # before any fence is read as a wrapper around the JSON.
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
         # Strip a single fenced block if the model wrapped the JSON
         fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
         if fence:
-            text = fence.group(1).strip()
+            unwrapped = cls._first_json_object(fence.group(1).strip())
+            if unwrapped:
+                return unwrapped
+        # No fence, or the wrapped object's own fences cut the match short.
+        return cls._first_json_object(text)
+
+    @staticmethod
+    def _first_json_object(text: str) -> dict[str, Any]:
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
@@ -1558,6 +1614,12 @@ class QuestionPipeline:
     # Tool integration (mirrors chat's policy)
     # ------------------------------------------------------------------
     async def _prepare_pageindex_tools(self) -> None:
+        from deeptutor.modules.catalog import require_module
+
+        self._pageindex_tool_context = None
+        if not self.kb_name:
+            return
+        require_module("knowledge")
         from deeptutor.services.rag.pipelines.pageindex.tools import (
             build_pageindex_tool_context,
         )
@@ -1663,7 +1725,7 @@ class QuestionPipeline:
             kwargs.setdefault("sort_by", "relevance")
         elif tool_name == "read_source":
             kwargs["source_index"] = self._source_index(context)
-        elif tool_name == "write_note":
+        elif tool_name == "save_favorite":
             kwargs["conversation_history"] = list(context.conversation_history or [])
             kwargs["current_user_message"] = context.user_message or ""
         return kwargs

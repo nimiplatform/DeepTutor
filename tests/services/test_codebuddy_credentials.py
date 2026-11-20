@@ -28,8 +28,8 @@ def _write_auth_file(tmp_path: Path, monkeypatch, **auth_overrides) -> Path:
         "accessToken": "access-token",
         "refreshToken": "refresh-token",
         "tokenType": "Bearer",
-        "expiresAt": 1791055241000,
-        "refreshExpiresAt": 1793647241000,
+        "expiresAt": int((time.time() + 3600) * 1000),
+        "refreshExpiresAt": int((time.time() + 30 * 24 * 3600) * 1000),
         "domain": "www.codebuddy.cn",
     }
     auth.update(auth_overrides)
@@ -43,7 +43,8 @@ def _write_auth_file(tmp_path: Path, monkeypatch, **auth_overrides) -> Path:
 
 
 def test_load_credentials_parses_session(tmp_path, monkeypatch) -> None:
-    _write_auth_file(tmp_path, monkeypatch)
+    expires_at_ms = int((time.time() + 3600) * 1000)
+    _write_auth_file(tmp_path, monkeypatch, expiresAt=expires_at_ms)
 
     credentials = load_credentials()
 
@@ -53,7 +54,7 @@ def test_load_credentials_parses_session(tmp_path, monkeypatch) -> None:
     assert credentials.user_id == "uid-1"
     assert credentials.user_label == "tester"
     # Epoch milliseconds in the file, seconds in the dataclass.
-    assert credentials.expires_at == pytest.approx(1791055241.0)
+    assert credentials.expires_at == pytest.approx(expires_at_ms / 1000)
     assert credentials.is_expired() is False
 
 
@@ -159,3 +160,79 @@ def test_a_trusted_cached_endpoint_is_still_honoured(tmp_path, monkeypatch) -> N
     monkeypatch.delenv("CODEBUDDY_INTERNET_ENVIRONMENT", raising=False)
 
     assert creds.cached_product_endpoint() == creds.INTERNAL_ENDPOINT
+
+
+def test_find_auth_file_locates_the_workbuddy_desktop_session(tmp_path, monkeypatch) -> None:
+    """Regression: WorkBuddy 5.9.3 renamed the shared session file.
+
+    The lookup only knew ``Tencent-Cloud.coding-copilot.info``, so on current
+    WorkBuddy installs ``find_auth_file`` returned ``None`` and the SDK-free
+    login path was dead even though the session existed on disk.
+    """
+    from deeptutor.services import codebuddy_credentials as creds
+
+    auth_dir = tmp_path / "CodeBuddyExtension" / "Data" / "Public" / "auth"
+    auth_dir.mkdir(parents=True)
+    session = auth_dir / "workbuddy-desktop.info"
+    session.write_text(json.dumps({"access_token": "wb-token"}), encoding="utf-8")
+    monkeypatch.delenv("DEEPTUTOR_CODEBUDDY_AUTH_FILE", raising=False)
+    monkeypatch.setattr(creds, "_auth_search_dirs", lambda: [auth_dir])
+
+    assert creds.find_auth_file() == session
+
+
+def test_load_credentials_reads_the_workbuddy_flat_envelope(tmp_path, monkeypatch) -> None:
+    """The WorkBuddy envelope carries the access token at the top level."""
+    from deeptutor.services import codebuddy_credentials as creds
+
+    path = tmp_path / "workbuddy-desktop.info"
+    path.write_text(
+        json.dumps({"account": {"uid": "uid-9"}, "access_token": "wb-access-token"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DEEPTUTOR_CODEBUDDY_AUTH_FILE", str(path))
+
+    credentials = creds.load_credentials()
+
+    assert credentials is not None
+    assert credentials.access_token == "wb-access-token"
+    assert credentials.user_id == "uid-9"
+
+
+def test_an_encrypted_workbuddy_token_is_never_sent_as_a_bearer(tmp_path, monkeypatch) -> None:
+    """An at-rest encrypted token is not a bearer token, so it is rejected."""
+    from deeptutor.services import codebuddy_credentials as creds
+
+    path = tmp_path / "workbuddy-desktop.info"
+    path.write_text(json.dumps({"access_token": "$wbEncrypted:opaque"}), encoding="utf-8")
+    monkeypatch.setenv("DEEPTUTOR_CODEBUDDY_AUTH_FILE", str(path))
+
+    assert creds.load_credentials() is None
+
+
+def test_find_auth_file_prefers_workbuddy_desktop_over_legacy(tmp_path, monkeypatch) -> None:
+    """Regression: workbuddy-desktop.info should be checked before the legacy file.
+
+    Both files may exist; the legacy one might be stale while the desktop file
+    is current. The desktop file must win.
+    """
+    from deeptutor.services import codebuddy_credentials as creds
+
+    auth_dir = tmp_path / "CodeBuddyExtension" / "Data" / "Public" / "auth"
+    auth_dir.mkdir(parents=True)
+
+    legacy = auth_dir / "Tencent-Cloud.coding-copilot.info"
+    legacy.write_text(json.dumps({"auth": {"accessToken": "legacy-token"}}), encoding="utf-8")
+
+    desktop = auth_dir / "workbuddy-desktop.info"
+    desktop.write_text(json.dumps({"access_token": "desktop-token"}), encoding="utf-8")
+
+    monkeypatch.delenv("DEEPTUTOR_CODEBUDDY_AUTH_FILE", raising=False)
+    monkeypatch.setattr(creds, "_auth_search_dirs", lambda: [auth_dir])
+
+    found = creds.find_auth_file()
+    assert found == desktop, "Desktop file should be preferred over legacy"
+
+    credentials = creds.load_credentials()
+    assert credentials is not None
+    assert credentials.access_token == "desktop-token"

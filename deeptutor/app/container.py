@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import socket
 from typing import Any
-import uuid
 
 from deeptutor.runtime.capability_catalog import get_capability_catalog
 from deeptutor.runtime.coordination import (
@@ -18,6 +16,7 @@ from deeptutor.runtime.coordination import (
     RuntimeCoordinator,
     TurnRecoveryService,
 )
+from deeptutor.runtime.coordination.worker_identity import new_worker_id
 from deeptutor.runtime.registry.capability_registry import CapabilityRegistry
 from deeptutor.runtime.turn_engine import TurnEngine
 from deeptutor.services.config import load_integrations_settings, load_system_settings
@@ -100,6 +99,7 @@ class ApplicationContainer:
         )
         self._recovery_services: dict[str, TurnRecoveryService] = {}
         self._started = False
+        self._module_lease: contextlib.AbstractContextManager | None = None
 
     @classmethod
     def build(cls) -> "ApplicationContainer":
@@ -116,25 +116,47 @@ class ApplicationContainer:
             )
         else:
             coordinator = MemoryCoordinator(lease_ttl_seconds=settings.lease_ttl_seconds)
-        worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+        worker_id = new_worker_id()
         return cls(settings=settings, coordinator=coordinator, worker_id=worker_id)
 
     async def start(self) -> None:
         if self._started:
             return
-        if not await self.coordinator.health():
-            raise RuntimeConfigurationError(
-                "Turn coordination backend is unavailable; refusing to start"
-            )
-        self._started = True
+        from deeptutor.modules.lifecycle import environment_lease
+
+        lease = environment_lease()
+        lease.__enter__()
+        self._module_lease = lease
+        try:
+            if not await self.coordinator.health():
+                raise RuntimeConfigurationError(
+                    "Turn coordination backend is unavailable; refusing to start"
+                )
+            self._started = True
+        except BaseException:
+            lease.__exit__(None, None, None)
+            self._module_lease = None
+            raise
 
     async def close(self) -> None:
         if not self._started:
             return
-        await self.runtime_registry.close(drain_timeout_seconds=60.0)
-        with contextlib.suppress(Exception):
-            await self.coordinator.close()
-        self._started = False
+        try:
+            # Await cancellation cleanup before releasing the environment lease.
+            await self.runtime_registry.close(drain_timeout_seconds=0.0)
+            from deeptutor.runtime.memory_reclaim import cancel_idle_reclaim
+            from deeptutor.runtime.ts_engine import close_engine_clients
+
+            cancel_idle_reclaim()
+            await close_engine_clients()
+            with contextlib.suppress(Exception):
+                await self.coordinator.close()
+        finally:
+            self._started = False
+            lease = getattr(self, "_module_lease", None)
+            if lease is not None:
+                lease.__exit__(None, None, None)
+                self._module_lease = None
 
     async def recover_once(self) -> None:
         """Recover expired turns across every registered user repository.
@@ -145,20 +167,46 @@ class ApplicationContainer:
         """
 
         from deeptutor.multi_user.paths import user_context
+        from deeptutor.services.workspace.activity import acquire_activity
+        from deeptutor.services.workspace.models import WorkspaceError
 
         seen: set[str] = set()
         for user in self._local_users():
             with user_context(user):
-                store = self.store_provider.get()
-                scope_key = store_scope(store).cache_key
-                if scope_key in seen:
+                try:
+                    activity = acquire_activity()
+                except WorkspaceError:
                     continue
-                seen.add(scope_key)
-                recovery = self._recovery_services.get(scope_key)
-                if recovery is None:
-                    recovery = TurnRecoveryService(self.coordinator, store)
-                    self._recovery_services[scope_key] = recovery
-                await recovery.recover_once()
+                try:
+                    await self._recover_user_workspaces(seen)
+                finally:
+                    activity.close()
+
+    async def _recover_user_workspaces(self, seen: set[str]) -> None:
+        from deeptutor.services.workspace import get_content_workspace_service
+        from deeptutor.services.workspace.context import workspace_context
+        from deeptutor.services.workspace.models import WorkspaceError
+
+        workspace_ids = [""] + [
+            row["workspace_id"]
+            for row in get_content_workspace_service()._catalog()
+            if row.get("kind") == "workspace" and os.path.isdir(row["path"])
+        ]
+        for workspace_id in workspace_ids:
+            try:
+                with workspace_context(workspace_id):
+                    store = self.store_provider.get()
+                    scope_key = store_scope(store).cache_key
+                    if scope_key in seen:
+                        continue
+                    seen.add(scope_key)
+                    recovery = self._recovery_services.get(scope_key)
+                    if recovery is None:
+                        recovery = TurnRecoveryService(self.coordinator, store)
+                        self._recovery_services[scope_key] = recovery
+                    await recovery.recover_once()
+            except WorkspaceError:
+                continue
 
     @staticmethod
     def _local_users() -> list[Any]:
@@ -238,7 +286,18 @@ class ApplicationContainer:
                 continue
             seen_users.add(user.id)
             with user_context(user):
-                migrated = await self.store_provider.get().migrate_workspace_preferences()
+                from deeptutor.services.workspace.activity import acquire_activity
+                from deeptutor.services.workspace.models import WorkspaceError
+
+                try:
+                    activity = acquire_activity()
+                except WorkspaceError as exc:
+                    reports.append({"user_id": user.id, "skipped": str(exc)})
+                    continue
+                try:
+                    migrated = await self.store_provider.get().migrate_workspace_preferences()
+                finally:
+                    activity.close()
             reports.append(
                 {
                     "user_id": user.id,
@@ -248,13 +307,68 @@ class ApplicationContainer:
             )
         return reports
 
+    async def adopt_all_book_chat_sessions(self) -> list[dict[str, Any]]:
+        """Link page chats to their books in every account and workspace."""
+
+        from deeptutor.modules.catalog import module_enabled
+
+        if not module_enabled("books"):
+            return []
+        from deeptutor.book.chat_sessions import adopt_book_chat_sessions
+        from deeptutor.multi_user.paths import user_context
+        from deeptutor.services.workspace import get_content_workspace_service
+        from deeptutor.services.workspace.context import workspace_context
+        from deeptutor.services.workspace.models import WorkspaceError
+
+        reports: list[dict[str, Any]] = []
+        for user in self._local_users():
+            with user_context(user):
+                try:
+                    scopes = [""] + [
+                        row["workspace_id"]
+                        for row in get_content_workspace_service().list_workspaces()
+                        if row["kind"] == "workspace" and row["status"] == "ready"
+                    ]
+                except WorkspaceError as exc:
+                    reports.append({"user_id": user.id, "skipped": str(exc)})
+                    continue
+                tagged = 0
+                for scope in scopes:
+                    try:
+                        with workspace_context(scope):
+                            tagged += await adopt_book_chat_sessions()
+                    except WorkspaceError:
+                        continue
+                reports.append({"user_id": user.id, "tagged": tagged})
+        return reports
+
     async def run_startup_data_migrations(self) -> dict[str, list[dict[str, Any]]]:
         """Run every idempotent migration shared by all server launch modes."""
 
-        return {
+        result = {
             "legacy_chat": await self.migrate_all_legacy_chats(),
             "workspace_preferences": await self.migrate_all_workspace_preferences(),
+            "book_chats": await self.adopt_all_book_chat_sessions(),
         }
+        from deeptutor.multi_user.paths import user_context
+        from deeptutor.services.workspace.session_move import migrate_legacy_bindings
+
+        reports = []
+        for user in self._local_users():
+            with user_context(user):
+                from deeptutor.services.workspace.models import WorkspaceError
+
+                try:
+                    reports.append(
+                        {
+                            "user_id": user.id,
+                            "migrated": await asyncio.to_thread(migrate_legacy_bindings),
+                        }
+                    )
+                except WorkspaceError as exc:
+                    reports.append({"user_id": user.id, "skipped": str(exc)})
+        result["workspace_data"] = reports
+        return result
 
     async def runtime_report(self) -> dict[str, Any]:
         report = self.settings.runtime_report()
@@ -292,10 +406,24 @@ def set_application_container(container: ApplicationContainer | None) -> None:
     _default_container = container
 
 
+async def close_application_container() -> None:
+    """Close an existing default runtime without constructing one for cleanup."""
+    global _default_container
+    container = _default_container
+    if container is None:
+        return
+    try:
+        await container.close()
+    finally:
+        if _default_container is container:
+            _default_container = None
+
+
 __all__ = [
     "ApplicationContainer",
     "RuntimeRegistry",
     "StoreProvider",
     "get_application_container",
     "set_application_container",
+    "close_application_container",
 ]

@@ -62,7 +62,8 @@ def test_custom_workspace_is_saved_and_turn_output_is_scoped(
 
     assert service.current_binding().workspace_id == binding.workspace_id
     assert context.root == str(custom.resolve())
-    assert context.logical_output_dir == "outputs/deep_research/session_one/turn_1"
+    assert context.logical_output_dir.startswith("outputs/deep_research/session_one_")
+    assert context.logical_output_dir.endswith("/turn_1")
     assert Path(context.output_dir).is_dir()
 
 
@@ -604,6 +605,22 @@ def test_execution_environment_keeps_mutable_tool_state_in_the_turn(
     assert exec_env["DEEPTUTOR_WORKSPACE_ROOT"] == str(workspace_root.resolve())
 
 
+def test_execution_environment_requests_utf8_mode(
+    tmp_path: Path,
+) -> None:
+    """Model-authored Python must not inherit the host's ANSI code page.
+
+    Without UTF-8 mode a bare ``Path.read_text()`` / ``open()`` decodes UTF-8
+    files with the locale encoding — ``cp936`` on a Chinese Windows host — so
+    any script that reads a template or writes non-ASCII output fails or
+    corrupts it. The exec environment inherits only a fixed subset of host
+    variables, so this has to be set here rather than left to the host.
+    """
+    exec_env = prepare_workspace_execution_env(tmp_path / "outputs" / "chat" / "s" / "turn")
+
+    assert exec_env["PYTHONUTF8"] == "1"
+
+
 def test_execution_environment_rejects_hidden_state_symlink(
     tmp_path: Path,
 ) -> None:
@@ -633,3 +650,54 @@ def test_execution_results_expose_only_workspace_relative_paths(tmp_path: Path) 
     # host prefix; the dedicated path projection below is always POSIX.
     assert "outputs/chat/turn/code_runs/python_1/main.py" in rendered.replace("\\", "/")
     assert logical_workspace_path(run_dir, root) == ("outputs/chat/turn/code_runs/python_1")
+
+
+def test_write_probe_name_stays_short_enough_for_deep_windows_roots(
+    workspace_service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deep custom root is close to MAX_PATH; a 55-character probe overflows it."""
+    service, _paths = workspace_service
+    names: list[str] = []
+    original = Path.touch
+
+    def touch(self: Path, *args, **kwargs):
+        names.append(self.name)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "touch", touch)
+
+    service.current_binding(ensure_output=True)
+
+    assert names and len(names[0]) <= 20
+
+
+def test_path_too_long_is_not_reported_as_a_permission_problem(
+    workspace_service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _paths = workspace_service
+    binding = service.current_binding(ensure_output=True)
+
+    def touch(_self: Path, *_args, **_kwargs):
+        error = OSError(206, "The filename or extension is too long")
+        error.winerror = 206
+        raise error
+
+    monkeypatch.setattr(Path, "touch", touch)
+
+    with pytest.raises(WorkspaceError, match="too long"):
+        service._ensure_ready(binding)
+
+
+def test_a_real_permission_error_still_says_not_writable(
+    workspace_service, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, _paths = workspace_service
+    binding = service.current_binding(ensure_output=True)
+
+    def touch(_self: Path, *_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "touch", touch)
+
+    with pytest.raises(WorkspaceError, match="not writable"):
+        service._ensure_ready(binding)

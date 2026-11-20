@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from deeptutor.nimi.transport import get_transport
 
@@ -51,16 +51,26 @@ class EmbeddingClient:
         )
         return result["spaceId"], len(vectors[0])
 
-    async def embed(self, texts, progress_callback=None, *, input_type=None):
+    async def embed(
+        self,
+        texts: List[str],
+        progress_callback=None,
+        *,
+        input_type: str | None = None,
+    ) -> List[List[float]]:
+        if not texts:
+            return []
         if input_type not in {None, "search_query", "search_document"}:
             raise ValueError("Unsupported embedding retrieval role.")
         purpose = "retrieval-query" if input_type == "search_query" else "retrieval-document"
         batches = embedding_batches(texts)
-        vectors = []
+        vectors: List[List[float]] = []
         space_id = self.config.space_id
         dimension = self.config.dim or None
         for number, batch in enumerate(batches, 1):
-            result = await get_transport().request("embedding.batch", {"inputs": batch, "purpose": purpose})
+            result = await get_transport().request(
+                "embedding.batch", {"inputs": batch, "purpose": purpose}
+            )
             actual_space = result["spaceId"]
             if not isinstance(actual_space, str) or not actual_space:
                 raise ValueError("Nimi did not return an embedding spaceId.")
@@ -81,16 +91,25 @@ class EmbeddingClient:
                 progress_callback(number, len(batches))
         return vectors
 
-    def supports_multimodal_contents(self):
+    def supports_multimodal_contents(self) -> bool:
         return False
 
-    async def embed_contents(self, contents, **kwargs):
+    async def embed_contents(self, contents: List[Dict[str, Any]], **kwargs) -> List[List[float]]:
         raise ValueError(
             "Image embedding is not admitted by the selected Nimi text.embed contract. No image input has been dropped."
         )
 
-    def embed_sync(self, texts):
-        return asyncio.run(self.embed(texts))
+    def embed_sync(self, texts: List[str]) -> List[List[float]]:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.embed(texts))
+
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(asyncio.run, self.embed(texts))
+            return future.result()
 
 
 _client: EmbeddingClient | None = None

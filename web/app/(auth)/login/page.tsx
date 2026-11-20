@@ -53,7 +53,11 @@ function LoginPageContent() {
     const result = await login(username, password);
 
     if (result.ok) {
-      router.replace(resolvedNext());
+      // A password an admin assigned is temporary by definition — send the
+      // owner straight to the form rather than letting them settle in with it.
+      router.replace(
+        result.mustChangePassword ? "/profile?change=1" : resolvedNext(),
+      );
     } else {
       setError(result.error ?? t("Login failed"));
       setLoading(false);
@@ -163,18 +167,19 @@ function LoginPageContent() {
       </p>
 
       <p className="mt-3 text-center text-xs text-[var(--muted-foreground)]">
-        DeepTutor · Agent-Native Learning
+        {t("DeepTutor · Agent-Native Learning")}
       </p>
     </div>
   );
 }
 
 export default function LoginPage() {
+  const { t } = useTranslation();
   return (
     <Suspense
       fallback={
         <div className="w-full max-w-sm text-center text-sm text-[var(--muted-foreground)]">
-          Loading sign in...
+          {t("Loading sign in...")}
         </div>
       }
     >

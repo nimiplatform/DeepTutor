@@ -14,6 +14,7 @@ import base64
 import binascii
 import json
 import logging
+import math
 from typing import Any
 
 import httpx
@@ -132,6 +133,8 @@ class OpenAICompatTTSAdapter(BaseTTSAdapter):
             payload["voice"] = config.voice
         if config.speed is not None:
             payload["speed"] = config.speed
+        if config.instructions:
+            payload["instructions"] = config.instructions
 
         logger.debug(
             "TTS synthesize url=%s model=%s voice=%s fmt=%s chars=%d",
@@ -207,10 +210,17 @@ class OpenRouterTTSAdapter(BaseTTSAdapter):
         audio_format = _chat_audio_format(config.response_format)
         payload: dict[str, Any] = {
             "model": config.model,
-            "messages": [{"role": "user", "content": text}],
+            "messages": [
+                *(
+                    [{"role": "system", "content": config.instructions}]
+                    if config.instructions
+                    else []
+                ),
+                {"role": "user", "content": text},
+            ],
             "modalities": ["text", "audio"],
             "audio": {
-                "voice": config.voice or "alloy",
+                "voice": config.voice,
                 "format": audio_format,
             },
             "stream": True,
@@ -457,7 +467,9 @@ def _parse_cues(resp: httpx.Response) -> list[TranscriptCue]:
         try:
             start = float(row.get("start", 0.0))
             end = float(row.get("end", start))
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
+            continue
+        if not (math.isfinite(start) and math.isfinite(end)):
             continue
         if start < 0 or end < start:
             continue

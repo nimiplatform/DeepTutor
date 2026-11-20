@@ -5,6 +5,7 @@ import {
   Library,
   Link2,
   Loader2,
+  Rss,
   Search,
   Upload,
   X,
@@ -19,6 +20,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 
+import { WatchingBrowser } from "@/components/watching/WatchingBrowser";
 import { uploadMaterial } from "@/lib/reading-api";
 import {
   addReadingWorkspaceMaterial,
@@ -85,6 +87,16 @@ export function AddMaterialsDialog({
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   const [showPicker, setShowPicker] = useState(false);
+  const [showInvidious, setShowInvidious] = useState(false);
+  const selectedLibraryIds = useMemo(
+    () =>
+      new Set(
+        items.flatMap((item) =>
+          item.material ? [item.material.material_id] : [],
+        ),
+      ),
+    [items],
+  );
 
   const heading =
     mode === "create"
@@ -126,6 +138,32 @@ export function AddMaterialsDialog({
     ]);
     setLinkDraft("");
   }, [linkDraft]);
+
+  const importInvidiousUrl = useCallback(
+    async (url: string) => {
+      if (working) return;
+      setWorking(true);
+      setError("");
+      try {
+        const label = url.replace(/^https?:\/\//, "").slice(0, 80);
+        const imported =
+          mode === "add" && workspaceId
+            ? await importReadingUrls({ urls: [url], workspace_id: workspaceId })
+            : await importReadingUrls({
+                urls: [url],
+                workspace_title:
+                  mode === "create" && title.trim() ? title.trim() : label,
+              });
+        const workspace = imported.workspace;
+        onDone({ workspace });
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : t("Import failed."));
+      } finally {
+        setWorking(false);
+      }
+    },
+    [mode, onDone, t, title, workspaceId, working],
+  );
 
   // Hash new files in the browser and ask the server what it already holds, so
   // a duplicate is surfaced while the user can still decide — not after the
@@ -216,7 +254,6 @@ export function AddMaterialsDialog({
     );
 
   const pickLibrary = (material: ReadingLibraryMaterial) => {
-    setShowPicker(false);
     setItems((current) =>
       current.some(
         (item) => item.material?.material_id === material.material_id,
@@ -427,6 +464,15 @@ export function AddMaterialsDialog({
             </div>
           </div>
 
+          <button
+            type="button"
+            onClick={() => setShowInvidious(true)}
+            className="mt-3 flex w-full items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-[11.5px] text-[var(--muted-foreground)] transition hover:border-[var(--primary)] hover:text-[var(--primary)]"
+          >
+            <Rss size={13} />
+            {t("Browse Invidious")}
+          </button>
+
           {!!items.length && (
             <ul className="mt-3.5 space-y-1.5">
               {items.map((item) => (
@@ -449,6 +495,7 @@ export function AddMaterialsDialog({
 
           <button
             type="button"
+            aria-expanded={showPicker}
             onClick={() => setShowPicker((current) => !current)}
             className="mt-4 flex w-full items-center gap-2 border-t border-[var(--border)] pt-3.5 text-[11.5px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
           >
@@ -456,7 +503,9 @@ export function AddMaterialsDialog({
             {t("Choose from material you already uploaded")}
             <span className="ml-auto">{showPicker ? "−" : "›"}</span>
           </button>
-          {showPicker && <LibraryPicker onPick={pickLibrary} />}
+          {showPicker && (
+            <LibraryPicker onPick={pickLibrary} selectedIds={selectedLibraryIds} />
+          )}
 
           {error && (
             <p className="mt-3 text-[11px] text-[var(--destructive)]">
@@ -488,6 +537,14 @@ export function AddMaterialsDialog({
           </button>
         </div>
       </div>
+
+      {showInvidious && (
+        <WatchingBrowser
+          canDismiss
+          onSelectUrl={(url) => void importInvidiousUrl(url)}
+          onDismiss={() => setShowInvidious(false)}
+        />
+      )}
     </div>
   );
 }
@@ -650,8 +707,10 @@ function DecisionChip({
 
 function LibraryPicker({
   onPick,
+  selectedIds,
 }: {
   onPick: (material: ReadingLibraryMaterial) => void;
+  selectedIds: ReadonlySet<string>;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -709,6 +768,7 @@ function LibraryPicker({
               key={material.material_id}
               type="button"
               onClick={() => onPick(material)}
+              disabled={selectedIds.has(material.material_id)}
               className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--muted)]"
             >
               <MaterialGlyph
@@ -725,6 +785,9 @@ function LibraryPicker({
                     t(sourceKindKey[material.source_kind])}
                 </span>
               </span>
+              {selectedIds.has(material.material_id) && (
+                <Check size={13} className="shrink-0 text-[var(--primary)]" />
+              )}
             </button>
           ))
         )}

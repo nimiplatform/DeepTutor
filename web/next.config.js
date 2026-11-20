@@ -149,21 +149,24 @@ const nextConfig = {
   // Transpile mermaid and related packages for proper ESM handling
   transpilePackages: ["mermaid"],
 
-  // v1.6.2 and earlier bookmarked Mastery Study at `/study`; tip teaches under
-  // `/sessions`. Permanent redirects keep old URLs (and issue repro links)
-  // landing on the live surface instead of a bare 404.
+  // Compatibility lives here; every rendered link uses learning-routes.ts.
   async redirects() {
     return [
-      {
-        source: "/mastery/:pathId/study",
-        destination: "/mastery/:pathId/sessions",
-        permanent: true,
-      },
-      {
-        source: "/mastery/:pathId/study/:sessionId",
-        destination: "/mastery/:pathId/sessions/:sessionId",
-        permanent: true,
-      },
+      // The workspace root has one destination; sessions live under /chat.
+      // Kept out of a page component on purpose: a page that only calls
+      // redirect() throws mid-render, and React 19.2's dev performance track
+      // then measures that aborted render with a negative end time — the
+      // "cannot have a negative time stamp" overlay (vercel/next.js#86060).
+      { source: "/", destination: "/chat", permanent: false },
+      // Existing clips used the singular URL; preserve their record query.
+      { source: "/notebook/:path*", destination: "/notebooks/:path*", permanent: true },
+      { source: "/mastery/:pathId/study", destination: "/learning/mastery/:pathId/sessions", statusCode: 301 },
+      { source: "/mastery/:pathId/study/:sessionId", destination: "/learning/mastery/:pathId/sessions/:sessionId", statusCode: 301 },
+      ...["books", "mastery", "reading", "watching"].map((surface) => ({
+        source: `/${surface}/:path*`,
+        destination: `/learning/${surface}/:path*`,
+        statusCode: 301,
+      })),
     ];
   },
 
@@ -191,7 +194,12 @@ const nextConfig = {
   },
 
   // Webpack configuration (used for production builds - next build)
-  webpack: config => {
+  webpack: (config) => {
+    config.module.rules.push({
+      test: /locales[/\\]en[/\\]app\.json$/,
+      type: "javascript/auto",
+      use: path.resolve(__dirname, "scripts/compact-locale-loader.cjs"),
+    });
     config.resolve.alias = {
       ...config.resolve.alias,
       cytoscape: require.resolve("cytoscape"),

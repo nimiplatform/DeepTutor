@@ -4,11 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import HTTPException
-
 from .context import get_current_user
 from .grants import load_grant
-from .paths import get_admin_path_service
 
 
 def assigned_skill_ids(user_id: str | None = None) -> set[str]:
@@ -23,9 +20,9 @@ def assigned_skill_ids(user_id: str | None = None) -> set[str]:
 
 def _admin_skill_service():
     """Return a SkillService rooted at the admin workspace (for assigned-skill loads)."""
-    from deeptutor.services.skill.service import SkillService
+    from deeptutor.services.skill.service import get_admin_skill_service
 
-    return SkillService(root=get_admin_path_service().get_workspace_dir() / "skills")
+    return get_admin_skill_service()
 
 
 def assigned_skill_infos(user_id: str | None = None) -> list[dict[str, Any]]:
@@ -72,4 +69,6 @@ def assert_skill_allowed(name: str) -> None:
     if user.is_admin:
         return
     if name not in assigned_skill_ids(user.id):
-        raise HTTPException(status_code=403, detail="Skill is not assigned to you")
+        from deeptutor.core.errors import AccessError
+
+        raise AccessError(status_code=403, detail="Skill is not assigned to you")

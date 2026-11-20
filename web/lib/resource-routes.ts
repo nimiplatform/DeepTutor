@@ -8,9 +8,7 @@ function segment(value: string): string {
  * Next.js keeps dynamic values URL-encoded in the client router tree, so
  * `useParams()` can return e.g. `%E5%9B%BD...` for a Chinese resource name.
  */
-export function decodeResourceSegment(
-  value?: string | null,
-): string | null {
+export function decodeResourceSegment(value?: string | null): string | null {
   const candidate = value?.trim();
   if (!candidate) return null;
   try {
@@ -21,25 +19,31 @@ export function decodeResourceSegment(
   }
 }
 
-export function bookRoute(bookId?: string | null, pageId?: string | null): string {
-  if (!bookId?.trim()) return "/books";
-  const book = `/books/${segment(bookId)}`;
-  return pageId?.trim() ? `${book}/pages/${segment(pageId)}` : book;
-}
-
 export function notebookRoute(
   notebookId?: string | null,
-  courseId?: string | null,
+  recordId?: string | null,
 ): string {
   const pathname = notebookId?.trim()
     ? `/notebooks/${segment(notebookId)}`
     : "/notebooks";
-  if (!courseId?.trim()) return pathname;
-  return `${pathname}?course=${segment(courseId)}`;
+  const query = [
+    recordId?.trim() ? `record=${segment(recordId)}` : "",
+  ]
+    .filter(Boolean)
+    .join("&");
+  return query ? `${pathname}?${query}` : pathname;
 }
 
 export function knowledgeBaseRoute(name?: string | null): string {
   return name?.trim()
     ? `/knowledge-bases/${segment(name)}`
     : "/knowledge-bases";
+}
+
+/** A stable link back to an archived favorite, including after a move. */
+export function favoriteRecordRoute(
+  collectionId: string,
+  recordId: string,
+): string {
+  return notebookRoute(collectionId, recordId);
 }

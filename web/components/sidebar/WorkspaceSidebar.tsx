@@ -1,10 +1,12 @@
 "use client";
 
+import { activeWorkspaceId, navigateTask } from "@/lib/workspace-scope";
+import { sessionWorkspaceId } from "@/lib/session-api";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
 import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
-import { SidebarShell } from "@/components/sidebar/SidebarShell";
-import { RecycleBinSection } from "@/components/sidebar/RecycleBinSection";
+import { LayoutSidebarShell } from "@/features/ui-layout/slots";
 import { reconcileUnread } from "@/lib/session-unread";
 import { LogoutButton } from "@/components/auth/LogoutButton";
 import { AdminLink } from "@/components/auth/AdminLink";
@@ -12,13 +14,12 @@ import { ProfileLink } from "@/components/auth/ProfileLink";
 import { useChatStateAdapter } from "@/features/chat/ChatStateAdapter";
 import {
   deleteSession,
-  listSessions,
+  listAllSessions,
   updateSessionOrganization,
   updateSessionTitle,
   type SessionOrganizationPatch,
   type SessionSummary,
 } from "@/lib/session-api";
-import { listCourses, type StudyCourse } from "@/lib/courses-api";
 import {
   fetchReadingCollectionIndex,
   type ReadingCollectionLabel,
@@ -27,7 +28,8 @@ import {
   fetchMasteryTopicIndex,
   type MasteryTopicLabel,
 } from "@/lib/learning-api";
-import { sessionRoute } from "@/lib/mastery-session";
+import { readingWorkspaceIdOf, sessionRoute } from "@/lib/mastery-session";
+import { readingCollectionRoute } from "@/lib/learning-routes";
 import { subscribeSessionChanges } from "@/lib/session-events";
 
 export default function WorkspaceSidebar() {
@@ -35,13 +37,13 @@ export default function WorkspaceSidebar() {
   const router = useRouter();
   const {
     newSession,
+    configureSession,
     cancelStreamingTurn,
     selectedSessionId,
     sessionStatuses,
     sidebarRefreshToken,
   } = useChatStateAdapter();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [courses, setCourses] = useState<StudyCourse[]>([]);
   const [masteryTopics, setMasteryTopics] = useState<MasteryTopicLabel[]>([]);
   const [readingCollections, setReadingCollections] = useState<
     ReadingCollectionLabel[]
@@ -54,18 +56,16 @@ export default function WorkspaceSidebar() {
       setLoadingSessions(true);
     }
     try {
-      // Topic labels are only there to name a group heading, so a failure to
-      // load them must not cost the session list: the conversations then read
-      // as ungrouped rather than as missing.
-      const [nextSessions, nextCourses, nextTopics, nextCollections] =
+      // Only this workspace's conversations: switching workspace is switching
+      // stores. Topic labels only name a group heading, so a failure to load
+      // them must not cost the session list.
+      const [nextSessions, nextTopics, nextCollections] =
         await Promise.all([
-          listSessions(50, 0, { force: true }),
-          listCourses({ force: true }),
+          listAllSessions({ force: true }),
           fetchMasteryTopicIndex().catch(() => [] as MasteryTopicLabel[]),
-          fetchReadingCollectionIndex(),
+          fetchReadingCollectionIndex().catch(() => [] as ReadingCollectionLabel[]),
         ]);
       setSessions(nextSessions);
-      setCourses(nextCourses);
       setMasteryTopics(nextTopics);
       setReadingCollections(nextCollections);
       hasLoadedSessionsRef.current = true;
@@ -143,8 +143,8 @@ export default function WorkspaceSidebar() {
   // sessions whose status is `running`, which is the architecture stating
   // outright that background conversations are meant to keep going.
   const handleNewChat = useCallback(() => {
-    newSession();
-    router.push("/chat");
+    newSession({ workspaceId: activeWorkspaceId() || null });
+    navigateTask("/chat", router.push);
   }, [newSession, router]);
 
   // A study conversation opens on its own path, not in the main chat: the
@@ -153,14 +153,14 @@ export default function WorkspaceSidebar() {
   const handleSelectSession = useCallback(
     async (sessionId: string) => {
       const session = sessions.find((item) => item.session_id === sessionId);
-      router.push(session ? sessionRoute(session) : `/chat/${sessionId}`);
+      navigateTask(session ? sessionRoute(session) : `/chat/${sessionId}`, router.push);
     },
     [router, sessions],
   );
 
   const handleRenameSession = useCallback(
     async (sessionId: string, title: string) => {
-      const updated = await updateSessionTitle(sessionId, title);
+      const updated = await updateSessionTitle(sessionId, title, sessionWorkspaceId(sessions.find(item => item.session_id === sessionId)));
       setSessions((prev) =>
         prev.map((session) =>
           session.session_id === sessionId
@@ -173,49 +173,65 @@ export default function WorkspaceSidebar() {
         ),
       );
     },
-    [],
+    [sessions],
   );
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
-      if (!window.confirm(t("Delete this chat history?"))) return;
-      await deleteSession(sessionId);
+      if (!window.confirm(t("Permanently delete this chat and its tutor threads? This cannot be undone."))) return;
+      const deleted = sessions.find(item => item.session_id === sessionId);
+      await deleteSession(sessionId, sessionWorkspaceId(deleted));
       setSessions((prev) =>
         prev.filter((session) => session.session_id !== sessionId),
       );
       if (selectedSessionId === sessionId) {
         cancelStreamingTurn();
-        newSession();
-        router.push("/chat");
+        newSession({ workspaceId: activeWorkspaceId() || null });
+        // A reading conversation was open beside its material; deleting it
+        // should leave the reader on that material, not throw them to /chat.
+        const readingId = deleted ? readingWorkspaceIdOf(deleted) : "";
+        navigateTask(
+          readingId
+            ? readingCollectionRoute(readingId, sessionWorkspaceId(deleted))
+            : "/chat",
+          router.push,
+        );
       }
     },
-    [cancelStreamingTurn, newSession, router, selectedSessionId, t],
+    [cancelStreamingTurn, newSession, router, selectedSessionId, t, sessions],
   );
 
   const handleOrganizeSession = useCallback(
     async (sessionId: string, patch: SessionOrganizationPatch) => {
-      const updated = await updateSessionOrganization(sessionId, patch);
+      const updated = await updateSessionOrganization(sessionId, patch, sessionWorkspaceId(sessions.find(item => item.session_id === sessionId)));
+      if ("workspace_id" in patch) {
+        configureSession({ workspaceId: updated.preferences?.workspace_id ?? null }, sessionId);
+        if (selectedSessionId === sessionId) {
+          navigateTask(sessionRoute({ ...sessions.find(row => row.session_id === sessionId)!,
+            preferences: updated.preferences, content_workspace_id: updated.preferences?.workspace_id || "" }), router.push);
+        }
+      }
+      // A conversation moved to another workspace has left this list.
+      const movedAway = "workspace_id" in patch &&
+        (updated.preferences?.workspace_id || "") !== activeWorkspaceId();
       setSessions((previous) =>
-        previous.map((session) =>
-          session.session_id === sessionId
-            ? {
-                ...session,
-                updated_at: updated.updated_at,
-                preferences: updated.preferences,
-              }
-            : session,
-        ),
+        movedAway
+          ? previous.filter((session) => session.session_id !== sessionId)
+          : previous.map((session) =>
+              session.session_id === sessionId
+                ? { ...session, updated_at: updated.updated_at, preferences: updated.preferences }
+                : session,
+            ),
       );
     },
-    [],
+    [configureSession, sessions, selectedSessionId, router],
   );
 
   return (
-    <SidebarShell
+    <LayoutSidebarShell
       showSessions
       sessions={liveSessions}
       liveSessionIds={liveSessionIds}
-      courses={courses}
       masteryTopics={masteryTopics}
       readingCollections={readingCollections}
       activeSessionId={selectedSessionId}
@@ -225,7 +241,6 @@ export default function WorkspaceSidebar() {
       onRenameSession={handleRenameSession}
       onDeleteSession={handleDeleteSession}
       onOrganizeSession={handleOrganizeSession}
-      recycleBinSlot={<RecycleBinSection />}
       footerSlot={(collapsed) => (
         <>
           <ProfileLink collapsed={collapsed} />

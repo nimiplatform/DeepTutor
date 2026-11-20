@@ -62,6 +62,66 @@ def _progress_with_objective() -> LearningProgress:
     )
 
 
+@pytest.mark.parametrize("case", ["explanation", "ready", "retried", "rebound", "delivered"])
+def test_settlement_delivery_requires_fresh_quiz_preparation_receipt(case, tmp_path, monkeypatch):
+    _use_store_root(monkeypatch, tmp_path)
+    LearningStore().save(_progress_with_objective())
+    context, capability = _context(), MasteryLoopCapability()
+    if case != "explanation":
+        capability.augment_kwargs("mastery_quiz", {}, context)
+    prepared = capability.augment_kwargs("mastery_prepare_lesson", {}, context)
+    prepared["_bind_lesson_objective"]("kp-1")
+    if case == "retried":
+        capability.augment_kwargs("mastery_quiz", {}, context)
+    elif case == "rebound":
+        context.metadata["mastery_path_id"] = "another-path"
+    elif case == "delivered":
+        context.extension("mastery")["card_posted"] = True
+    recovery = capability.settlement_recovery(context)
+    if case == "ready":
+        assert recovery is not None and recovery[1] == ("mastery_quiz",)
+        # Even a later fresh preparation cannot purchase another final round.
+        prepared["_bind_lesson_objective"]("kp-1")
+        assert capability.settlement_recovery(context) is None
+    else:
+        assert recovery is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [None, "path", "session", "turn"])
+async def test_mastery_source_presentation_callback_is_server_bound(changed, monkeypatch):
+    context, capability = _context(), MasteryLoopCapability()
+    calls = []
+
+    def present(_self, path_id, sources, purpose, **kwargs):
+        calls.append((path_id, sources, purpose, kwargs))
+        return sources
+
+    monkeypatch.setattr(LearningService, "present_sources", present)
+    bound = capability.augment_kwargs(
+        "rag",
+        {"_mastery_source_context": False, "_present_mastery_sources": "model-supplied"},
+        context,
+    )
+    assert bound["_mastery_source_context"] is True
+    if changed == "path":
+        context.metadata["mastery_path_id"] = "other"
+    elif changed == "session":
+        context.session_id = "other"
+    elif changed == "turn":
+        context.metadata["turn_id"] = "other"
+    if changed:
+        with pytest.raises(ValueError, match="context changed"):
+            await bound["_present_mastery_sources"]([{"source_ref": "synthetic"}], "teaching")
+        assert calls == []
+    else:
+        sources = [{"source_ref": "synthetic"}]
+        assert await bound["_present_mastery_sources"](sources, "teaching") == sources
+        assert calls == [
+            ("path-1", sources, "teaching", {"session_id": "session-1", "turn_id": "turn-2"})
+        ]
+
+
 _GRADED_REVIEW = """回答正确！你选择的 C 正是 Agentic RAG 的核心做法。
 
 我们逐个看其他选项为什么不对：
@@ -82,7 +142,7 @@ def test_graded_review_may_finish_in_prose():
     capability = MasteryLoopCapability()
     context = _context()
 
-    capability.augment_kwargs("mastery_quiz", {}, context)
+    context.extension("mastery")["quiz_awaiting_grade"] = True
     capability.augment_kwargs("mastery_grade", {}, context)
 
     assert capability.finish_instruction(context, _GRADED_REVIEW) is None
@@ -98,43 +158,154 @@ def test_open_question_still_allows_answering_the_learner():
     capability = MasteryLoopCapability()
     context = _context()
 
-    capability.augment_kwargs("mastery_quiz", {}, context)
+    context.extension("mastery")["quiz_awaiting_grade"] = True
 
     assert capability.finish_instruction(context, "会的，路由失败时它会重写查询再试。") is None
 
 
-def test_open_question_may_not_be_restated_in_prose():
-    """Re-posing the open question as text is still redirected to the card."""
+def test_open_question_allows_option_by_option_discussion():
+    """Discussing the open question does not force grading or a new card."""
     capability = MasteryLoopCapability()
     context = _context()
 
-    capability.augment_kwargs("mastery_quiz", {}, context)
+    context.extension("mastery")["quiz_awaiting_grade"] = True
 
     instruction = capability.finish_instruction(context, _GRADED_REVIEW)
-    assert instruction is not None
-    assert "mastery_grade" in instruction
+    assert instruction is None
 
 
-def test_plain_text_quiz_is_redirected_to_the_card():
-    """Posing a question as prose is still rejected before any grading."""
+def test_choice_prose_does_not_force_a_card():
+    """Choice-shaped text is ordinary dialogue until a quiz tool is called."""
     instruction = MasteryLoopCapability().finish_instruction(_context(), _GRADED_REVIEW)
-    assert instruction is not None
-    assert "mastery_quiz" in instruction
-    assert "ask_user" not in instruction
+    assert instruction is None
 
 
-def test_announced_but_unposed_question_is_redirected():
-    """An announced-but-unposed question is not a finished turn.
-
-    Posing a question ends the turn, so a reply that only announces one leaves
-    the learner reading a promise above an empty space with no way to answer.
-    """
+def test_question_wording_does_not_force_a_tool():
+    """A colon or question wording must not trigger mandatory tool work."""
     instruction = MasteryLoopCapability().finish_instruction(
         _context(), "让我们通过这道题来看看你对状态定义的掌握程度："
     )
+    assert instruction is None
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "所以这条 KP 我要考的不是「README 该有哪些章节」——那部分你已经做对了。"
+        "是排序和取舍：给那个不跑项目的读者，第一样该补什么。四个选项，选一个。",
+        "Four options, choose one.",
+    ],
+)
+def test_choice_wording_does_not_control_turn_completion(reply: str) -> None:
+    """Choice wording alone does not establish a pending tool operation."""
+    instruction = MasteryLoopCapability().finish_instruction(_context(), reply)
+    assert instruction is None
+
+
+def test_existing_question_can_remind_learner_to_choose() -> None:
+    """A card posted in an earlier turn is still available to answer."""
+    context = _context()
+    context.extension("mastery")["quiz_awaiting_grade"] = True
+    assert MasteryLoopCapability().finish_instruction(context, "四个选项，选一个。") is None
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "按老规矩先探一题：凭印象选就行——这题考的是它俩的区别。",
+        "那就先把探底那道题放上来——凭印象选就好。",
+        "这次的卡片我直接开出来——就是探底那道。",
+        "卡片这次重开一遍，题面我直接写在题干里了。",
+        "好，这次的卡片我直接重开一遍，一步一步来。",
+        "卡片这次真挂上了。" + "冒泡排序比较相邻两个元素。" * 25,
+        "卡片就在下面，选一个字母就行。",
+        "卡片已经生成了，直接作答就行。",
+        "这次把卡片放好了，请选择答案。",
+        "上次卡片没有生成，这次我把卡片重新发出来。",
+        "I've posted the question card below. Choose an option.",
+        "The quiz card is ready below. Choose an option.",
+        "I have reopened the card. Choose an option.",
+    ],
+)
+def test_card_wording_does_not_control_turn_completion(reply: str) -> None:
+    """Mentioning a card cannot force the tutor away from a discussion."""
+    context = _context()
+    # A previous grade must not exempt a promise to pose the next question.
+    context.metadata["mastery_card_grade"] = {"is_correct": True}
+    instruction = MasteryLoopCapability().finish_instruction(context, reply)
+    assert instruction is None
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "上次卡片没有生成，这次先讲冒泡排序。",
+        "卡片没有放上来，我先说明原因。",
+        "这次不会把卡片放上来，先讲概念。",
+        "如果卡片放上来了，就可以作答。",
+        "等讲完知识点，再把卡片放上来。",
+        "学完以后，我会把卡片放上来。",
+        "卡片暂时无法放上来，我先说明原因。",
+        "卡片放上来失败了，请稍后重试。",
+        "上一轮我把卡片放上来了，这次解释答案。",
+        "你说卡片放上来了，但我没有看到。",
+        "你看到卡片放上来了吗？",
+        "“卡片就在下面”这句话不能证明出题成功。",
+        "> 卡片就在下面\n\n这是之前回复的引用。",
+        "```text\n卡片就在下面\n```\n\n这是日志示例。",
+        "I have not posted the question card yet.",
+        "If the quiz card is ready below, answer it.",
+        "Earlier I posted the question card. Now let us review your answer.",
+        "冒泡排序通过交换相邻元素完成排序。",
+    ],
+)
+def test_card_discussion_is_not_a_delivery_claim(reply: str) -> None:
+    """Negation, quotation, history and teaching must still finish normally."""
+    assert MasteryLoopCapability().finish_instruction(_context(), reply) is None
+
+
+def test_card_delivery_claim_uses_success_not_argument_binding() -> None:
+    """Binding a quiz is not success; only the tool's success callback is."""
+    context = _context()
+    capability = MasteryLoopCapability()
+    kwargs = capability.augment_kwargs("mastery_quiz", {}, context)
+    reply = "卡片这次重开一遍。"
+    assert capability.finish_instruction(context, reply) is not None
+    kwargs["_end_turn_on_card"]()
+    assert capability.finish_instruction(context, reply) is None
+
+
+def test_card_delivery_claim_does_not_guard_plain_chat() -> None:
+    assert MasteryLoopCapability().finish_instruction(UnifiedContext(), "卡片就在下面。") is None
+
+
+@pytest.mark.parametrize(
+    "reply", ["Done.", "请继续。", "", "出题失败，请稍后重试。", _GRADED_REVIEW]
+)
+@pytest.mark.parametrize("graded", [False, True])
+def test_selected_quiz_requires_success_regardless_of_final_text(reply: str, graded: bool) -> None:
+    """A selected quiz is an obligation even if a later grade clears awaiting state."""
+    context = _context()
+    capability = MasteryLoopCapability()
+    kwargs = capability.augment_kwargs("mastery_quiz", {}, context)
+    if graded:
+        capability.augment_kwargs("mastery_grade", {}, context)
+        context.metadata["mastery_card_grade"] = {"is_correct": True}
+    instruction = capability.finish_instruction(context, reply)
     assert instruction is not None
-    assert "mastery_quiz" in instruction
-    assert "SAME round" in instruction
+    assert "no question card was successfully posted" in instruction
+    kwargs["_end_turn_on_card"]()
+    assert capability.finish_instruction(context, "Done.") is None
+
+
+def test_quiz_obligation_does_not_leak_into_another_turn() -> None:
+    """A failed quiz in one context does not require a quiz in another."""
+    capability = MasteryLoopCapability()
+    capability.augment_kwargs("mastery_quiz", {}, _context())
+    other_turn = _context()
+    other_turn.metadata["turn_id"] = "turn-3"
+    capability.augment_kwargs("mastery_status", {}, other_turn)
+    assert capability.finish_instruction(other_turn, "先解释一下冒泡排序。") is None
 
 
 def test_skipped_question_followup_cannot_promise_an_absent_card():
@@ -166,7 +337,7 @@ def test_reviewing_a_graded_attempt_is_not_an_announcement():
     capability = MasteryLoopCapability()
     context = _context()
 
-    capability.augment_kwargs("mastery_quiz", {}, context)
+    context.extension("mastery")["quiz_awaiting_grade"] = True
     capability.augment_kwargs("mastery_grade", {}, context)
 
     assert capability.finish_instruction(context, "这道题的关键在于闭环反馈，你抓住了。") is None
@@ -622,3 +793,62 @@ async def test_a_mode_switch_and_a_quiz_in_one_round_use_the_new_mode(tmp_path, 
     quiz = next(message for message in results.tool_messages if message.get("tool_call_id") == "c1")
     assert "belongs to the" not in str(quiz.get("content", "")), quiz
     assert context.metadata["mastery_session_mode"] == "study"
+
+
+@pytest.mark.parametrize(
+    "extra, expected",
+    [
+        ({}, False),
+        ({"mastery_card_answered": True}, True),
+        ({"mastery_card_grade": {"is_correct": True, "result": {"learner_answer": "A"}}}, True),
+        ({"mastery_card_grade": {}}, False),
+        ({"mastery_card_skip": {"skipped": True}}, True),
+        ({"mastery_card_skip": {}}, False),
+    ],
+)
+def test_card_turns_skip_the_kb_seed(extra: dict, expected: bool) -> None:
+    """#1624: a card pick ("A") must not be sent to the KB as a search query."""
+    context = _context()
+    context.metadata.update(extra)
+    assert MasteryLoopCapability().skip_kb_seed(context) is expected
+
+
+def test_kb_seed_is_left_alone_outside_mastery_mode() -> None:
+    context = UnifiedContext(
+        user_message="A",
+        session_id="session-1",
+        metadata={"mastery_card_answered": True},
+    )
+    assert MasteryLoopCapability().skip_kb_seed(context) is False
+
+
+def test_seed_names_the_option_the_learner_picked_not_just_its_letter():
+    """A bare letter is ambiguous once the card shuffles the options.
+
+    The tutor registered the options in its own order; the card shows (and the
+    engine persists) a shuffled one. "D" therefore means a different option in
+    the tutor's context than on the learner's screen (HKUDS/DeepTutor#1993),
+    so the picked option's body has to travel with the letter.
+    """
+    from deeptutor.learning.question_card import build_grade_result
+
+    shuffled = {
+        "A": "Each instance remembers request ids in local memory",
+        "B": "Disable the send button while waiting",
+        "C": "SELECT first, then INSERT",
+        "D": "Idempotency key plus an atomic claim in the backend",
+    }
+    result = build_grade_result(
+        question_id="q-1",
+        is_correct=True,
+        learner_answer="D",
+        correct_label="D",
+        choice_options=shuffled,
+        explanation="why",
+    )
+    context = _context()
+    context.metadata["mastery_card_grade"] = {"is_correct": True, "result": result}
+
+    seed = MasteryLoopCapability()._grade_seed(context)
+
+    assert "Idempotency key plus an atomic claim in the backend" in seed

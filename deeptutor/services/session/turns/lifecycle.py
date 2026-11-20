@@ -21,12 +21,14 @@ from .._turn_runtime_shared import (
     _LiveSubscriber,
     _TurnExecution,
 )
+from .inbox import TurnInbox
 
 if TYPE_CHECKING:
     from deeptutor.runtime.coordination import RuntimeCoordinator
     from deeptutor.services.app_update import UpdateJob
 
 logger = logging.getLogger(__name__)
+_SUBSCRIPTION_POLL_SECONDS = 5.0
 
 
 class TurnLifecycle:
@@ -42,7 +44,9 @@ class TurnLifecycle:
 
         self.store = store or get_session_store()
         self.coordinator = coordinator
-        self.owner_id = owner_id
+        from deeptutor.runtime.coordination.worker_identity import new_worker_id
+
+        self.owner_id = owner_id or new_worker_id()
         if turn_engine is None:
             from deeptutor.runtime.turn_engine import get_turn_engine
 
@@ -65,6 +69,7 @@ class TurnLifecycle:
         # ``text`` is always present (flat fallback for legacy callers);
         # ``answers`` carries the structured per-question replies when the
         # frontend sends the v2 ``ask_user`` shape.
+        self._inboxes: dict[str, TurnInbox] = {}
         self._reply_queues: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
 
     async def close(self, *, drain_timeout_seconds: float = 0.0) -> None:
@@ -74,6 +79,7 @@ class TurnLifecycle:
             executions = list(self._executions.values())
             reply_queues = list(self._reply_queues.values())
             self._reply_queues.clear()
+            self._inboxes.clear()
 
         tasks: list[asyncio.Task[Any]] = []
         for execution in executions:
@@ -253,6 +259,7 @@ class TurnLifecycle:
                         )
                         if not delivered:
                             turn = await self.store.get_turn(execution.turn_id)
+                            persisted_status = str((turn or {}).get("status") or "")
                             logger.warning(
                                 "submit_user_reply command %s for turn %s was "
                                 "accepted (lease owner=%s) but not delivered: no "
@@ -260,14 +267,26 @@ class TurnLifecycle:
                                 command.command_id,
                                 execution.turn_id,
                                 lease.owner_id,
-                                turn.get("status") if turn else "unknown",
+                                persisted_status or "unknown",
                             )
+                            if persisted_status == "waiting_input":
+                                # The owner lease is alive, but the execution
+                                # that owned the ask_user waiter is not. A
+                                # queued command can never reach a queue that
+                                # no longer exists, so the false-positive ACK
+                                # must be followed by a terminal stream; the
+                                # cancellation path persists error+done and
+                                # frees the session for the next turn.
+                                if execution.task is not None and not execution.task.done():
+                                    execution.task.cancel()
+                                return
                     elif command.kind == "user_input":
-                        from deeptutor.runtime.stream_bus import get_bus
-
-                        bus = get_bus(execution.turn_id)
-                        if bus is not None:
-                            bus.submit_input(str(command.payload.get("content") or ""))
+                        self.deliver_user_input(
+                            execution.turn_id,
+                            command.command_id,
+                            str(command.payload.get("content") or ""),
+                            withdraw=str(command.payload.get("withdraw") or "") or None,
+                        )
                 if time.monotonic() >= renew_at:
                     renewed = await self.coordinator.renew_turn(lease)
                     if renewed is None:
@@ -307,6 +326,28 @@ class TurnLifecycle:
             await execution.task
         except asyncio.CancelledError:
             pass
+        return True
+
+    def deliver_user_input(
+        self,
+        turn_id: str,
+        command_id: str,
+        content: str,
+        *,
+        withdraw: str | None = None,
+    ) -> bool:
+        """Put a message sent mid-turn in the turn's inbox, or take one back.
+
+        ``False`` when the turn has no inbox (it already ended); the client
+        still holds the message and sends it as the next turn.
+        """
+        inbox = self._inboxes.get(turn_id)
+        if inbox is None:
+            return False
+        if withdraw:
+            inbox.withdraw(withdraw)
+        else:
+            inbox.put(command_id, content)
         return True
 
     async def submit_user_reply(
@@ -351,11 +392,16 @@ class TurnLifecycle:
         # the frontend's ``isStreaming`` state clears immediately rather than
         # waiting on the 45s heartbeat-timeout + reconnect catchup path.
         done_yielded = False
+        terminal_error_yielded = False
 
         def _track(item: dict[str, Any]) -> dict[str, Any]:
-            nonlocal done_yielded
+            nonlocal done_yielded, terminal_error_yielded
             if str(item.get("type") or "") == "done":
                 done_yielded = True
+            if str(item.get("type") or "") == "error" and (item.get("metadata") or {}).get(
+                "turn_terminal"
+            ):
+                terminal_error_yielded = True
             return item
 
         for item in backlog:
@@ -398,7 +444,11 @@ class TurnLifecycle:
                 # persisted history above — synthesise one so the caller can
                 # still close out its streaming state cleanly.
                 if not done_yielded:
-                    if turn is not None and str(turn.get("status") or "") == "failed":
+                    if (
+                        not terminal_error_yielded
+                        and turn is not None
+                        and str(turn.get("status") or "") == "failed"
+                    ):
                         error_event = self._synthesize_error_event(
                             turn_id,
                             turn,
@@ -413,14 +463,49 @@ class TurnLifecycle:
                         seq=last_seq + 1,
                     )
                 return
-            # A running turn may be owned by another worker. Subscription is a
-            # read-only operation; distributed coordinators attach a live event
-            # source above this local-runtime fallback.
-            return
+            # A running turn may be owned by another worker, including one
+            # whose lease is about to be recovered. Keep watching persisted
+            # events so recovery can reach this subscriber without requiring
+            # the browser to reconnect after its long idle timeout.
         queue_drained = False
         try:
             while True:
-                item = await queue.get()
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=_SUBSCRIPTION_POLL_SECONDS)
+                except TimeoutError:
+                    # A dead producer cannot put a sentinel on its old local
+                    # queue. Reconcile against the durable turn, including a
+                    # recovery worker's terminal events, while the socket is
+                    # still open (#1570).
+                    for persisted in await self.store.get_turn_events(turn_id, after_seq=last_seq):
+                        seq = int(persisted.get("seq") or 0)
+                        if seq <= last_seq:
+                            continue
+                        last_seq = seq
+                        yield _track(persisted)
+                    persisted_turn = await self.store.get_turn(turn_id)
+                    if persisted_turn is None or str(persisted_turn.get("status") or "") in {
+                        "failed",
+                        "cancelled",
+                        "completed",
+                    }:
+                        if not done_yielded:
+                            if (
+                                not terminal_error_yielded
+                                and persisted_turn is not None
+                                and persisted_turn.get("status") == "failed"
+                            ):
+                                error_event = self._synthesize_error_event(
+                                    turn_id, persisted_turn, seq=last_seq + 1
+                                )
+                                if error_event is not None:
+                                    yield error_event
+                                    last_seq += 1
+                            yield self._synthesize_done_event(
+                                turn_id, persisted_turn, seq=last_seq + 1
+                            )
+                        break
+                    continue
                 if item is None:
                     queue_drained = True
                     break
@@ -600,8 +685,15 @@ class TurnLifecycle:
         execution: _TurnExecution,
         event: StreamEvent,
     ) -> dict[str, Any]:
-        if event.type == StreamEventType.DONE and not event.metadata.get("status"):
-            event.metadata = {**event.metadata, "status": "completed"}
+        if event.type == StreamEventType.DONE:
+            from deeptutor.services.llm.metrics import current_usage
+
+            collector = current_usage.get()
+            if collector is not None and collector.turn_id == execution.turn_id:
+                if summary := collector.summary():
+                    event.metadata = {**event.metadata, "usage_summary": summary}
+            if not event.metadata.get("status"):
+                event.metadata = {**event.metadata, "status": "completed"}
         event.session_id = execution.session_id
         event.turn_id = execution.turn_id
         payload = event.to_dict()
@@ -623,18 +715,41 @@ class TurnLifecycle:
             if current is not execution:
                 execution.events.append(payload)
             subscribers = list(current.subscribers)
-        if event.type == StreamEventType.DONE:
+        if event.type == StreamEventType.DONE or (
+            len(execution.events) - len(execution.persisted_events) >= 25
+        ):
             # Never expose DONE to a process-local subscriber before the
             # complete event prefix is durable. Redis subscribers already
             # read the same canonical payload from the shared journal.
             await self._flush_buffered_events(execution)
+        elif execution.flush_task is None or execution.flush_task.done():
+            execution.flush_task = asyncio.create_task(self._flush_live_prefix(execution))
         for subscriber in subscribers:
             with contextlib.suppress(asyncio.QueueFull):
                 subscriber.queue.put_nowait(payload)
         return payload
 
+    async def _flush_live_prefix(self, execution: _TurnExecution) -> None:
+        """Bound the crash-loss window even when the next model/tool is quiet."""
+        delay = 0.25
+        while True:
+            await asyncio.sleep(delay)
+            if execution.lease_lost:
+                return
+            try:
+                await self._flush_buffered_events(execution)
+            except Exception:
+                # Keep the pending prefix and retry transient storage errors.
+                # Terminal flushes still propagate failure to the turn owner.
+                logger.exception("Live event persistence failed for turn %s", execution.turn_id)
+                delay = min(delay * 2, 5.0)
+                continue
+            if len(execution.persisted_events) == len(execution.events):
+                return
+            delay = 0.25
+
     async def _flush_buffered_events(self, execution: _TurnExecution) -> None:
-        """Persist buffered turn events after the live stream has already drained."""
+        """Persist the pending prefix, serialized with periodic and terminal writes."""
         async with execution.flush_lock:
             await self._flush_buffered_events_once(execution)
 

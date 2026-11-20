@@ -24,6 +24,7 @@ Two execution paths:
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import suppress
 from dataclasses import dataclass, field
 import logging
@@ -32,6 +33,7 @@ from typing import Any, Callable
 from deeptutor.core.context import UnifiedContext
 from deeptutor.core.trace import build_trace_metadata, merge_trace_metadata, new_call_id
 from deeptutor.runtime.agentic import (
+    MAX_PARALLEL_TOOL_CALLS,
     LLMClientConfig,
     build_completion_kwargs,
     build_openai_client,
@@ -46,6 +48,7 @@ from deeptutor.services.config.loader import get_capability_params
 from deeptutor.services.llm import clean_thinking_tags, get_llm_config, get_token_limit_kwargs
 from deeptutor.services.llm import stream as llm_stream
 from deeptutor.services.llm.capabilities import threads_session_id
+from deeptutor.services.llm.exceptions import LLMProviderTransportError
 from deeptutor.services.session.provider_response_state import normalize_provider_response_state
 
 logger = logging.getLogger(__name__)
@@ -62,6 +65,14 @@ EXPLORE_SOURCE = "chat"
 # finishes earlier by writing its investigation without a tool call. The last
 # round runs with tools disabled so it is always forced to finish.
 MAX_LOOP_ROUNDS = 5
+
+# Pre-loading attached sources into the *stable* prefix. The pre-pass starts
+# from scratch every turn and reads the same bytes every time; carrying them in
+# the leading message instead of behind a fresh tool call makes them part of
+# the cache prefix. Set to 0 to keep the original read-through-the-tool layout.
+PRELOAD_SOURCES_ENABLED = True
+PRELOAD_MAX_SOURCES = 2
+PRELOAD_MAX_CHARS = 120_000
 
 
 def _budgets() -> dict:
@@ -90,6 +101,26 @@ _KIND_BY_PREFIX: dict[str, tuple[str, str]] = {
     "at-": ("Document", "文档"),
 }
 
+# A connected provider that never yields another chunk must settle (#2539).
+# The answer loop already bounds its stream reads
+# (``agent_loop._bounded_stream_chunks``); this pre-pass runs *before* that
+# loop, as a ``pre_loop`` hook, so without its own bound a stalled CLI parks
+# the whole turn in ``running`` — the lease keeps renewing, recovery sees a
+# live owner, and only an explicit cancel frees it.
+_STREAM_IDLE_TIMEOUT_SECONDS = 90.0
+
+
+async def _bounded_stream_chunks(stream: Any):
+    """Yield stream chunks, raising once the provider goes idle for too long."""
+    iterator = stream.__aiter__()
+    while True:
+        try:
+            yield await asyncio.wait_for(iterator.__anext__(), _STREAM_IDLE_TIMEOUT_SECONDS)
+        except StopAsyncIteration:
+            return
+        except TimeoutError:
+            raise LLMProviderTransportError("The model provider stream timed out.") from None
+
 
 @dataclass(slots=True)
 class _CallResult:
@@ -117,6 +148,7 @@ class ContextExplorer:
         self.language = "zh" if str(language or "en").lower().startswith("zh") else "en"
         self._prompts = prompts or {}
         cfg = get_llm_config()
+        self._llm_config = cfg
         self.model = getattr(cfg, "model", None)
         self.api_key = getattr(cfg, "api_key", None)
         self.base_url = getattr(cfg, "base_url", None)
@@ -153,6 +185,18 @@ class ContextExplorer:
         if not source_index:
             return ""
 
+        # Choose before model effects; a native failure never replays through Python.
+        import os
+
+        if os.getenv("DEEPTUTOR_CHAT_ENGINE") == "typescript-native":
+            from deeptutor.runtime.ts_engine.config import compatibility_reason
+
+            tool = self.registry.get("read_source")
+            if not compatibility_reason(self._llm_config) and (
+                tool is not None and type(tool).__module__ == "deeptutor.tools.builtin"
+            ):
+                return await self._investigate_native(context, stream, source_index, usage)
+
         investigation = ""
         if can_use_native_tool_calling(binding=self.binding, model=self.model):
             try:
@@ -174,6 +218,27 @@ class ContextExplorer:
             return ""
         return f"{self._briefing_header()}\n\n{investigation}".strip()
 
+    async def _investigate_native(self, context, stream, sources, usage) -> str:
+        from .native import investigate_native
+
+        investigation = ""
+        if can_use_native_tool_calling(binding=self.binding, model=self.model):
+            try:
+                investigation = await investigate_native(self, context, stream, sources, usage)
+            except Exception:
+                logger.warning(
+                    "native source investigation failed; trying read-only briefing", exc_info=True
+                )
+        if not investigation.strip():
+            try:
+                investigation = await investigate_native(
+                    self, context, stream, sources, usage, single_pass=True
+                )
+            except Exception:
+                logger.warning("native source briefing failed", exc_info=True)
+        investigation = clean_thinking_tags(investigation, self.binding, self.model).strip()
+        return f"{self._briefing_header()}\n\n{investigation}" if investigation else ""
+
     # ---- agentic loop ----------------------------------------------------
 
     async def _run_loop(
@@ -183,7 +248,7 @@ class ContextExplorer:
         source_index: dict[str, str],
         usage: Any | None,
     ) -> str:
-        system_prompt = self._t("loop.system")
+        system_prompt = self._t("loop.system").format(tool_call_limit=MAX_PARALLEL_TOOL_CALLS)
         user_template = self._t("loop.user_template")
         if not system_prompt or not user_template:
             logger.warning("explore_context loop prompts missing; using single pass")
@@ -191,15 +256,27 @@ class ContextExplorer:
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
-            {
-                "role": "user",
-                "content": user_template.format(
-                    question=(context.user_message or "").strip() or "(empty)",
-                    mode=str(context.active_capability or "chat"),
-                    manifest=(context.source_manifest or "").strip() or "(none)",
-                ),
-            },
         ]
+        question = (context.user_message or "").strip() or "(empty)"
+        mode = str(context.active_capability or "chat")
+        manifest = (context.source_manifest or "").strip() or "(none)"
+        cache_shaped = self._cache_shaped_messages(
+            source_index=source_index,
+            question=question,
+            mode=mode,
+            manifest=manifest,
+        )
+        if cache_shaped:
+            messages.extend(cache_shaped)
+        else:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": user_template.format(
+                        question=question, mode=mode, manifest=manifest
+                    ),
+                }
+            )
         tool_schemas = self._read_source_schemas(source_index)
         augmenter = self._augmenter(source_index)
         client = build_openai_client(self._client_config)
@@ -346,9 +423,15 @@ class ContextExplorer:
         nimi_state = None
         tool_acc = ToolCallAccumulator()
         output_chars = 0
-        response_stream = await client.chat.completions.create(**kwargs)
+        # Bound connection setup as well as the idle reads below, the same way
+        # the answer loop does: a provider that hangs while opening the stream
+        # parks the turn just as effectively as one that stalls mid-stream.
+        response_stream = await asyncio.wait_for(
+            client.chat.completions.create(**kwargs),
+            _STREAM_IDLE_TIMEOUT_SECONDS,
+        )
         try:
-            async for chunk in response_stream:
+            async for chunk in _bounded_stream_chunks(response_stream):
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
@@ -552,6 +635,77 @@ class ContextExplorer:
             usage.add_estimated(input_chars=input_chars, output_chars=output_chars)
         except Exception:  # pragma: no cover - usage accounting is best-effort
             logger.debug("explore_context usage accounting failed", exc_info=True)
+
+    def _cache_shaped_messages(
+        self,
+        *,
+        source_index: dict[str, str],
+        question: str,
+        mode: str,
+        manifest: str,
+    ) -> list[dict[str, Any]]:
+        """Lay the investigation out so the repeatable bytes come first.
+
+        Provider prompt caches match a *prefix*, so only the bytes before the
+        first per-turn difference can ever be reused. The original layout put
+        the user's question at the top of the first message, which meant the
+        longest shared prefix with the previous turn ended a few tokens in and
+        every byte the pre-pass re-read — including tens of thousands of tokens
+        of unchanged source text — was billed at the miss rate, every turn.
+        Here the question is the *last* message and everything ahead of it
+        (mode, manifest, attached sources) is byte-stable for as long as the
+        attachments are, so it becomes a cache hit.
+
+        Returns ``[]`` when the localized split prompts are absent, leaving the
+        caller on the original single-message layout.
+        """
+        preamble_template = self._t("loop.preamble_template")
+        question_template = self._t("loop.question_template")
+        if not preamble_template or not question_template:
+            return []
+        selected = self._preload_selection(source_index)
+        sources_text = self._render_preloaded_sources(source_index, selected)
+        return [
+            {
+                "role": "user",
+                "content": preamble_template.format(
+                    mode=mode, manifest=manifest, sources=sources_text or "(none)"
+                ),
+            },
+            {"role": "user", "content": question_template.format(question=question)},
+        ]
+
+    def _preload_selection(self, source_index: dict[str, str]) -> list[str]:
+        """Which attached sources to carry in the stable prefix.
+
+        Longest first within the hard preload allowance. Oversized sources
+        remain available through read_source without overflowing every request.
+        """
+        if not PRELOAD_SOURCES_ENABLED or PRELOAD_MAX_SOURCES <= 0:
+            return []
+        ranked = sorted(
+            (sid for sid, body in source_index.items() if str(body or "").strip()),
+            key=lambda sid: (-len(str(source_index.get(sid) or "")), sid),
+        )
+        selected: list[str] = []
+        total = 0
+        for sid in ranked:
+            if len(selected) >= PRELOAD_MAX_SOURCES:
+                break
+            size = len(str(source_index.get(sid) or ""))
+            if total + size > PRELOAD_MAX_CHARS:
+                continue
+            selected.append(sid)
+            total += size
+        return selected
+
+    def _render_preloaded_sources(self, source_index: dict[str, str], selected: list[str]) -> str:
+        blocks: list[str] = []
+        for sid in selected:
+            body = str(source_index.get(sid) or "").strip()
+            if body:
+                blocks.append(f"### [{sid}] ({self._kind_label(sid)})\n{body}")
+        return "\n\n".join(blocks)
 
     @staticmethod
     def _source_index(context: UnifiedContext) -> dict[str, str]:

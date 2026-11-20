@@ -12,13 +12,17 @@
  * before the message does, exactly like the retired bespoke textarea did.
  */
 
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
+import { COMMAND_CONFIRMATION_FAILED } from "@/features/chat/transport/command-delivery";
 import { useTranslation } from "react-i18next";
 
+import { QuotedPassage } from "@/components/chat/home/QuotedPassage";
 import StandaloneComposer, {
   type StandaloneComposerSubmission,
 } from "@/components/chat/home/StandaloneComposer";
 import { useChatStateAdapter } from "@/features/chat/ChatStateAdapter";
+import { useChatWorkspaces } from "@/hooks/useChatWorkspaces";
+import { useComposerResources } from "@/hooks/useComposerResources";
 import { useWorkspaceChatActions } from "@/hooks/useWorkspaceChatActions";
 import {
   hasPendingAskUser,
@@ -32,6 +36,7 @@ export function ReadingComposer({
   placeholderCompletion,
   selection,
   onSent,
+  onRemoveSelection,
   linkedSessionIds,
   prefillInputRef,
 }: {
@@ -39,8 +44,10 @@ export function ReadingComposer({
   /** Offered question the composer lets the learner take with Tab. */
   placeholderCompletion?: string;
   selection: { quote: string; locator: number } | null;
-  /** Clears the pending-selection banner once the message is on its way. */
+  /** Clears the pending selection once the message is on its way. */
   onSent: () => void;
+  /** The learner dropped the quoted passage before sending. */
+  onRemoveSelection: () => void;
   /** Reading-specific "reference these other reading conversations" links. */
   linkedSessionIds: string[];
   /** Lets the reader pane drop a quoted selection's focus into the box. */
@@ -54,10 +61,15 @@ export function ReadingComposer({
     setKBs,
     setLLMSelection,
     setPersonaSelection,
+    setResourceSelection,
   } = useChatStateAdapter();
+  const { workspaces } = useChatWorkspaces();
+  const resourceCatalog = useComposerResources(state.workspaceId, workspaces);
   const { capabilities, activeCapabilityValue, selectCapability } =
     useWorkspaceChatActions();
   const { t } = useTranslation();
+  const fallbackInputRef = useRef<((text: string) => void) | null>(null);
+  const replyInputRef = prefillInputRef ?? fallbackInputRef;
 
   const awaitingUserReply = hasPendingAskUser(
     state.messages[state.messages.length - 1]?.events,
@@ -109,6 +121,9 @@ export function ReadingComposer({
           if (sent) return;
           notify(t(REPLY_SENT_AS_NEW_MESSAGE));
           sendAsNewMessage();
+        }).catch(() => {
+          notify(t(COMMAND_CONFIRMATION_FAILED), { tone: "error" });
+          replyInputRef.current?.(submission.content);
         });
         return;
       }
@@ -121,6 +136,7 @@ export function ReadingComposer({
       selection,
       sendMessage,
       submitUserReply,
+      replyInputRef,
       t,
     ],
   );
@@ -140,11 +156,22 @@ export function ReadingComposer({
       onLLMSelectionChange={setLLMSelection}
       personaSelection={state.personaSelection}
       onPersonaSelectionChange={setPersonaSelection}
+      resourceCatalog={resourceCatalog}
+      resourceSelection={state.resourceSelection}
+      onResourceSelectionChange={setResourceSelection}
       onSubmit={handleSubmit}
       onCancelStreaming={cancelStreamingTurn}
       inputPlaceholder={placeholder}
       inputPlaceholderCompletion={placeholderCompletion}
-      prefillInputRef={prefillInputRef}
+      inputHeader={
+        selection ? (
+          <QuotedPassage
+            quote={selection.quote}
+            onRemove={onRemoveSelection}
+          />
+        ) : null
+      }
+      prefillInputRef={replyInputRef}
     />
   );
 }

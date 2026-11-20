@@ -14,6 +14,7 @@ import { workspaceStorageKey } from "../../shared/storage/web-workspace";
  */
 
 import { SOURCE_LABEL } from "./shared";
+import { randomUuid } from "../random-uuid";
 import type { AgentScope, ImportSource } from "./types";
 
 export interface ImportAgent {
@@ -119,11 +120,7 @@ function tx<T>(
 
 /** A fresh, source-namespaced agent id. */
 export function newAgentId(source: ImportSource): string {
-  const rand =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : Math.random().toString(36).slice(2);
-  return `${source}-${rand}`;
+  return `${source}-${randomUuid()}`;
 }
 
 export async function saveAgent(agent: ImportAgent): Promise<void> {

@@ -10,6 +10,17 @@
  * hand-written public path, which lets the bundler fingerprint and serve the
  * worker file itself — a hard-coded `/pdf.worker.mjs` would have to be copied
  * into `public/` by a build step and would break the moment the version bumps.
+ *
+ * Both the library and its worker use the `legacy` build. The default worker
+ * calls newer ECMAScript methods such as `Map.prototype.getOrInsertComputed`
+ * that are absent in some supported browsers and embedded webviews. There,
+ * the worker can fail with
+ *
+ *   this._requestsByChunk.getOrInsertComputed is not a function
+ *
+ * and the document never renders — silently, since the failure happens in the
+ * worker. The legacy worker includes core-js polyfills for those methods. The
+ * extra code is loaded only when a user opens a PDF.
  */
 
 import type * as PdfjsModule from "pdfjs-dist";
@@ -19,16 +30,20 @@ export type PdfDocument = Awaited<ReturnType<Pdfjs["getDocument"]>["promise"]>;
 export type PdfPageProxy = Awaited<ReturnType<PdfDocument["getPage"]>>;
 
 const PDFJS_WASM_PATH = "/pdfjs/wasm/";
+const PDFJS_CMAP_PATH = "/pdfjs/cmaps/";
 
 let pending: Promise<Pdfjs> | null = null;
 
 export function loadPdfjs(): Promise<Pdfjs> {
   if (pending) return pending;
   pending = (async () => {
-    const pdfjs = await import("pdfjs-dist");
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
     if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+      // Use the legacy worker for its polyfills, matching the library build
+      // above. API/worker version mismatches arise from different pdfjs-dist
+      // releases, not from choosing different builds of the same release.
       pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-        "pdfjs-dist/build/pdf.worker.min.mjs",
+        "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
         import.meta.url,
       ).toString();
     }
@@ -46,6 +61,25 @@ export function loadPdfjs(): Promise<Pdfjs> {
 export function pdfjsWasmUrl(): string {
   if (typeof window === "undefined") return PDFJS_WASM_PATH;
   return new URL(PDFJS_WASM_PATH, window.location.origin).toString();
+}
+
+/**
+ * Absolute same-origin base URL used by PDF.js for predefined character maps.
+ *
+ * Required whenever a document's text uses a CID font that relies on one of the
+ * PDF.js built-in CMaps (Adobe-GB1/Japan1/Korea1 and friends) — i.e. most CJK
+ * PDFs. Without it that font cannot be translated and is dropped entirely:
+ *
+ *   Warning: Error during font loading: Ensure that the `cMapUrl` API
+ *   parameter is provided.
+ *
+ * and because a dropped font also contributes no text items, the affected runs
+ * disappear from the canvas *and* from the text layer, so they cannot be
+ * selected, copied or searched either.
+ */
+export function pdfjsCMapUrl(): string {
+  if (typeof window === "undefined") return PDFJS_CMAP_PATH;
+  return new URL(PDFJS_CMAP_PATH, window.location.origin).toString();
 }
 
 /**

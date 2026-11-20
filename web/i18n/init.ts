@@ -2,15 +2,10 @@ import i18n, { type Resource } from "i18next";
 import { initReactI18next } from "react-i18next";
 
 import enApp from "@/locales/en/app.json";
+import { normalizeLanguage, type AppLanguage } from "./languages";
 
-export type AppLanguage = "en" | "zh";
-
-export function normalizeLanguage(lang: unknown): AppLanguage {
-  if (!lang) return "en";
-  const s = String(lang).toLowerCase();
-  if (s === "zh" || s === "cn" || s === "chinese") return "zh";
-  return "en";
-}
+export { APP_LANGUAGES, isAppLanguage, normalizeLanguage } from "./languages";
+export type { AppLanguage } from "./languages";
 
 let _initialized = false;
 
@@ -27,9 +22,11 @@ export function initI18n(language?: unknown) {
     fallbackLng: "en",
     // Use a single default namespace to keep lookups simple.
     // We intentionally keep keySeparator disabled so keys like "Generating..." remain valid.
+    // nsSeparator too: keys like "Query:" or "http://localhost:8080" would otherwise split as ns:key.
     defaultNS: "app",
     ns: ["app"],
     keySeparator: false,
+    nsSeparator: false,
     interpolation: {
       escapeValue: false,
     },
@@ -43,8 +40,61 @@ export function initI18n(language?: unknown) {
 
 export async function ensureLanguage(language: AppLanguage) {
   if (i18n.hasResourceBundle(language, "app")) return;
+
   if (language === "zh") {
     const zhApp = (await import("@/locales/zh/app.json")).default;
     i18n.addResourceBundle("zh", "app", zhApp, true, true);
   }
+
+  if (language === "fr") {
+    const frApp = (await import("@/locales/fr/app.json")).default;
+    i18n.addResourceBundle("fr", "app", frApp, true, true);
+  }
+
+  if (language === "de") {
+    const deApp = (await import("@/locales/de/app.json")).default;
+    i18n.addResourceBundle("de", "app", deApp, true, true);
+  }
+
+  if (language === "uk") {
+    const ukApp = (await import("@/locales/uk/app.json")).default;
+    i18n.addResourceBundle("uk", "app", ukApp, true, true);
+  }
+
+  if (language === "pl") {
+    const plApp = (await import("@/locales/pl/app.json")).default;
+    i18n.addResourceBundle("pl", "app", plApp, true, true);
+  }
+
+  if (language === "pt") {
+    const ptApp = (await import("@/locales/pt/app.json")).default;
+    i18n.addResourceBundle("pt", "app", ptApp, true, true);
+  }
+
+  if (language === "vi") {
+    const viApp = (await import("@/locales/vi/app.json")).default;
+    i18n.addResourceBundle("vi", "app", viApp, true, true);
+  }
+
+  if (language === "ja") {
+    const jaApp = (await import("@/locales/ja/app.json")).default;
+    i18n.addResourceBundle("ja", "app", jaApp, true, true);
+  }
+  if (language === "tr") {
+    const trApp = (await import("@/locales/tr/app.json")).default;
+    i18n.addResourceBundle("tr", "app", trApp, true, true);
+  }
+  if (language === "ko") {
+    const koApp = (await import("@/locales/ko/app.json")).default;
+    i18n.addResourceBundle("ko", "app", koApp, true, true);
+  }
+  if (language === "it") {
+    const itApp = (await import("@/locales/it/app.json")).default;
+    i18n.addResourceBundle("it", "app", itApp, true, true);
+  }
+  if (language === "hu") {
+    const huApp = (await import("@/locales/hu/app.json")).default;
+    i18n.addResourceBundle("hu", "app", huApp, true, true);
+  }
+
 }

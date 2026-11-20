@@ -5,7 +5,6 @@ import {
   detectStreamingMode,
   groupTraceEvents,
   hasRenderableCallTrace,
-  isNarrationRound,
   isTracePending,
   selectTraceDisplayItems,
 } from "../features/chat/trace/selectors";
@@ -63,8 +62,11 @@ test("final answer and absorbed groups stay out of progressive trace disclosure"
   assert.equal(hasRenderableCallTrace(events), false);
 });
 
-test("narration before a tool remains visible while a finish answer does not", () => {
-  const narration = [
+test("published answer text never becomes trace material", () => {
+  // Chat-loop text lives in the answer bubble, so showing it in the trace as
+  // well would print the same sentence twice. The exception is a round whose
+  // text was taken back out — the trace is then the only place left for it.
+  const commentary = [
     event(
       "content",
       "round-1",
@@ -75,24 +77,25 @@ test("narration before a tool remains visible while a finish answer does not", (
       trace_kind: "call_status",
       call_state: "complete",
       call_role: "narration",
+      answer_visible: true,
     }),
   ];
-  const finish = [
+  const retracted = [
     event(
       "content",
       "round-2",
       { call_kind: "agent_loop_round" },
-      "Final answer",
+      "A question I never posed",
     ),
     event("progress", "round-2", {
       trace_kind: "call_status",
       call_state: "complete",
-      call_role: "finish",
+      call_role: "narration",
+      answer_visible: false,
     }),
   ];
-  assert.equal(isNarrationRound(narration), true);
-  assert.equal(hasRenderableCallTrace(narration), true);
-  assert.equal(hasRenderableCallTrace(finish), false);
+  assert.equal(hasRenderableCallTrace(commentary), false);
+  assert.equal(hasRenderableCallTrace(retracted), false);
 });
 
 test("adjacent react rounds and their trailing trace collapse into one display step", () => {

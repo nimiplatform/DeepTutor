@@ -7,6 +7,7 @@ const readWebFile = (...parts: string[]) =>
   readFileSync(path.join(process.cwd(), ...parts), "utf8");
 
 const HARNESSES = [
+  { kind: "grok", route: "grok", label: "Grok CLI" },
   { kind: "hermes", route: "hermes", label: "Hermes Agent" },
   { kind: "openclaw", route: "openclaw", label: "OpenClaw" },
   {
@@ -17,12 +18,14 @@ const HARNESSES = [
 ] as const;
 
 test("new harnesses are present in connected-agent labels and glyph dispatch", () => {
-  const connected = readWebFile("components", "agents", "ConnectedAgents.tsx");
   const icons = readWebFile("components", "agents", "agent-icons.tsx");
+  // The names and the glyphs live side by side, shared by the agents page and
+  // the composer's menus.
+  const labels = icons.slice(icons.indexOf("export function agentKindLabel"));
 
   for (const harness of HARNESSES) {
-    assert.match(connected, new RegExp(`kind === ["']${harness.kind}["']`));
-    assert.match(connected, new RegExp(harness.label));
+    assert.match(labels, new RegExp(`kind === ["']${harness.kind}["']`));
+    assert.match(labels, new RegExp(harness.label));
     assert.match(icons, new RegExp(`kind === ["']${harness.kind}["']`));
   }
 });
@@ -62,17 +65,16 @@ test("Gemini CLI is retired and agent glyphs use official local assets", () => {
   }
 });
 
-test("new harnesses have settings anchors and category sections", () => {
+test("new harnesses have settings routes and independent editors", () => {
   const editor = readWebFile(
     "components",
     "settings",
     "SubagentSettingsEditor.tsx",
   );
   const category = readWebFile(
-    "features",
+    "components",
     "settings",
-    "sections",
-    "AgentsSettingsSection.tsx",
+    "SettingsPageContent.tsx",
   );
   const nav = readWebFile(
     "features",

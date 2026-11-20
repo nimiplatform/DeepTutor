@@ -50,11 +50,32 @@ def _coerce_port(value: Any) -> int | None:
 def _normalize_language(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
-    language = value.strip().lower()
-    if language in {"en", "english"} or language.startswith("en_"):
+    language = value.strip().lower().replace("_", "-")
+    base = language.split("-", 1)[0]
+    if language == "english" or base == "en":
         return "en"
-    if language in {"zh", "cn", "chinese"} or language.startswith("zh_"):
+    if language == "chinese" or base in {"zh", "cn"}:
         return "zh"
+    if language in {"french", "français", "francais"} or base == "fr":
+        return "fr"
+    if language in {"german", "deutsch"} or base == "de":
+        return "de"
+    if language == "ukrainian" or base in {"uk", "ua"}:
+        return "uk"
+    if language in {"polish", "polski"} or base == "pl":
+        return "pl"
+    if language in {"portuguese", "português"} or base == "pt":
+        return "pt"
+    if language in {"vietnamese", "tiếng việt", "tieng viet"} or base == "vi":
+        return "vi"
+    if language in {"turkish", "türkçe"} or base == "tr":
+        return "tr"
+    if language in {"italian", "italiano"} or base == "it":
+        return "it"
+    if language == "japanese" or base in {"ja", "jp"}:
+        return "ja"
+    if language in {"hungarian", "magyar"} or base == "hu":
+        return "hu"
     return None
 
 

@@ -39,6 +39,7 @@ AgentModule = Literal[
     "exec_workspace",
     "logs",
     "math_animator",
+    "video_lesson",
 ]
 
 ChatWorkspaceFeature = Literal[
@@ -47,6 +48,7 @@ ChatWorkspaceFeature = Literal[
     "deep_question",
     "deep_research",
     "math_animator",
+    "video_lesson",
     "_detached_exec",
 ]
 
@@ -77,6 +79,7 @@ class PathService:
         "question": ("chat", "deep_question"),
         "research": ("chat", "deep_research"),
         "math_animator": ("chat", "math_animator"),
+        "video_lesson": ("chat", "video_lesson"),
         "co-writer": ("co-writer", None),
         "exec_workspace": ("chat", "_detached_exec"),
     }
@@ -159,11 +162,25 @@ class PathService:
 
         if not candidate.is_file():
             return None
-        if candidate.suffix.lower() in self._PRIVATE_SUFFIXES:
+        # Markdown is a valid generated artifact (for example, an exec tool
+        # may write a report.md). Keep the private-suffix guard for settings,
+        # source, and runtime files, but let the explicit public-output
+        # allowlist below decide whether a .md artifact is readable.
+        if candidate.suffix.lower() in self._PRIVATE_SUFFIXES - {".md"}:
             return None
 
         parts = relative.parts
         if parts[:3] == ("workspace", "co-writer", "audio"):
+            return candidate
+
+        # Content-workspace runtimes write chat outputs beneath their selected
+        # workspace. Partner execution scopes therefore materialize the legacy
+        # chat shapes as ``workspace/outputs/chat/<session>/<turn>/<kind>/...``.
+        if (
+            len(parts) >= 6
+            and parts[:3] == ("workspace", "outputs", "chat")
+            and parts[5] in {"exec", "media", "cli"}
+        ):
             return candidate
 
         if (
@@ -177,6 +194,16 @@ class PathService:
             len(parts) >= 5
             and parts[:3] == ("workspace", "chat", "math_animator")
             and "artifacts" in parts[4:]
+        ):
+            return candidate
+
+        # Video lessons publish only their self-contained player page; the
+        # lesson source and build workspace beside it stay private.
+        if (
+            len(parts) == 6
+            and parts[:3] == ("workspace", "chat", "video_lesson")
+            and parts[4] == "artifacts"
+            and parts[5] == "lesson.html"
         ):
             return candidate
 
@@ -250,6 +277,7 @@ class PathService:
             "deep_question",
             "deep_research",
             "math_animator",
+            "video_lesson",
             "_detached_exec",
         }:
             return self.get_chat_feature_dir(cast(ChatWorkspaceFeature, feature))
@@ -284,6 +312,13 @@ class PathService:
 
     def get_memory_dir(self) -> Path:
         return self.workspace_root / "memory"
+
+    def get_learning_journal_dir(self) -> Path:
+        """Soft multi-session learning journal (#740); workspace data, unlike memory."""
+        return self.workspace_root / "learning_journal"
+
+    def get_learning_journal_file(self) -> Path:
+        return self.get_learning_journal_dir() / "journal.json"
 
     def migrate_legacy_memory_markdown(self) -> bool:
         """Move the old workspace memory files into the canonical memory root once.
@@ -483,6 +518,7 @@ class PathService:
                 "deep_question",
                 "deep_research",
                 "math_animator",
+                "video_lesson",
                 "_detached_exec",
             ),
         ):
@@ -493,18 +529,11 @@ class PathService:
 
 
 def get_path_service() -> PathService:
-    try:
-        from deeptutor.multi_user.paths import get_current_path_service
+    from deeptutor.multi_user.paths import get_current_path_service
 
-        return get_current_path_service()
-    except Exception:
-        import logging as _logging
-
-        _logging.getLogger(__name__).warning(
-            "get_path_service() fell back to default instance; multi-user path resolution failed",
-            exc_info=True,
-        )
-        return PathService.get_instance()
+    # Resolution failure is an error, never permission to read the admin's
+    # data. This also prevents an invalid workspace silently falling back.
+    return get_current_path_service()
 
 
 __all__ = [

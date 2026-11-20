@@ -22,6 +22,7 @@ constants into settings, capabilities can be added here.
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ _AGENTS_YAML_CAPABILITY_SECTIONS: dict[str, tuple[str, ...]] = {
     "solve": ("capabilities", "solve"),
     "research": ("capabilities", "research"),
     "question": ("capabilities", "question"),
+    "visualize": ("capabilities", "visualize"),
     "co_writer": ("capabilities", "co_writer"),
     "vision_solver": ("plugins", "vision_solver"),
     "math_animator": ("plugins", "math_animator"),
@@ -53,6 +55,11 @@ _SIMPLE_LLM_DEFAULTS: dict[str, dict[str, Any]] = {
     "solve": {"temperature": 0.3, "max_tokens": 8192},
     "research": {"temperature": 0.5, "max_tokens": 16834},
     "question": {"temperature": 0.7, "max_tokens": 4096},
+    # The visualize loop's own defaults, unchanged from when they were written
+    # into the pipeline construction: a user who never touches this keeps the
+    # behaviour they had, and one whose reasoning model eats the budget can now
+    # raise it (#1546).
+    "visualize": {"temperature": 0.15, "max_tokens": 16000},
     "co_writer": {"temperature": 0.6, "max_tokens": 4096},
     "vision_solver": {"temperature": 0.3, "max_tokens": 12000},
     "math_animator": {"temperature": 0.2, "max_tokens": 16834},
@@ -199,8 +206,10 @@ _CHAT_LEGACY_KEYS: tuple[str, ...] = (
 def _build_chat_block(agents_cfg: dict[str, Any]) -> dict[str, Any]:
     """Read agents.yaml.capabilities.chat into the UI schema with defaults."""
     chat_cfg: dict[str, Any] = _get_at(agents_cfg, ("capabilities", "chat"))
-    merged: dict[str, Any] = {}
-    _deep_merge(merged, DEFAULT_CHAT_PARAMS)
+    # Deep-copy the shipped defaults: ``_deep_merge`` mutates its first argument
+    # in place, so seeding from the module-level ``DEFAULT_CHAT_PARAMS`` would
+    # alias (and then overwrite) its nested stage dicts with the user's values.
+    merged: dict[str, Any] = copy.deepcopy(DEFAULT_CHAT_PARAMS)
     _deep_merge(merged, chat_cfg)
     return {
         "temperature": _coerce_float(merged.get("temperature"), DEFAULT_CHAT_PARAMS["temperature"]),
@@ -437,6 +446,17 @@ def save_capabilities_settings(payload: dict[str, Any]) -> dict[str, Any]:
     return capabilities_settings_dict()
 
 
+def get_visualize_params() -> dict[str, Any]:
+    """Runtime visualize params, read through the same coerce path as the UI.
+
+    The budget used to be a literal in the capability, so ``agents.yaml`` and
+    the settings page could not move it and a reasoning model that spent most
+    of the budget on chain-of-thought truncated the payload with no recourse
+    (#1546).
+    """
+    return _build_simple_llm_block(_read_agents_yaml(), "visualize")
+
+
 def get_solve_params() -> dict[str, Any]:
     """Runtime solve params, read through the same coerce path as the UI.
 
@@ -456,5 +476,6 @@ def get_solve_params() -> dict[str, Any]:
 __all__ = [
     "capabilities_settings_dict",
     "get_solve_params",
+    "get_visualize_params",
     "save_capabilities_settings",
 ]

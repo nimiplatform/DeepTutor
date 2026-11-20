@@ -4,7 +4,22 @@ import { SidebarShell } from "@/components/sidebar/SidebarShell";
 
 const fixture = vi.hoisted(() => ({ push: vi.fn(), close: vi.fn() }));
 
+vi.mock("@/hooks/useAuthStatus", () => ({
+  useAuthStatus: () => ({
+    enabled: false,
+    authenticated: false,
+    isAdmin: false,
+    userId: null,
+    statusAvailable: true,
+    loading: false,
+    learningPolicy: null,
+  }),
+}));
+
+vi.mock("@/hooks/useChatWorkspaces", () => ({ useChatWorkspaces: () => ({ workspaces: [], error: "" }) }));
+
 vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(),
   usePathname: () => "/co-writer",
   useRouter: () => ({ push: fixture.push }),
 }));
@@ -13,7 +28,10 @@ vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (key: string) => key, i18n: { language: "en" } }),
 }));
 vi.mock("@/context/AppShellContext", () => ({
-  useAppShell: () => ({ sidebarCollapsed: false, setSidebarCollapsed: vi.fn() }),
+  useAppShell: () => ({
+    sidebarCollapsed: false,
+    setSidebarCollapsed: vi.fn(),
+  }),
 }));
 vi.mock("@/components/layout/AppShell", () => ({
   useSidebarDrawer: () => ({ close: fixture.close }),
@@ -50,7 +68,24 @@ it("loads conversation history while navigation remains usable, then preserves s
     />,
   );
   expect(container.querySelector('[aria-busy="true"]')).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Co-Writer" })).toHaveAttribute("href", "/co-writer");
+  expect(screen.getByRole("link", { name: "Co-Writer" })).toHaveAttribute(
+    "href",
+    "/co-writer",
+  );
+
+  const history = await screen.findByText("Retained session");
+  const scroller = history.closest(".overflow-y-auto");
+  expect(scroller).toContainElement(
+    screen.getByRole("link", { name: "Co-Writer" }),
+  );
+  expect(scroller).not.toContainElement(
+    screen.getByRole("tab", { name: "navigation.home" }),
+  );
+  // Settings lives in the header's workspace menu, outside the history scroller.
+  fireEvent.click(screen.getByRole("button", { name: /General workspace/ }));
+  expect(scroller).not.toContainElement(
+    screen.getByRole("menuitem", { name: "Settings" }),
+  );
 
   fireEvent.click(await screen.findByText("Retained session"));
   expect(onSelect).toHaveBeenCalledWith("session-1");
@@ -69,4 +104,46 @@ it("loads conversation history while navigation remains usable, then preserves s
     fireEvent.keyDown(input, { key: "Enter" });
   });
   expect(onRename).toHaveBeenCalledWith("session-1", "Renamed session");
+});
+
+it("keeps Home pinned even when a previous layout folded it into More", () => {
+  localStorage.setItem(
+    "deeptutor.sidebar.navLayout",
+    JSON.stringify({
+      order: ["/partners", "/chat", "/space"],
+      collapsed: ["/chat"],
+    }),
+  );
+  render(<SidebarShell />);
+  expect(screen.getAllByRole("tab", { name: "navigation.home" })).toHaveLength(1);
+  expect(screen.queryByRole("button", { name: "Arrange Home" })).toBeNull();
+  fireEvent.click(screen.getByRole("link", { name: "navigation.newChat" }));
+  // The new chat stays in the tab's workspace (General here).
+  expect(fixture.push).toHaveBeenCalledWith("/chat?dt_workspace=");
+});
+
+it("resizes with the keyboard, persists across mounts, and resets on double click", () => {
+  const first = render(<SidebarShell />);
+  const handle = screen.getByRole("separator", { name: "Resize sidebar" });
+  fireEvent.keyDown(handle, { key: "ArrowRight" });
+  expect(handle).toHaveAttribute("aria-valuenow", "282");
+  expect(
+    first.container
+      .querySelector("aside")!
+      .style.getPropertyValue("--sidebar-width"),
+  ).toBe("282px");
+  first.unmount();
+  render(<SidebarShell />);
+  const restored = screen.getByRole("separator", { name: "Resize sidebar" });
+  expect(restored).toHaveAttribute("aria-valuenow", "282");
+  fireEvent.keyDown(restored, { key: "Home" });
+  fireEvent.keyDown(restored, { key: "ArrowLeft" });
+  expect(restored).toHaveAttribute("aria-valuenow", "220");
+  fireEvent.keyDown(restored, { key: "End" });
+  fireEvent.keyDown(restored, { key: "ArrowRight" });
+  expect(restored.getAttribute("aria-valuenow")).toBe(
+    restored.getAttribute("aria-valuemax"),
+  );
+  fireEvent.doubleClick(restored);
+  expect(restored).toHaveAttribute("aria-valuenow", "272");
 });

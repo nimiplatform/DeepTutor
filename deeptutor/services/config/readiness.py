@@ -27,10 +27,13 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import importlib.util
+import logging
 from typing import Any, Literal
 
 from deeptutor.services.config.model_catalog import SERVICE_NAMES
 from deeptutor.tools.builtin import USER_TOGGLEABLE_TOOL_NAMES
+
+logger = logging.getLogger(__name__)
 
 ReadinessState = Literal[
     "enabled_verified",
@@ -148,6 +151,7 @@ _TOOL_LABELS = {
     "brainstorm": "Brainstorm tool",
     "web_search": "Web search tool",
     "paper_search": "Paper search tool",
+    "zotero_search": "Zotero search tool",
     "reason": "Reason tool",
     "geogebra_analysis": "GeoGebra tool",
     "imagegen": "Image generation tool",
@@ -172,6 +176,7 @@ TRANSLATABLE_ROW_LABELS: frozenset[str] = frozenset(
         "Brainstorm tool",
         "Web search tool",
         "Paper search tool",
+        "Zotero search tool",
         "Reason tool",
         "GeoGebra tool",
         "Image generation tool",
@@ -236,6 +241,21 @@ def catalog_service_rows(
         required = name in required_services
         service = services.get(name) if isinstance(services.get(name), dict) else {}
         profiles = service.get("profiles") if isinstance(service.get("profiles"), list) else []
+
+        # A task reference selects a chat profile/model. Classify the selected
+        # model below with the same checks as every other catalog service.
+        if name == "task" and service.get("mode") == "reference":
+            selection = service.get("selection")
+            selection = selection if isinstance(selection, dict) else {}
+            chat_service = services.get("llm") if isinstance(services.get("llm"), dict) else {}
+            service = {
+                **service,
+                "active_profile_id": selection.get("profile_id"),
+                "active_model_id": selection.get("model_id"),
+                "profiles": chat_service.get("profiles"),
+            }
+            profiles = service["profiles"] if isinstance(service["profiles"], list) else []
+
         active_profile_id = service.get("active_profile_id")
         if not active_profile_id:
             rows.append(
@@ -279,6 +299,39 @@ def catalog_service_rows(
             )
             continue
 
+        if profile.get("provider_ref") or any(
+            model.get("provider_ref")
+            for model in profile.get("models", [])
+            if isinstance(model, dict)
+        ):
+            from deeptutor.services.config.provider_links import resolve_profile_provider
+
+            model = next(
+                (
+                    m
+                    for m in profile.get("models", [])
+                    if m.get("id") == service.get("active_model_id")
+                ),
+                None,
+            )
+            try:
+                profile = resolve_profile_provider(catalog, name, profile, model)
+            except ValueError:
+                rows.append(
+                    readiness_row(
+                        f"catalog.{name}",
+                        "catalog",
+                        _SERVICE_LABELS[name],
+                        "misconfigured",
+                        "required_credential_missing",
+                        enabled=True,
+                        available=False,
+                        configured=False,
+                        verified=False,
+                        required=required,
+                    )
+                )
+                continue
         if name == "search":
             provider = str(profile.get("provider") or "").strip()
             configured = bool(provider and provider != "none")
@@ -852,16 +905,13 @@ def nimi_catalog_service_rows(selections: list[dict[str, Any]] | None, *, requir
 async def build_settings_readiness() -> dict[str, Any]:
     """Build the current admin-scoped readiness matrix."""
 
+    from deeptutor.modules.catalog import module_enabled
     from deeptutor.multi_user.knowledge_access import current_kb_manager
     from deeptutor.services.config import get_model_catalog_service, get_runtime_settings_service
-    from deeptutor.services.parsing.engines.factory import get_parser, list_engines
-    from deeptutor.services.rag.preflight import engine_preflight
     from deeptutor.services.settings.interface_settings import get_enabled_optional_tools
-    from deeptutor.video_learning import load_video_learning_settings
-    from deeptutor.visualizers.registry import get_visualizer_registry
 
-    manager = current_kb_manager()
-    kb_names = manager.list_knowledge_bases()
+    manager = current_kb_manager() if module_enabled("knowledge") else None
+    kb_names = manager.list_knowledge_bases() if manager else []
 
     rows: list[dict[str, Any]] = []
     # An embedding model is dead weight until something needs to be indexed,
@@ -881,7 +931,11 @@ async def build_settings_readiness() -> dict[str, Any]:
 
     runtime_service = get_runtime_settings_service()
     parsing = runtime_service.load_document_parsing(include_process_overrides=True)
-    parser_entries = list_engines()
+    parser_entries = []
+    if module_enabled("parsing"):
+        from deeptutor.services.parsing.engines.factory import get_parser, list_engines
+
+        parser_entries = list_engines()
     parser_readiness: dict[str, dict[str, Any]] = {}
     selected_engine = str(parsing.get("engine") or "")
     selected_remote_reachable: bool | None = None
@@ -908,6 +962,10 @@ async def build_settings_readiness() -> dict[str, Any]:
                     engine_id, parser, config
                 )
         except Exception:
+            # Keep the row fail-closed, but leave a trail: without this the
+            # UI only ever says "parser_probe_failed" and the real cause
+            # (permissions, import errors, ...) is unrecoverable.
+            logger.warning("Parser readiness probe failed for %r", engine_id, exc_info=True)
             parser_readiness[engine_id] = {
                 "ready": False,
                 "reason": "parser_probe_failed",
@@ -921,7 +979,7 @@ async def build_settings_readiness() -> dict[str, Any]:
         )
     )
 
-    default_kb = manager.get_default()
+    default_kb = manager.get_default() if manager else None
     knowledge_entries: list[dict[str, Any]] = []
     for name in kb_names:
         try:
@@ -929,7 +987,21 @@ async def build_settings_readiness() -> dict[str, Any]:
             metadata = info.get("metadata") if isinstance(info.get("metadata"), dict) else {}
             provider = str(metadata.get("rag_provider") or "")
             try:
-                prerequisites_ready = bool(engine_preflight(provider).get("ok"))
+                from contextlib import nullcontext
+
+                from deeptutor.services.embedding.config import embedding_config_scope
+                from deeptutor.services.rag.embedding_binding import binding_status
+                from deeptutor.services.rag.preflight import engine_preflight
+
+                binding_state, embedding = binding_status(
+                    manager.config.get("knowledge_bases", {}).get(name, {})
+                )
+                with embedding_config_scope(embedding) if embedding else nullcontext():
+                    prerequisites_ready = binding_state not in {
+                        "missing",
+                        "changed",
+                        "unconfigured",
+                    } and bool(engine_preflight(provider).get("ok"))
             except Exception:
                 prerequisites_ready = False
             knowledge_entries.append(
@@ -951,14 +1023,21 @@ async def build_settings_readiness() -> dict[str, Any]:
             )
     rows.extend(knowledge_base_rows(knowledge_entries))
 
-    visualizers = visualizer_rows(
-        get_visualizer_registry().public_catalog(),
-        manim_available=_module_available("manim"),
-    )
+    visualizers = []
+    if module_enabled("visualize"):
+        from deeptutor.visualizers.registry import get_visualizer_registry
+
+        visualizers = visualizer_rows(
+            get_visualizer_registry().public_catalog(),
+            manim_available=module_enabled("renderer-manim") and _module_available("manim"),
+        )
     rows.extend(visualizers)
     dependency_rows = {str(row["id"]): row for row in (*catalog_rows, *visualizers)}
     rows.extend(tool_rows(get_enabled_optional_tools(), dependency_rows))
-    rows.extend(video_learning_rows(load_video_learning_settings()))
+    if module_enabled("reading"):
+        from deeptutor.video_learning import load_video_learning_settings
+
+        rows.extend(video_learning_rows(load_video_learning_settings()))
 
     integrations = runtime_service.load_integrations(include_process_overrides=True)
     system = runtime_service.load_system(include_process_overrides=True)

@@ -25,6 +25,14 @@ from deeptutor.utils.document_extractor import (
     extract_text_from_bytes,
     extract_text_from_path,
     is_document_extension,
+    normalize_epub_archive,
+)
+from tests.docx_math_fixture import (
+    EXPECTED_CHAIN_PARAGRAPHS,
+    EXPECTED_EQUATION_PARAGRAPHS,
+    _fraction,
+    equation_chain_docx_bytes,
+    native_equation_docx_bytes,
 )
 
 # ---------------------------------------------------------------------------
@@ -112,7 +120,7 @@ def _make_epub(
     root = f"{wrapper}/" if wrapper else ""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("mimetype", "application/epub+zip")
+        zf.writestr(f"{root}mimetype", "application/epub+zip")
         if with_container:
             zf.writestr(f"{root}META-INF/container.xml", _CONTAINER_XML.format(opf=opf_path))
         if with_opf:
@@ -146,6 +154,7 @@ class TestIsDocumentExtension:
         # Any extension in FileTypeRouter.TEXT_EXTENSIONS should be supported.
         assert is_document_extension("notes.txt")
         assert is_document_extension("readme.md")
+        assert is_document_extension("guide.mdx")
         assert is_document_extension("module.py")
         assert is_document_extension("config.yaml")
         assert is_document_extension("data.json")
@@ -190,6 +199,45 @@ class TestExtractDocx:
 
         assert "Fallback paragraph" in text
         assert "第二段" in text
+
+    def test_raw_ooxml_fallback_preserves_equation_structure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fail_rich_extraction(_data: bytes) -> None:
+            raise ValueError("force raw OOXML fallback")
+
+        monkeypatch.setattr(document_extractor_module, "extract_docx_rich", fail_rich_extraction)
+        monkeypatch.setattr(document_extractor_module, "DocxDocument", None)
+
+        text = extract_text_from_bytes("equations.docx", equation_chain_docx_bytes())
+
+        for paragraph in EXPECTED_CHAIN_PARAGRAPHS:
+            assert paragraph in text
+        assert "Inline before 12 after." not in text
+        assert "Cell power: y2" not in text
+
+    def test_raw_ooxml_math_wins_over_flattened_python_docx_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from docx.oxml import OxmlElement
+
+        def fail_rich_extraction(_data: bytes) -> None:
+            raise ValueError("force fallback selection")
+
+        monkeypatch.setattr(document_extractor_module, "extract_docx_rich", fail_rich_extraction)
+
+        doc = DocxDocument()
+        paragraph = doc.add_paragraph("Context " + "word " * 200 + "Equation: ")
+        math = OxmlElement("m:oMath")
+        math.append(_fraction("1", "2"))
+        paragraph._p.append(math)
+        buffer = io.BytesIO()
+        doc.save(buffer)
+
+        text = extract_text_from_bytes("equations.docx", buffer.getvalue())
+
+        assert "Equation: 1/2" in text
+        assert "Equation: 12" not in text
 
 
 class TestExtractXlsx:
@@ -260,6 +308,21 @@ class TestExtractEpub:
 
         assert "Hello world. Nice day." in text
 
+    def test_minified_table_cells_are_not_glued_together(self) -> None:
+        # Commercially produced EPUBs often ship whitespace-free XHTML. Without
+        # a separator after each cell, "Revenue" / "100" / "Q1" merge into one
+        # unreadable token.
+        data = _make_epub(
+            {"c.xhtml": "<table><tr><td>Revenue</td><td>100</td><td>Q1</td></tr></table>"}
+        )
+
+        text = extract_text_from_bytes("book.epub", data)
+
+        assert "Revenue100Q1" not in text
+        assert "Revenue" in text
+        assert "100" in text
+        assert "Q1" in text
+
     def test_scripts_and_styles_are_dropped(self) -> None:
         data = _make_epub(
             {
@@ -328,6 +391,37 @@ class TestExtractEpub:
         units, _ = extract_epub_spine(data, "book.epub")
 
         assert [unit.href for unit in units] == ["OEBPS/a.xhtml"]
+
+    def test_archive_normalization_preserves_a_root_level_book(self) -> None:
+        data = _make_epub({"a.xhtml": "<p>Readable.</p>"})
+
+        assert normalize_epub_archive(data, "book.epub") is data
+
+    def test_archive_normalization_rejects_a_bad_zip(self) -> None:
+        with pytest.raises(CorruptDocumentError, match="failed to open"):
+            normalize_epub_archive(b"not a zip", "book.epub")
+
+    def test_archive_normalization_repairs_a_finder_package(self) -> None:
+        data = _make_epub(
+            {"a.xhtml": "<p>Readable.</p>"},
+            wrapper="MyBook",
+            with_macosx=True,
+        )
+
+        normalized = normalize_epub_archive(data, "book.epub")
+
+        with zipfile.ZipFile(io.BytesIO(normalized)) as zf:
+            infos = zf.infolist()
+            mimetype = zf.read("mimetype")
+
+        assert [info.filename for info in infos] == [
+            "mimetype",
+            "META-INF/container.xml",
+            "OEBPS/content.opf",
+            "OEBPS/a.xhtml",
+        ]
+        assert infos[0].compress_type == zipfile.ZIP_STORED
+        assert mimetype == b"application/epub+zip"
 
     def test_malformed_xhtml_uses_tolerant_html_fallback(self) -> None:
         buf = io.BytesIO()
@@ -506,6 +600,27 @@ class TestTruncation:
 
 
 class TestExtractDocumentsFromRecords:
+    def test_native_word_equations_reach_chat_attachment_text(self) -> None:
+        records = [
+            {
+                "type": "file",
+                "filename": "equations.docx",
+                "base64": base64.b64encode(native_equation_docx_bytes()).decode(),
+                "mime_type": (
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ),
+                "url": "",
+            }
+        ]
+
+        doc_texts, updated = extract_documents_from_records(records)
+
+        assert len(doc_texts) == 1
+        for paragraph in EXPECTED_EQUATION_PARAGRAPHS:
+            assert paragraph in doc_texts[0]
+        assert "Fraction: 12 + 13." not in doc_texts[0]
+        assert updated[0]["extracted_text"] == "\n\n".join(EXPECTED_EQUATION_PARAGRAPHS)
+
     def test_mixed_image_and_doc(self) -> None:
         docx_bytes = _make_docx(["hello there"])
         docx_b64 = base64.b64encode(docx_bytes).decode()

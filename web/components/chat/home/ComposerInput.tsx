@@ -5,6 +5,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -13,7 +14,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { readMobileDraft, writeMobileDraft } from "@/shared/storage/mobile-drafts";
-import { Bot, Check, UserRound } from "lucide-react";
+import { Bot, Check, Languages, UserRound } from "lucide-react";
 import ChatSpaceMenu, {
   type ChatSpaceSelectionCounts,
 } from "@/components/chat/space/ChatSpaceMenu";
@@ -21,6 +22,11 @@ import { agentGlyph } from "@/components/agents/agent-icons";
 import { shouldSubmitOnEnter } from "@/lib/composer-keyboard";
 import { useAutoSizedTextarea } from "@/lib/use-auto-sized-textarea";
 import { useImeComposing } from "@/lib/use-ime-composing";
+import { ComposerLead, type LeadToken } from "./ComposerLead";
+
+/** The lead strip overhangs by its tokens' own padding; text starts a gap after it. */
+const LEAD_BLEED = 6;
+const LEAD_GAP = 4;
 
 interface ComposerInputProps {
   mobileDraftKey?: string;
@@ -31,7 +37,7 @@ interface ComposerInputProps {
   // send even if the text body is empty. Without this, Enter would silently
   // do nothing for an attachment-only message.
   canSendEmpty: boolean;
-  onSend: (content: string) => void;
+  onSend: (content: string) => boolean | void;
   onInputChange: (content: string) => void;
   onPaste: (e: React.ClipboardEvent) => void;
   selectedCounts: ChatSpaceSelectionCounts;
@@ -64,13 +70,17 @@ interface ComposerInputProps {
   onSelectPersonaPicker: () => void;
   onSelectMemoryPicker: () => void;
   /**
-   * Wires the `/persona` slash command. Typing "/" (then any prefix of
-   * "persona") at the start of an empty composer pops a command hint;
-   * selecting it clears the input and invokes this callback to open the
-   * session persona selector. Omitted on surfaces without session
-   * personas (e.g. the quiz follow-up), which disables the slash popup.
+   * Opens the session persona selector from `/persona`. Surfaces without
+   * session personas (e.g. quiz follow-up) omit this command.
    */
   onOpenPersonaSelector?: () => void;
+  /** Current conversation's reply-language choice. Null follows the account default. */
+  replyLanguageOverride?: string | null;
+  replyLanguageOptions?: readonly { value: string; label: string }[];
+  replyLanguageDefaultLabel?: string;
+  replyLanguageDisabled?: boolean;
+  onReplyLanguageChange?: (value: string) => void;
+  languagePickerBelow?: boolean;
   /**
    * Override the default placeholder. When unset, falls back to the
    * main chat ("How can I help you today?") / visualize defaults.
@@ -92,6 +102,12 @@ interface ComposerInputProps {
    * composer so the resting box looks inviting rather than crammed.
    */
   minHeight?: number;
+  /**
+   * What this message uses — skills and connectors from the tray — written
+   * at the start of the text. Backspace at the very start marks the last
+   * one, and a second Backspace removes it.
+   */
+  lead?: LeadToken[];
 }
 
 export interface ComposerInputHandle {
@@ -121,20 +137,25 @@ export function atMentionQuery(value: string, cursorPos: number): string {
   return match ? match[2] : "";
 }
 
-/**
- * `/persona` slash-command detection (Codex-style: command position is the
- * very start of the input, not mid-text like @ mentions). Active while the
- * text before the cursor is "/" plus any prefix of "persona" — `/x` or a
- * trailing space closes the popup.
- */
+type SlashCommand = "persona" | "language";
+
+/** Slash commands only match at the start of the composer. */
+export function matchingSlashCommands(
+  value: string,
+  cursorPos: number,
+  enabled: readonly SlashCommand[] = ["persona", "language"],
+): SlashCommand[] {
+  const match = /^\/([a-z]*)$/i.exec(value.slice(0, cursorPos));
+  if (!match) return [];
+  const query = match[1].toLowerCase();
+  return enabled.filter((command) => command.startsWith(query));
+}
+
 export function shouldOpenSlashPopup(
   value: string,
   cursorPos: number,
 ): boolean {
-  const prefix = value.slice(0, cursorPos);
-  const match = /^\/([a-z]*)$/i.exec(prefix);
-  if (!match) return false;
-  return "persona".startsWith(match[1].toLowerCase());
+  return matchingSlashCommands(value, cursorPos).length > 0;
 }
 
 export const ComposerInput = memo(
@@ -166,18 +187,45 @@ export const ComposerInput = memo(
       onSelectPersonaPicker,
       onSelectMemoryPicker,
       onOpenPersonaSelector,
+      replyLanguageOverride = null,
+      replyLanguageOptions = [],
+      replyLanguageDefaultLabel = "English",
+      replyLanguageDisabled = false,
+      onReplyLanguageChange,
+      languagePickerBelow = false,
       placeholder,
       placeholderCompletion,
       minHeight = 28,
+      lead = [],
     },
     ref,
   ) {
     const { t } = useTranslation();
     const [input, setInput] = useState(() => mobileDraftKey ? readMobileDraft<string>(mobileDraftKey) ?? "" : "");
+    const [leadWidth, setLeadWidth] = useState(0);
+    const [armed, setArmed] = useState(false);
+    const [scrolled, setScrolled] = useState(false);
+    const indent = lead.length && leadWidth ? leadWidth - LEAD_BLEED + LEAD_GAP : 0;
     const [showAtPopup, setShowAtPopup] = useState(false);
     const [showSlashPopup, setShowSlashPopup] = useState(false);
+    const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
+    const [activeSlashIndex, setActiveSlashIndex] = useState(0);
+    const [showLanguagePopup, setShowLanguagePopup] = useState(false);
+    const [activeLanguageIndex, setActiveLanguageIndex] = useState(0);
     const [atQuery, setAtQuery] = useState("");
-    const slashEnabled = Boolean(onOpenPersonaSelector);
+    const slashListId = useId();
+    const languageListId = useId();
+    const availableSlashCommands = useMemo<SlashCommand[]>(() => [
+      ...(onOpenPersonaSelector ? ["persona" as const] : []),
+      ...(onReplyLanguageChange && !replyLanguageDisabled ? ["language" as const] : []),
+    ], [onOpenPersonaSelector, onReplyLanguageChange, replyLanguageDisabled]);
+    const languageChoices = useMemo(() => [
+      {
+        value: "",
+        label: `${t("Account default")} (${replyLanguageDefaultLabel})`,
+      },
+      ...replyLanguageOptions,
+    ], [replyLanguageDefaultLabel, replyLanguageOptions, t]);
     // Main chat passes ``onSelectAgent`` → ``@`` picks a connected agent. Other
     // surfaces (quiz follow-up) omit it and keep the @ Space menu.
     const agentMentionMode = Boolean(onSelectAgent);
@@ -235,20 +283,27 @@ export const ComposerInput = memo(
 
     useAutoSizedTextarea(textareaRef, input, { min: minHeight, max: 200 });
 
+    const updateSlashPopup = useCallback((value: string, cursorPos: number) => {
+      const matches = matchingSlashCommands(value, cursorPos, availableSlashCommands);
+      setSlashCommands(matches);
+      setActiveSlashIndex(0);
+      setShowSlashPopup(matches.length > 0);
+      setShowLanguagePopup(false);
+    }, [availableSlashCommands]);
+
     const handleInputChange = useCallback(
       (e: React.ChangeEvent<HTMLTextAreaElement>) => {
         const value = e.target.value;
         const cursorPos = e.target.selectionStart ?? value.length;
+        setArmed(false);
         setInputBoth(value);
         onInputChange(value);
         const atOpen = shouldOpenAtPopup(value, cursorPos);
         setShowAtPopup(atOpen);
         setAtQuery(atOpen ? atMentionQuery(value, cursorPos) : "");
-        setShowSlashPopup(
-          slashEnabled && shouldOpenSlashPopup(value, cursorPos),
-        );
+        updateSlashPopup(value, cursorPos);
       },
-      [setInputBoth, onInputChange, slashEnabled],
+      [setInputBoth, onInputChange, updateSlashPopup],
     );
 
     const handleTextareaClick = useCallback(
@@ -258,20 +313,34 @@ export const ComposerInput = memo(
         const atOpen = shouldOpenAtPopup(target.value, cursorPos);
         setShowAtPopup(atOpen);
         setAtQuery(atOpen ? atMentionQuery(target.value, cursorPos) : "");
-        setShowSlashPopup(
-          slashEnabled && shouldOpenSlashPopup(target.value, cursorPos),
-        );
+        updateSlashPopup(target.value, cursorPos);
       },
-      [slashEnabled],
+      [updateSlashPopup],
     );
 
-    const handleSelectSlashPersona = useCallback(() => {
-      // The slash text is a command, not message content — clear it.
+    const handleSelectSlashCommand = useCallback((command: SlashCommand) => {
+      // Command text is never part of the message sent to the model.
       setInputBoth("");
       onInputChange("");
       setShowSlashPopup(false);
-      onOpenPersonaSelector?.();
-    }, [setInputBoth, onInputChange, onOpenPersonaSelector]);
+      setSlashCommands([]);
+      if (command === "persona") {
+        onOpenPersonaSelector?.();
+        return;
+      }
+      const selectedIndex = languageChoices.findIndex(
+        (choice) => choice.value === (replyLanguageOverride ?? ""),
+      );
+      setActiveLanguageIndex(Math.max(0, selectedIndex));
+      setShowLanguagePopup(true);
+      textareaRef.current?.focus();
+    }, [setInputBoth, onInputChange, onOpenPersonaSelector, languageChoices, replyLanguageOverride, textareaRef]);
+
+    const handleSelectReplyLanguage = useCallback((value: string) => {
+      setShowLanguagePopup(false);
+      onReplyLanguageChange?.(value);
+      textareaRef.current?.focus();
+    }, [onReplyLanguageChange, textareaRef]);
 
     const doSend = useCallback(() => {
       const content = inputRef.current.trim();
@@ -279,11 +348,12 @@ export const ComposerInput = memo(
       // references queued (canSendEmpty). This matches the send-button's
       // own enablement logic in ChatComposer (`canSend`).
       if (!content && !canSendEmpty) return;
-      onSend(content);
+      if (onSend(content) === false) return;
       setInputBoth("");
       onInputChange("");
       setShowAtPopup(false);
       setShowSlashPopup(false);
+      setShowLanguagePopup(false);
     }, [canSendEmpty, onSend, setInputBoth, onInputChange]);
 
     const clearTrailingMention = useCallback(() => {
@@ -304,16 +374,59 @@ export const ComposerInput = memo(
 
     const handleKeyDown = useCallback(
       (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        // With the slash popup open, Enter/Tab confirm the command instead
-        // of submitting "/persona" as a message.
-        if (
-          showSlashPopup &&
-          !isComposingRef.current &&
-          (e.key === "Enter" || e.key === "Tab")
-        ) {
-          e.preventDefault();
-          handleSelectSlashPersona();
-          return;
+        // Backspace before the first character reaches back into the lead:
+        // once to mark the last token, again to remove it, so holding the
+        // key down to clear a draft never takes the skills with it.
+        if (lead.length && !isComposingRef.current) {
+          const target = e.currentTarget;
+          if (e.key === "Backspace" && target.selectionStart === 0 && target.selectionEnd === 0) {
+            e.preventDefault();
+            if (!e.repeat && armed) {
+              lead[lead.length - 1].onRemove();
+              setArmed(false);
+            } else if (!e.repeat) setArmed(true);
+            return;
+          }
+          if (armed && e.key !== "Shift") setArmed(false);
+        }
+        if (showLanguagePopup && !isComposingRef.current) {
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            setActiveLanguageIndex((index) =>
+              (index + (e.key === "ArrowDown" ? 1 : -1) + languageChoices.length) % languageChoices.length,
+            );
+            return;
+          }
+          if (e.key === "Enter" || e.key === "Tab") {
+            e.preventDefault();
+            handleSelectReplyLanguage(languageChoices[activeLanguageIndex]?.value ?? "");
+            return;
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setShowLanguagePopup(false);
+            return;
+          }
+        }
+        if (showSlashPopup && !isComposingRef.current) {
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            setActiveSlashIndex((index) =>
+              (index + (e.key === "ArrowDown" ? 1 : -1) + slashCommands.length) % slashCommands.length,
+            );
+            return;
+          }
+          if (e.key === "Enter" || e.key === "Tab") {
+            e.preventDefault();
+            const command = slashCommands[activeSlashIndex];
+            if (command) handleSelectSlashCommand(command);
+            return;
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setShowSlashPopup(false);
+            return;
+          }
         }
         // With the agent-mention popup open, Enter/Tab confirm the first match.
         if (
@@ -346,13 +459,20 @@ export const ComposerInput = memo(
         } else if (e.key === "Escape") {
           setShowAtPopup(false);
           setShowSlashPopup(false);
+          setShowLanguagePopup(false);
         }
       },
       [
         doSend,
         isStreaming,
         showSlashPopup,
-        handleSelectSlashPersona,
+        slashCommands,
+        activeSlashIndex,
+        handleSelectSlashCommand,
+        showLanguagePopup,
+        languageChoices,
+        activeLanguageIndex,
+        handleSelectReplyLanguage,
         showAtPopup,
         agentMentionMode,
         filteredAgents,
@@ -361,6 +481,8 @@ export const ComposerInput = memo(
         onInputChange,
         placeholderCompletion,
         setInputBoth,
+        lead,
+        armed,
       ],
     );
 
@@ -413,20 +535,31 @@ export const ComposerInput = memo(
     // re-open something else.
     const popupRef = useRef<HTMLDivElement>(null);
     const slashPopupRef = useRef<HTMLDivElement>(null);
+    const languagePopupRef = useRef<HTMLDivElement>(null);
+    const languageListRef = useRef<HTMLDivElement>(null);
     useEffect(() => {
-      if (!showAtPopup && !showSlashPopup) return;
+      if (!showLanguagePopup) return;
+      const option = languageListRef.current?.children[activeLanguageIndex];
+      if (option && "scrollIntoView" in option) {
+        option.scrollIntoView({ block: "nearest" });
+      }
+    }, [showLanguagePopup, activeLanguageIndex]);
+    useEffect(() => {
+      if (!showAtPopup && !showSlashPopup && !showLanguagePopup) return;
       const handler = (e: MouseEvent) => {
         const target = e.target as Node | null;
         if (!target) return;
         if (popupRef.current?.contains(target)) return;
         if (slashPopupRef.current?.contains(target)) return;
+        if (languagePopupRef.current?.contains(target)) return;
         if (textareaRef.current?.contains(target)) return;
         setShowAtPopup(false);
         setShowSlashPopup(false);
+        setShowLanguagePopup(false);
       };
       document.addEventListener("mousedown", handler);
       return () => document.removeEventListener("mousedown", handler);
-    }, [showAtPopup, showSlashPopup, textareaRef]);
+    }, [showAtPopup, showSlashPopup, showLanguagePopup, textareaRef]);
 
     const basePlaceholder =
       placeholder ??
@@ -526,43 +659,107 @@ export const ComposerInput = memo(
             className="absolute bottom-full left-0 z-[70] mb-2"
           >
             <div
+              id={slashListId}
               role="listbox"
               aria-label={t("Commands")}
               className="w-[300px] rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1.5 shadow-lg backdrop-blur-md"
             >
-              <button
-                type="button"
-                role="option"
-                aria-selected
-                onClick={handleSelectSlashPersona}
-                className="flex w-full items-center gap-2.5 bg-[var(--muted)]/60 px-3 py-2 text-left text-[12.5px] transition-colors"
-              >
-                <UserRound
-                  size={14}
-                  strokeWidth={1.7}
-                  className="shrink-0 text-[var(--muted-foreground)]"
-                />
-                {/* Command syntax token — must not be localized. */}
-                {/* eslint-disable-next-line i18n/no-literal-ui-text */}
-                <span className="font-medium text-[var(--foreground)]">
-                  /persona
-                </span>
-                <span className="min-w-0 truncate text-[var(--muted-foreground)]">
-                  {t("Switch the persona for this chat session")}
-                </span>
-              </button>
+              {slashCommands.map((command, index) => {
+                const Icon = command === "persona" ? UserRound : Languages;
+                return (
+                  <button
+                    key={command}
+                    id={`${slashListId}-option-${index}`}
+                    type="button"
+                    role="option"
+                    aria-selected={index === activeSlashIndex}
+                    onMouseEnter={() => setActiveSlashIndex(index)}
+                    onClick={() => handleSelectSlashCommand(command)}
+                    className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12.5px] transition-colors ${
+                      index === activeSlashIndex
+                        ? "bg-[var(--muted)]/60"
+                        : "hover:bg-[var(--muted)]/45"
+                    }`}
+                  >
+                    <Icon
+                      size={14}
+                      strokeWidth={1.7}
+                      className="shrink-0 text-[var(--muted-foreground)]"
+                    />
+                    {/* Command syntax tokens must not be localized. */}
+                    <span className="font-medium text-[var(--foreground)]">
+                      {command === "persona" ? "/persona" : "/language"}
+                    </span>
+                    <span className="min-w-0 truncate text-[var(--muted-foreground)]">
+                      {command === "persona"
+                        ? t("Switch the persona for this chat session")
+                        : t("Switch the reply language for this chat session")}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        {showLanguagePopup && (
+          <div
+            ref={languagePopupRef}
+            className={`absolute left-0 z-[70] ${
+              languagePickerBelow ? "top-full mt-2" : "bottom-full mb-2"
+            }`}
+          >
+            <div
+              id={languageListId}
+              role="listbox"
+              aria-label={t("Reply language")}
+              className="w-[300px] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--popover)] py-1.5 shadow-lg backdrop-blur-md"
+            >
+              <div className="px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-[0.05em] text-[var(--muted-foreground)]">
+                {t("Reply language")}
+              </div>
+              <div ref={languageListRef} className="max-h-[280px] overflow-y-auto">
+                {languageChoices.map((choice, index) => {
+                  const selected = choice.value === (replyLanguageOverride ?? "");
+                  return (
+                    <button
+                      key={choice.value}
+                      id={`${languageListId}-option-${index}`}
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      onMouseEnter={() => setActiveLanguageIndex(index)}
+                      onClick={() => handleSelectReplyLanguage(choice.value)}
+                      className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[12.5px] transition-colors ${
+                        index === activeLanguageIndex
+                          ? "bg-[var(--muted)]/60"
+                          : "hover:bg-[var(--muted)]/45"
+                      } ${index === 1 ? "border-t border-[var(--border)]" : ""}`}
+                    >
+                      <span className="min-w-0 flex-1 truncate text-[var(--foreground)]">
+                        {choice.label}
+                      </span>
+                      {selected && <Check size={14} strokeWidth={2} className="shrink-0 text-[var(--primary)]" />}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         )}
         <div className="relative">
           <textarea
             ref={textareaRef}
+            // Each message takes the direction of what is typed, so Arabic and
+            // Hebrew lines start on the right without a setting.
+            dir="auto"
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
             onCompositionStart={onCompositionStart}
             onCompositionEnd={onCompositionEnd}
             onClick={handleTextareaClick}
+            onBlur={() => setArmed(false)}
+            onScroll={(event) => setScrolled(event.currentTarget.scrollTop > 0)}
             onPaste={onPaste}
             rows={1}
             // Cap input at 32k chars. A bigger paste (e.g. an entire textbook
@@ -573,6 +770,13 @@ export const ComposerInput = memo(
             maxLength={32000}
             suppressHydrationWarning
             placeholder={placeholderCompletion ? "" : basePlaceholder}
+            aria-haspopup={showSlashPopup || showLanguagePopup ? "listbox" : undefined}
+            aria-controls={showSlashPopup ? slashListId : showLanguagePopup ? languageListId : undefined}
+            aria-activedescendant={showSlashPopup
+              ? `${slashListId}-option-${activeSlashIndex}`
+              : showLanguagePopup
+                ? `${languageListId}-option-${activeLanguageIndex}`
+                : undefined}
             // The overlay below replaces the native placeholder visually
             // (so a long hint can truncate instead of wrapping), but an
             // empty placeholder would otherwise leave the field with no
@@ -584,12 +788,16 @@ export const ComposerInput = memo(
                 : undefined
             }
             className="w-full resize-none overflow-hidden bg-transparent text-[16px] leading-relaxed text-[var(--foreground)] outline-none placeholder:text-[var(--muted-foreground)]"
-            style={{ transition: "height 0.15s ease-out" }}
+            style={{
+              textIndent: indent || undefined,
+              transition: "height 0.15s ease-out, text-indent 0.18s cubic-bezier(0.16, 1, 0.3, 1)",
+            }}
           />
           {showHintOverlay ? (
             <div
               aria-hidden="true"
               className="pointer-events-none absolute inset-0 flex items-start gap-1 overflow-hidden text-[16px] leading-relaxed text-[var(--muted-foreground)]"
+              style={{ paddingLeft: indent || undefined }}
             >
               <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
                 {placeholderCompletion}
@@ -599,6 +807,9 @@ export const ComposerInput = memo(
               </span>
             </div>
           ) : null}
+          {lead.length > 0 && (
+            <ComposerLead tokens={lead} armed={armed} hidden={scrolled} onWidth={setLeadWidth} />
+          )}
         </div>
       </div>
     );

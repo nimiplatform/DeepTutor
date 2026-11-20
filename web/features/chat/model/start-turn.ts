@@ -12,12 +12,16 @@ import type {
 } from "@/contracts/generated/turn-protocol";
 
 export interface StartTurnInput {
+  workspaceId?: string | null;
   content: string;
+  clientSubmissionId?: string | null;
   capability?: string | null;
   sessionId?: string | null;
   tools?: string[] | null;
   knowledgeBases?: string[];
   language?: string | null;
+  /** Omit to preserve the session's selector; null explicitly clears it. */
+  replyLanguageOverride?: string | null;
   capabilityConfig?: Record<string, unknown>;
   allowedCapabilityConfigKeys?: readonly string[];
   attachments?: OutgoingAttachment[];
@@ -29,11 +33,18 @@ export interface StartTurnInput {
   readingReferences?: ReadingReference[];
   memoryReferences?: MemoryReferences;
   skills?: string[];
+  mcp?: string[];
   persona?: string | null;
   llmSelection?: LLMSelection | null;
   workspaceMode?: string | null;
   masteryPathId?: string | null;
   masterySessionMode?: string | null;
+  noteDocumentId?: string | null;
+  noteGeneration?: { block_id: string; kind?: string } | null;
+  /** Create mode: the artifact kind this turn authors towards, or null when
+   *  off. Sent on every turn, unlike most fields here which are omitted to
+   *  preserve the session's value. */
+  createTarget?: string | null;
   masteryPathLeaseManaged?: boolean;
   masteryAnswer?: MasteryCardAnswer | null;
   masterySkip?: MasteryCardSkip | null;
@@ -44,7 +55,6 @@ export interface StartTurnInput {
   timedMediaId?: string | null;
   timedMediaViewport?: TimedMediaViewport | null;
   parentMessageId?: number | null;
-  courseId?: string | null;
   persistUserMessage?: boolean;
   regenerate?: boolean;
   regeneratedFromMessageId?: number | null;
@@ -52,7 +62,13 @@ export interface StartTurnInput {
   followupQuestionContext?: Record<string, unknown> | null;
   selectionTutorContext?: Record<string, unknown> | null;
   subagentConsultBudget?: number | null;
+  consultPartnerId?: string | null;
+  partnerDiscussionGroupId?: string | null;
+  /** Hand the turn to a partner or a connected agent: `partner:<id>` / `subagent:<name>`. */
+  answerBy?: string | null;
   autoRoute?: boolean | null;
+  /** Run `capability` for this turn only; the session keeps its own mode. */
+  capabilityOnce?: boolean;
 }
 
 export interface LegacySendMessageArguments {

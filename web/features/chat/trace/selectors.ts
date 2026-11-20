@@ -118,20 +118,7 @@ export function isChatLoopAnswerContent(event: StreamEvent): boolean {
   );
 }
 
-export function isNarrationRound(events: StreamEvent[]): boolean {
-  return events.some((event) => {
-    const meta = getTraceMeta(event);
-    return (
-      meta.trace_kind === "call_status" &&
-      meta.call_state === "complete" &&
-      meta.call_role === "narration" &&
-      meta.answer_visible !== true
-    );
-  });
-}
-
 export function groupHasTraceSubstance(events: StreamEvent[]): boolean {
-  const narration = isNarrationRound(events);
   return events.some((event) => {
     if (
       event.type === "tool_call" ||
@@ -151,12 +138,36 @@ export function groupHasTraceSubstance(events: StreamEvent[]): boolean {
     }
     if (event.type === "content") {
       return (
-        (narration || !isChatLoopAnswerContent(event)) &&
+        !isChatLoopAnswerContent(event) &&
         Boolean(event.content.trim())
       );
     }
     return false;
   });
+}
+
+/**
+ * Has a round completed as the turn's terminal one?
+ *
+ * The chat loop's rounds all stream text, so "text is flowing" says nothing
+ * about whether the turn is winding up. The round's own completion marker
+ * does: ``finish`` is emitted only by a round that called no tools, which is
+ * the one shape that ends the loop.
+ *
+ * Reads only the LATEST completed round, not "has one ever appeared" — a
+ * token-truncated round is explicitly non-terminal, so once its own next round
+ * completes, that marker supersedes this one.
+ *
+ * Legacy visibility metadata does not determine completion or suppress text.
+ */
+export function hasSettledFinalRound(events: StreamEvent[]): boolean {
+  for (let idx = events.length - 1; idx >= 0; idx -= 1) {
+    const meta = getTraceMeta(events[idx]);
+    if (meta.trace_kind === "call_status" && meta.call_state === "complete") {
+      return meta.call_role === "finish";
+    }
+  }
+  return false;
 }
 
 export function selectTraceDisplayItems(

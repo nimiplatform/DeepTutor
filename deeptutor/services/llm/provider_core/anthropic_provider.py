@@ -7,6 +7,7 @@ prompt caching, extended thinking, tool calls, and streaming.
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Awaitable, Callable
 import re
 import secrets
@@ -16,26 +17,14 @@ from typing import Any
 import json_repair
 
 from deeptutor.services.llm.provider_core.base import LLMProvider, LLMResponse, ToolCallRequest
+from deeptutor.services.llm.reasoning_params import minimax_reasoning_kwargs
+from deeptutor.services.llm.types import CONTEXT_LENGTH_EXCEEDED_FINISH
+from deeptutor.services.provider_registry import ANTHROPIC_EFFORT_BASED_FAMILIES
 from deeptutor.services.session.provider_response_state import (
     normalize_provider_response_state,
 )
 
 _ALNUM = string.ascii_letters + string.digits
-
-# Effort-based model families from Opus 4.7 onward. These REJECT both the
-# `temperature` parameter and `thinking: {type: "enabled", budget_tokens: N}`
-# with a 400 — adaptive is their only thinking on-mode. Opus 4.6 and
-# Sonnet 4.6 still ACCEPT both older forms; adding them here would silently
-# drop the user's settings. Extend as new families ship (a capability lookup
-# is the longer-term fix).
-_EFFORT_BASED_FAMILIES: tuple[str, ...] = (
-    "opus-4-7",
-    "opus-4-8",
-    "opus-5",
-    "sonnet-5",
-    "fable-5",
-    "mythos-5",
-)
 
 # reasoning_effort values that mean "thinking off" (see services/config
 # reasoning_params). On effort-based families the correct off/default
@@ -58,11 +47,13 @@ class AnthropicProvider(LLMProvider):
         default_model: str = "claude-sonnet-4-20250514",
         extra_headers: dict[str, str] | None = None,
         supports_prompt_caching: bool = True,
+        binding: str = "anthropic",
     ):
         super().__init__(api_key, api_base)
         self.default_model = default_model
         self.extra_headers = extra_headers or {}
         self._supports_prompt_caching = supports_prompt_caching
+        self._binding = binding
 
         from anthropic import AsyncAnthropic
 
@@ -159,11 +150,22 @@ class AnthropicProvider(LLMProvider):
         return system, self._merge_consecutive(raw)
 
     @staticmethod
+    def _tool_id(raw: Any) -> str:
+        # Preserve native IDs, but encode foreign IDs without collapsing distinct
+        # calls ("a|b" and "a_b"). Reserve the prefix by also encoding raw IDs
+        # that start with it, so a native ID cannot collide with an encoded one.
+        value = str(raw or "")
+        prefix = "dt_encoded_"
+        if not value or (re.fullmatch(r"[a-zA-Z0-9_-]+", value) and not value.startswith(prefix)):
+            return value
+        return prefix + base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii").rstrip("=")
+
+    @staticmethod
     def _tool_result_block(msg: dict[str, Any]) -> dict[str, Any]:
         content = msg.get("content")
         block: dict[str, Any] = {
             "type": "tool_result",
-            "tool_use_id": msg.get("tool_call_id", ""),
+            "tool_use_id": AnthropicProvider._tool_id(msg.get("tool_call_id", "")),
         }
         if isinstance(content, (str, list)):
             block["content"] = content
@@ -204,6 +206,8 @@ class AnthropicProvider(LLMProvider):
                         "signature": tb.get("signature", ""),
                     }
                 )
+            elif isinstance(tb, dict) and tb.get("type") == "redacted_thinking":
+                blocks.append({"type": "redacted_thinking", "data": tb["data"]})
 
         if isinstance(content, str) and content:
             blocks.append({"type": "text", "text": content})
@@ -223,7 +227,7 @@ class AnthropicProvider(LLMProvider):
             blocks.append(
                 {
                     "type": "tool_use",
-                    "id": tc.get("id") or _gen_tool_id(),
+                    "id": AnthropicProvider._tool_id(tc.get("id")) or _gen_tool_id(),
                     "name": func.get("name", ""),
                     "input": args,
                 }
@@ -313,14 +317,14 @@ class AnthropicProvider(LLMProvider):
         tool_choice: str | dict[str, Any] | None,
         thinking_enabled: bool = False,
     ) -> dict[str, Any] | None:
+        if tool_choice == "none":
+            return {"type": "none"}
         if thinking_enabled:
             return {"type": "auto"}
         if tool_choice is None or tool_choice == "auto":
             return {"type": "auto"}
         if tool_choice == "required":
             return {"type": "any"}
-        if tool_choice == "none":
-            return None
         if isinstance(tool_choice, dict):
             name = tool_choice.get("function", {}).get("name")
             if name:
@@ -354,19 +358,23 @@ class AnthropicProvider(LLMProvider):
             budget -= 1
 
         new_msgs = list(messages)
-        if len(new_msgs) >= 3:
-            m = new_msgs[-2]
+        if new_msgs:
+            m = new_msgs[-1]
             c = m.get("content")
-            if isinstance(c, str):
-                new_msgs[-2] = {
+            if isinstance(c, str) and c:
+                new_msgs[-1] = {
                     **m,
                     "content": [{"type": "text", "text": c, "cache_control": marker}],
                 }
                 budget -= 1
-            elif isinstance(c, list) and c:
+            elif (
+                isinstance(c, list)
+                and c
+                and c[-1].get("type") not in {"thinking", "redacted_thinking"}
+            ):
                 nc = list(c)
                 nc[-1] = {**nc[-1], "cache_control": marker}
-                new_msgs[-2] = {**m, "content": nc}
+                new_msgs[-1] = {**m, "content": nc}
                 budget -= 1
 
         new_tools = tools
@@ -409,7 +417,9 @@ class AnthropicProvider(LLMProvider):
         # value as the default budget, so a plain `bool(reasoning_effort)`
         # turned `none` into thinking ON with 4096 tokens.
         thinking_enabled = bool(effort) and effort not in _THINKING_OFF_EFFORTS
-        effort_based = any(family in model_name for family in _EFFORT_BASED_FAMILIES)
+        effort_based = any(
+            family in model_name.lower() for family in ANTHROPIC_EFFORT_BASED_FAMILIES
+        )
 
         kwargs: dict[str, Any] = {
             "model": model_name,
@@ -420,7 +430,15 @@ class AnthropicProvider(LLMProvider):
         if system:
             kwargs["system"] = system
 
-        if thinking_enabled and effort_based:
+        minimax = (
+            minimax_reasoning_kwargs(model_name, effort, anthropic=True)
+            if getattr(self, "_binding", "anthropic") in {"minimax", "minimax_anthropic"}
+            else None
+        )
+        if minimax is not None:
+            kwargs.update(minimax)
+            thinking_enabled = minimax["thinking"]["type"] != "disabled"
+        elif thinking_enabled and effort_based:
             # These families reject enabled+budget_tokens with a 400 —
             # adaptive is their only on-mode, so any real effort level maps
             # to adaptive (no budget headroom needed). Off-sentinels omit
@@ -478,8 +496,20 @@ class AnthropicProvider(LLMProvider):
                         "signature": getattr(block, "signature", ""),
                     }
                 )
+            elif block.type == "redacted_thinking":
+                thinking_blocks.append({"type": "redacted_thinking", "data": block.data})
 
-        stop_map = {"tool_use": "tool_calls", "end_turn": "stop", "max_tokens": "length"}
+        stop_map = {
+            "tool_use": "tool_calls",
+            "end_turn": "stop",
+            "stop_sequence": "stop",
+            "max_tokens": "length",
+            # The *input* context filled up. This is not an output cap, so it must
+            # not map to "length": callers read that as "continue the answer",
+            # which would resend the same full history.
+            "model_context_window_exceeded": CONTEXT_LENGTH_EXCEEDED_FINISH,
+            "refusal": "content_filter",
+        }
         finish_reason = stop_map.get(response.stop_reason or "", response.stop_reason or "stop")
 
         usage: dict[str, int] = {}
@@ -490,6 +520,8 @@ class AnthropicProvider(LLMProvider):
             total_prompt = input_tokens + cache_creation + cache_read
             usage = {
                 "prompt_tokens": total_prompt,
+                "cache_read_input_tokens": cache_read,
+                "cache_creation_input_tokens": cache_creation,
                 "completion_tokens": response.usage.output_tokens,
                 "total_tokens": total_prompt + response.usage.output_tokens,
             }
@@ -504,7 +536,9 @@ class AnthropicProvider(LLMProvider):
             # provider-agnostic consumer reads, including the trace. Without
             # it a non-streaming call reported no reasoning at all.
             reasoning_content="\n".join(
-                str(block.get("thinking") or "") for block in thinking_blocks
+                str(block.get("thinking") or "")
+                for block in thinking_blocks
+                if block["type"] == "thinking"
             ).strip()
             or None,
             thinking_blocks=thinking_blocks or None,

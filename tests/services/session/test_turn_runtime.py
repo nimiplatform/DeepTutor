@@ -5,6 +5,10 @@ from __future__ import annotations
 import pytest
 
 from deeptutor.core.stream import StreamEvent, StreamEventType
+from deeptutor.services.session._turn_runtime_shared import (
+    _selection_source_excerpt,
+    _side_chat_transcript,
+)
 from deeptutor.services.session.turn_runtime import (
     _assemble_persisted_answer,
     _clip_text,
@@ -14,11 +18,10 @@ from deeptutor.services.session.turn_runtime import (
     _extract_selection_tutor_context,
     _format_followup_question_context,
     _format_selection_tutor_context,
-    _narration_marker_call_id,
     _repair_chinese_emphasis_for_persistence,
     _resolve_selection_tutor_context,
     _should_capture_assistant_content,
-    _stamp_ask_user_content_offset,
+    _stamp_content_offset,
 )
 
 # ---------------------------------------------------------------------------
@@ -67,57 +70,6 @@ class TestShouldCaptureAssistantContent:
         assert _should_capture_assistant_content(event) is False
 
 
-class TestNarrationMarkerCallId:
-    def test_narration_marker_returns_call_id(self) -> None:
-        event = StreamEvent(
-            type=StreamEventType.PROGRESS,
-            metadata={
-                "call_id": "round-1",
-                "trace_kind": "call_status",
-                "call_state": "complete",
-                "call_role": "narration",
-            },
-        )
-        assert _narration_marker_call_id(event) == "round-1"
-
-    def test_finish_marker_is_not_narration(self) -> None:
-        event = StreamEvent(
-            type=StreamEventType.PROGRESS,
-            metadata={
-                "call_id": "round-2",
-                "trace_kind": "call_status",
-                "call_state": "complete",
-                "call_role": "finish",
-            },
-        )
-        assert _narration_marker_call_id(event) is None
-
-    def test_dsml_clean_content_is_kept_in_persisted_answer(self) -> None:
-        event = StreamEvent(
-            type=StreamEventType.PROGRESS,
-            metadata={
-                "call_id": "round-dsml",
-                "trace_kind": "call_status",
-                "call_state": "complete",
-                "call_role": "narration",
-                "answer_visible": True,
-            },
-        )
-        assert _narration_marker_call_id(event) is None
-
-    def test_running_status_is_not_narration(self) -> None:
-        event = StreamEvent(
-            type=StreamEventType.PROGRESS,
-            metadata={
-                "call_id": "round-1",
-                "trace_kind": "call_status",
-                "call_state": "running",
-                "call_role": "narration",
-            },
-        )
-        assert _narration_marker_call_id(event) is None
-
-
 class TestAssemblePersistedAnswer:
     def test_repairs_chinese_emphasis_boundaries_before_persistence(self) -> None:
         assert (
@@ -126,6 +78,16 @@ class TestAssemblePersistedAnswer:
         )
         assert _repair_chinese_emphasis_for_persistence("**“你好”**啊", "zh-CN") == "**“你好”** 啊"
         assert _repair_chinese_emphasis_for_persistence("中文*，重点*", "en") == "中文*，重点*"
+
+    def test_repairs_japanese_and_korean_emphasis_boundaries(self) -> None:
+        # Both set a bracket flush against the next word, exactly as Chinese does.
+        assert (
+            _repair_chinese_emphasis_for_persistence(
+                "つまり、**関連付けは「どの表を見るか」**です。", "ja"
+            )
+            == "つまり、**関連付けは「どの表を見るか」** です。"
+        )
+        assert _repair_chinese_emphasis_for_persistence("**“단어”**는", "ko") == "**“단어”** 는"
 
     def test_does_not_change_inner_whitespace_or_literal_stars(self) -> None:
         inputs = [
@@ -146,29 +108,72 @@ class TestAssemblePersistedAnswer:
         content = "`中文*，重点*`\n$中文*，重点*$\n中文***，重点***内容"
         assert _repair_chinese_emphasis_for_persistence(content, "zh") == content
 
+    def test_dollar_signs_in_code_and_literal_placeholders_survive(self) -> None:
+        inputs = [
+            "PHP 对象：`$b = $a`；PHP 数组：`$b = $a`。",
+            "```php\n$b = $a;\n```\n价格 $5，`$c = $d` 与 $x^2$",
+            "原文 \x00CJK_PROTECTED_0\x00 与 `代码`",
+        ]
+        for content in inputs:
+            assert _repair_chinese_emphasis_for_persistence(content, "zh") == content
+        assert (
+            _repair_chinese_emphasis_for_persistence("`$b = $a`，中文*，重点*内容`$c`", "zh")
+            == "`$b = $a`，中文 *，重点* 内容`$c`"
+        )
+
     def test_continuation_preserves_exact_visible_boundary(self) -> None:
         segments = [
             ("round-part-1", "Part one. "),
             ("round-part-2", "Part two."),
         ]
 
-        assert _assemble_persisted_answer(segments, set()) == "Part one. Part two."
+        assert _assemble_persisted_answer(segments) == "Part one. Part two."
 
-    def test_trace_only_narration_is_still_excluded(self) -> None:
+    def test_commentary_rounds_are_part_of_the_persisted_answer(self) -> None:
         segments = [
-            ("search-round", "Searching."),
+            ("search-round", "Checking the syllabus first. "),
             ("finish-round", "Answer."),
         ]
 
-        assert _assemble_persisted_answer(segments, {"search-round"}) == "Answer."
+        assert _assemble_persisted_answer(segments) == "Checking the syllabus first. Answer."
+
+    def test_all_published_rounds_are_persisted(self) -> None:
+        segments = [
+            ("rejected-round", "A question I never actually posed."),
+            ("finish-round", "Answer."),
+        ]
+
+        assert _assemble_persisted_answer(segments) == "A question I never actually posed.Answer."
 
 
 def test_ask_user_resolution_records_the_current_answer_boundary() -> None:
     event = {"type": "progress", "metadata": {"ask_user_resolved": True}}
 
-    _stamp_ask_user_content_offset(event, "Visible teaching before the card.")
+    _stamp_content_offset(event, "Visible teaching before the card.")
 
     assert event["metadata"]["assistant_content_offset"] == 33
+
+
+def test_tool_call_records_the_boundary_it_was_rendered_at() -> None:
+    """A reloaded turn lays the answer out around its tool rows by this mark.
+
+    The event preview a settled turn is restored from carries no content
+    events, so without the boundary every tool row would collapse to one end
+    of the answer instead of sitting where the reader watched it run.
+    """
+    event = {"type": "tool_call", "metadata": {"call_id": "c1"}}
+
+    _stamp_content_offset(event, "Checking the syllabus first.")
+
+    assert event["metadata"]["assistant_content_offset"] == 28
+
+
+def test_plain_progress_event_gets_no_boundary() -> None:
+    event = {"type": "progress", "metadata": {"trace_kind": "call_status"}}
+
+    _stamp_content_offset(event, "Some answer text.")
+
+    assert "assistant_content_offset" not in event["metadata"]
 
 
 # ---------------------------------------------------------------------------
@@ -338,6 +343,63 @@ class TestSelectionTutorContext:
             )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "$$\n{formula}\n$$",
+            "\\[\n{formula}\n\\]",
+            "\\({formula}\\)",
+            "`{formula}`",
+            "{formula}",
+        ],
+    )
+    async def test_resolves_rendered_latex_from_equivalent_source_markup(self, source: str) -> None:
+        formula = r"f(x)=\frac{x^2+1}{\sqrt{1-x}}+\alpha\ln(x)"
+
+        class FakeStore:
+            async def get_messages_for_context(self, _session_id, _leaf_message_id):
+                return [
+                    {
+                        "id": 42,
+                        "role": "assistant",
+                        "content": source.format(formula=formula),
+                    }
+                ]
+
+        resolved = await _resolve_selection_tutor_context(
+            FakeStore(),
+            {
+                "selected_text": f"$${formula}$$",
+                "parent_session_id": "main-1",
+                "source_message_id": 42,
+            },
+        )
+        assert resolved["selected_text"] == f"$${formula}$$"
+
+    @pytest.mark.asyncio
+    async def test_rejects_rendered_latex_absent_from_authoritative_message(self) -> None:
+        class FakeStore:
+            async def get_messages_for_context(self, _session_id, _leaf_message_id):
+                return [{"id": 42, "role": "assistant", "content": "Trusted source text"}]
+
+        with pytest.raises(ValueError, match="authoritative source message"):
+            await _resolve_selection_tutor_context(
+                FakeStore(),
+                {
+                    "selected_text": r"$$\frac{x^2+1}{\sqrt{1-x}}$$",
+                    "parent_session_id": "main-1",
+                    "source_message_id": 42,
+                },
+            )
+
+    def test_keeps_equivalent_latex_in_bounded_source_excerpt(self) -> None:
+        formula = r"\frac{x^2+1}{\sqrt{1-x}}"
+        source = f"{'x' * 500}\n\\[\n{formula}\n\\]"
+        excerpt = _selection_source_excerpt(source, f"$${formula}$$", limit=100)
+        assert formula in excerpt
+        assert excerpt.startswith("[earlier content omitted]")
+
+    @pytest.mark.asyncio
     async def test_allows_grounded_optimistic_message_fallback(self) -> None:
         resolved = await _resolve_selection_tutor_context(
             object(),
@@ -360,6 +422,77 @@ class TestSelectionTutorContext:
         assert "fork() returns twice" in zh
         assert "Little Tutor" in en
         assert "main-1" in en
+
+    def test_keeps_a_long_selection_that_its_source_contains(self) -> None:
+        selected = "x" * 5_000
+        result = _extract_selection_tutor_context(
+            {"selection_tutor_context": {"selected_text": selected, "parent_session_id": "main-1"}}
+        )
+        assert result is not None
+        assert result["selected_text"] == selected
+
+    def test_side_chat_needs_only_its_parent(self) -> None:
+        result = _extract_selection_tutor_context(
+            {
+                "selection_tutor_context": {
+                    "scope": "conversation",
+                    "parent_session_id": "main-1",
+                    "source_message_id": 9,
+                }
+            }
+        )
+        assert result == {
+            "scope": "conversation",
+            "selected_text": "",
+            "parent_session_id": "main-1",
+            "source_message_id": 9,
+        }
+        assert (
+            _extract_selection_tutor_context(
+                {"selection_tutor_context": {"scope": "conversation", "parent_session_id": ""}}
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_side_chat_reads_the_visible_branch_of_its_parent(self) -> None:
+        class FakeStore:
+            async def get_messages_for_context(self, session_id, leaf_message_id):
+                assert session_id == "main-1"
+                assert leaf_message_id == 9
+                return [
+                    {"id": 1, "role": "system", "content": "internal"},
+                    {"id": 2, "role": "user", "content": "What does fork() return?"},
+                    {"id": 9, "role": "assistant", "content": "The child sees 0."},
+                ]
+
+        resolved = await _resolve_selection_tutor_context(
+            FakeStore(),
+            {
+                "scope": "conversation",
+                "selected_text": "",
+                "parent_session_id": "main-1",
+                "source_message_id": 9,
+            },
+        )
+        assert [m["role"] for m in resolved["conversation_messages"]] == ["user", "assistant"]
+
+        zh = _format_selection_tutor_context(resolved, language="zh")
+        assert "侧边聊天" in zh
+        assert "学习者:\nWhat does fork() return?" in zh
+        en = _format_selection_tutor_context(resolved, language="en")
+        assert "side chat" in en
+        assert "Tutor:\nThe child sees 0." in en
+
+    def test_side_chat_transcript_keeps_the_newest_turns(self) -> None:
+        messages = [
+            {"role": "user" if index % 2 == 0 else "assistant", "content": f"{index}" * 5_000}
+            for index in range(10)
+        ]
+        transcript = _side_chat_transcript(messages)
+        assert transcript[0]["role"] == "omitted"
+        assert transcript[-1]["content"].startswith("9")
+        assert sum(len(m["content"]) for m in transcript) <= 24_000
 
 
 # ---------------------------------------------------------------------------
@@ -450,3 +583,46 @@ class TestFormatFollowupQuestionContext:
         ctx["options"] = {}
         text = _format_followup_question_context(ctx, language="en")
         assert "Options:" not in text
+
+
+def test_the_answer_so_far_is_only_built_for_events_that_anchor_layout() -> None:
+    """Every streamed event passes the stamper; only tool calls and resolved
+    cards need the answer so far, and building it walks every segment."""
+    built: list[int] = []
+
+    def answer() -> str:
+        built.append(1)
+        return "Some answer text."
+
+    content = {"type": "content", "content": "x", "metadata": {}}
+    _stamp_content_offset(content, answer)
+    assert built == [] and "assistant_content_offset" not in content["metadata"]
+
+    tool = {"type": "tool_call", "content": "", "metadata": {}}
+    _stamp_content_offset(tool, answer)
+    assert built == [1]
+    assert tool["metadata"]["assistant_content_offset"] == len("Some answer text.")
+
+
+@pytest.mark.asyncio
+async def test_side_chat_resolves_the_quoted_messages_role() -> None:
+    class FakeStore:
+        async def get_messages_for_context(self, session_id, leaf_message_id):
+            assert session_id == "main-1"
+            return [
+                {"id": 2, "role": "user", "content": "What does fork() return?"},
+                {"id": 9, "role": "assistant", "content": "The child sees 0."},
+            ]
+
+    resolved = await _resolve_selection_tutor_context(
+        FakeStore(),
+        {
+            "scope": "conversation",
+            "selected_text": "",
+            "parent_session_id": "main-1",
+            "source_message_id": 9,
+            "quoted_message_id": 2,
+        },
+    )
+
+    assert resolved["source_message_role"] == "user"

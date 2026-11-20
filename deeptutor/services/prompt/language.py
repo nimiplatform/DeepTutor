@@ -18,8 +18,16 @@ _LANGUAGE_LABELS: dict[str, str] = {
     "fr": "Français",
     "de": "Deutsch",
     "ru": "Русский",
+    "uk": "Українська",
     "pt": "Português",
     "it": "Italiano",
+    "ar": "العربية",
+    "pl": "Polski",
+    "ms": "Bahasa Melayu",
+    "vi": "Tiếng Việt",
+    "tr": "Türkçe",
+    "hi": "हिन्दी",
+    "hu": "Magyar",
 }
 
 

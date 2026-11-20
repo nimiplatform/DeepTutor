@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from deeptutor.api.utils.http_headers import content_disposition
 from deeptutor.book import progress as progress_ops
+from deeptutor.book.authoring import BookEdit
 from deeptutor.book.errors import BookPausedError
 from deeptutor.book.export import export_filename, render_book_markdown
 from deeptutor.book.models import (
@@ -68,6 +69,7 @@ def _book_paused_http(exc: BookPausedError) -> HTTPException:
 
 
 class CreateBookRequest(BaseModel):
+    source_refs: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
     user_intent: str = Field(default="")
     chat_session_id: str = Field(default="")
     chat_selections: list[dict[str, Any]] = Field(default_factory=list)
@@ -152,6 +154,27 @@ class DeepDiveRequest(BaseModel):
     expected_revision: int | None = Field(default=None, ge=1)
 
 
+class AddChapterRequest(BaseModel):
+    title: str = Field(default="", max_length=500)
+    position: int | None = None
+    content_type: str = "theory"
+    learning_objectives: list[str] = Field(default_factory=list)
+    summary: str = ""
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
+class UpdateChapterRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=500)
+    summary: str | None = None
+    learning_objectives: list[str] | None = None
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
+class MoveChapterRequest(BaseModel):
+    new_position: int
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
 class QuizAttemptRequest(BaseModel):
     book_id: str
     page_id: str
@@ -161,6 +184,7 @@ class QuizAttemptRequest(BaseModel):
     # ``None`` = revealed but not graded (a written answer the reader skipped
     # self-assessing). Distinct from ``False``, which means they got it wrong.
     is_correct: bool | None = None
+    submission_id: str = Field(default="", max_length=200)
 
 
 def _focus_check_question(
@@ -178,6 +202,30 @@ def _focus_check_question(
     if requested_id:
         return requested_id, {}
     return None
+
+
+def _verified_choice_grade(question: dict[str, Any], user_answer: str) -> bool | None:
+    """A linked Book answer is trusted only when the stored key can grade it."""
+    question_type = str(question.get("question_type") or "").strip().lower().replace(" ", "_")
+    if question_type not in {"choice", "multiple_choice", "multiple-choice", "mcq"}:
+        return None
+    options = question.get("options")
+    if not isinstance(options, dict):
+        return None
+    answer = user_answer.strip().upper()
+    keys = {str(key).strip().upper(): str(label).strip() for key, label in options.items()}
+    correct_text = str(question.get("correct_answer") or "").strip()
+    correct = correct_text.upper()
+    if correct not in keys:
+        matching = [
+            key for key, label in keys.items() if label.casefold() == correct_text.casefold()
+        ]
+        if len(matching) != 1:
+            return None
+        correct = matching[0]
+    if answer not in keys:
+        return None
+    return answer == correct
 
 
 class UpdateBlockRequest(BaseModel):
@@ -792,6 +840,7 @@ async def create_book(req: CreateBookRequest) -> dict[str, Any]:
     try:
         book, proposal = await engine.create_book(
             user_intent=req.user_intent,
+            source_refs=req.source_refs,
             chat_session_id=req.chat_session_id,
             chat_selections=req.chat_selections,
             notebook_refs=req.notebook_refs,
@@ -1042,6 +1091,141 @@ async def change_block_type(req: ChangeBlockTypeRequest) -> dict[str, Any]:
     return {"block": block.model_dump(mode="json"), "book_revision": revision}
 
 
+def _preflight_chapter_mutation(
+    resolved: ResolvedBook,
+    book_id: str,
+    chapter_id: str | None = None,
+    *,
+    deleting: bool = False,
+) -> None:
+    try:
+        exists = resolved.engine.check_chapter_mutation(book_id, chapter_id, deleting=deleting)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not exists:
+        raise HTTPException(status_code=404, detail="Chapter or book spine not found")
+
+
+@router.post("/books/{book_id}/chapters")
+async def add_chapter(book_id: str, req: AddChapterRequest) -> dict[str, Any]:
+    """Append an empty chapter shell after generation, without recompiling."""
+    if not req.title.strip():
+        raise HTTPException(status_code=400, detail="title is required")
+    resolved = _resolve_book_or_404(book_id, edit=True)
+    engine = resolved.engine
+    _preflight_chapter_mutation(resolved, book_id)
+    revision = _claim_content_mutation(
+        resolved,
+        book_id,
+        req.expected_revision,
+        "add_chapter",
+        extra={"title": req.title.strip(), "position": req.position},
+    )
+    content_type = _coerce_content_type(req.content_type)
+    try:
+        chapter = await engine.add_chapter(
+            book_id=book_id,
+            title=req.title.strip(),
+            position=req.position,
+            content_type=content_type,
+            learning_objectives=req.learning_objectives,
+            summary=req.summary,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"add_chapter failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+    if chapter is None:
+        raise HTTPException(status_code=404, detail="Book spine not found")
+    return {"chapter": chapter.model_dump(mode="json"), "book_revision": revision}
+
+
+@router.patch("/books/{book_id}/chapters/{chapter_id}")
+async def update_chapter(
+    book_id: str, chapter_id: str, req: UpdateChapterRequest
+) -> dict[str, Any]:
+    """Rename a chapter (and carry the title onto its pages) without recompiling."""
+    if req.title is not None and not req.title.strip():
+        raise HTTPException(status_code=400, detail="title cannot be empty")
+    resolved = _resolve_book_or_404(book_id, edit=True)
+    engine = resolved.engine
+    _preflight_chapter_mutation(resolved, book_id, chapter_id)
+    revision = _claim_content_mutation(
+        resolved,
+        book_id,
+        req.expected_revision,
+        "rename_chapter",
+        extra={"chapter_id": chapter_id},
+    )
+    try:
+        chapter = await engine.rename_chapter(
+            book_id=book_id,
+            chapter_id=chapter_id,
+            title=req.title.strip() if req.title is not None else None,
+            summary=req.summary,
+            learning_objectives=req.learning_objectives,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"rename_chapter failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+    if chapter is None:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    return {"chapter": chapter.model_dump(mode="json"), "book_revision": revision}
+
+
+@router.delete("/books/{book_id}/chapters/{chapter_id}")
+async def delete_chapter(
+    book_id: str,
+    chapter_id: str,
+    expected_revision: int | None = Query(default=None, ge=1),
+) -> dict[str, Any]:
+    """Delete a chapter and only its pages; other compiled pages are untouched."""
+    resolved = _resolve_book_or_404(book_id, edit=True)
+    engine = resolved.engine
+    _preflight_chapter_mutation(resolved, book_id, chapter_id, deleting=True)
+    revision = _claim_content_mutation(
+        resolved,
+        book_id,
+        expected_revision,
+        "delete_chapter",
+        extra={"chapter_id": chapter_id},
+    )
+    try:
+        ok = await engine.delete_chapter(book_id=book_id, chapter_id=chapter_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"delete_chapter failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    return {"ok": True, "book_revision": revision}
+
+
+@router.post("/books/{book_id}/chapters/{chapter_id}/move")
+async def move_chapter(book_id: str, chapter_id: str, req: MoveChapterRequest) -> dict[str, Any]:
+    """Reorder a chapter and carry the new order onto its pages."""
+    resolved = _resolve_book_or_404(book_id, edit=True)
+    engine = resolved.engine
+    _preflight_chapter_mutation(resolved, book_id, chapter_id)
+    revision = _claim_content_mutation(
+        resolved,
+        book_id,
+        req.expected_revision,
+        "move_chapter",
+        extra={"chapter_id": chapter_id, "new_position": req.new_position},
+    )
+    try:
+        ok = await engine.move_chapter(
+            book_id=book_id,
+            chapter_id=chapter_id,
+            new_position=req.new_position,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"move_chapter failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+    if not ok:
+        raise HTTPException(status_code=404, detail="Chapter not found")
+    return {"ok": True, "book_revision": revision}
+
+
 @router.post("/books/deep-dive")
 async def deep_dive(req: DeepDiveRequest) -> dict[str, Any]:
     resolved = _resolve_book_or_404(req.book_id, edit=True)
@@ -1086,22 +1270,31 @@ async def quiz_attempt(req: QuizAttemptRequest) -> dict[str, Any]:
         else []
     )
     resolved_question = _focus_check_question(questions, req.question_id, req.block_id)
-    progress = progress_ops.record_attempt(
-        resolved.load_progress(req.book_id),
-        page_id=req.page_id,
-        block_id=req.block_id,
-        question_id=req.question_id,
-        user_answer=req.user_answer,
-        is_correct=req.is_correct,
-        page_to_chapter={
-            page.id: page.chapter_id
-            for page in resolved.engine.list_pages(req.book_id)
-            if page.chapter_id
-        },
-    )
-    resolved.learning.save_progress(progress)
+    current_progress = resolved.load_progress(req.book_id)
+    previous_attempts = len(current_progress.quiz_attempts)
+    try:
+        progress = progress_ops.record_attempt(
+            current_progress,
+            page_id=req.page_id,
+            block_id=req.block_id,
+            question_id=req.question_id,
+            user_answer=req.user_answer,
+            is_correct=req.is_correct,
+            page_to_chapter={
+                page.id: page.chapter_id
+                for page in resolved.engine.list_pages(req.book_id)
+                if page.chapter_id
+            },
+            submission_id=req.submission_id.strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if len(progress.quiz_attempts) != previous_attempts:
+        resolved.learning.save_progress(progress)
     if req.is_correct is not None and resolved_question is not None and book is not None:
         question_id, question = resolved_question
+        verified_grade = _verified_choice_grade(question, req.user_answer)
+        trusted_linkage = verified_grade is not None and verified_grade == req.is_correct
         try:
             from deeptutor.services.session import get_sqlite_session_store
 
@@ -1113,43 +1306,72 @@ async def quiz_attempt(req: QuizAttemptRequest) -> dict[str, Any]:
                 or book.chat_session_id
                 or ""
             ).strip()
-            # Notebook entries belong to real conversations. Creating a hidden
-            # ``book_<id>`` chat solely to satisfy the FK polluted history and
-            # made a Book Focus Check look like Immersive Reading. If the page
-            # has no conversation yet, progress still persists and the optional
-            # review sync waits for a later attempt after chat exists.
-            if session_id and await store.get_session(session_id) is not None:
-                await store.upsert_notebook_entries(
-                    session_id,
-                    [
-                        {
-                            "turn_id": req.block_id,
-                            "question_id": question_id,
-                            "question": str(
-                                question.get("question") or block.title or "Focus check"
-                            ),
-                            "question_type": str(question.get("question_type") or ""),
-                            "options": question.get("options") or {},
-                            "correct_answer": str(question.get("correct_answer") or ""),
-                            "explanation": str(question.get("explanation") or ""),
-                            "difficulty": str(question.get("difficulty") or ""),
-                            "user_answer": req.user_answer,
-                            "is_correct": bool(req.is_correct),
-                            "source": "book",
-                            "material_id": req.book_id,
-                            "material_title": book.title,
-                            "section_id": req.page_id,
-                            "section_title": page.title if page is not None else "",
-                        }
-                    ],
+            has_session = bool(session_id and await store.get_session(session_id) is not None)
+            from deeptutor.learning.assessment import (
+                AssessmentRecord,
+                is_correct_to_result,
+                record_assessment,
+            )
+
+            matching_attempts = [
+                attempt
+                for attempt in progress.quiz_attempts
+                if attempt.block_id == req.block_id and attempt.question_id == req.question_id
+            ]
+            latest_attempt = next(
+                (
+                    attempt
+                    for attempt in matching_attempts
+                    if req.submission_id and attempt.submission_id == req.submission_id
+                ),
+                matching_attempts[-1],
+            )
+            attempt_count = matching_attempts.index(latest_attempt) + 1
+            await record_assessment(
+                AssessmentRecord(
+                    session_id=session_id if has_session else "",
+                    origin_type="conversation" if has_session else "document_analysis",
+                    origin_ref=session_id if has_session else f"book:{req.book_id}",
+                    turn_id=req.block_id,
+                    question_id=question_id,
+                    question=str(question.get("question") or block.title or "Focus check"),
+                    question_type=str(question.get("question_type") or ""),
+                    options=question.get("options") or {},
+                    correct_answer=str(question.get("correct_answer") or ""),
+                    explanation=str(question.get("explanation") or ""),
+                    difficulty=str(question.get("difficulty") or ""),
+                    user_answer=req.user_answer,
+                    is_correct=bool(req.is_correct),
+                    result=is_correct_to_result(bool(req.is_correct)),
+                    source="book",
+                    assessment_type="focus_check",
+                    material_id=req.book_id,
+                    material_title=book.title,
+                    section_id=req.page_id,
+                    section_title=page.title if page is not None else "",
+                    mastery_path_id=(
+                        str(question.get("mastery_path_id") or "") if trusted_linkage else ""
+                    ),
+                    knowledge_point_id=(
+                        str(question.get("knowledge_point_id") or "") if trusted_linkage else ""
+                    ),
+                    attempt_count=attempt_count,
+                    attempt_id=(
+                        f"book:{req.book_id}:{req.block_id}:{question_id}:"
+                        f"{latest_attempt.submission_id or f'{latest_attempt.timestamp:.9f}'}"
+                    ),
                 )
-        except Exception:
+            )
+        except Exception as exc:
             logger.warning(
                 "Failed to sync Focus-Check %s to question bank for book %s",
                 req.question_id,
                 req.book_id,
                 exc_info=True,
             )
+            raise HTTPException(
+                status_code=500, detail="Failed to save Focus-Check evidence"
+            ) from exc
     return {"progress": progress.model_dump(mode="json")}
 
 
@@ -1262,6 +1484,16 @@ async def refresh_fingerprints(
     """
     resolved = _resolve_book_or_404(book_id, edit=True)
     engine = resolved.engine
+    # Run the engine's refusal gate before claiming the canonical revision:
+    # the claim bumps book.revision, so a refusal discovered only afterwards
+    # would strand the client's expected_revision on a version its own failed
+    # attempt advanced — and the force retry would 409 forever.
+    try:
+        book_exists = engine.check_refresh_kb_fingerprints(book_id, force=force)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not book_exists:
+        raise HTTPException(status_code=404, detail="Book not found")
     revision = _claim_content_mutation(
         resolved,
         book_id,
@@ -1272,6 +1504,8 @@ async def refresh_fingerprints(
     try:
         result = engine.refresh_kb_fingerprints(book_id, force=force)
     except ValueError as exc:
+        # Only reachable when a concurrent drift mark lands between the
+        # preflight and this call; degrade to the same 409.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Book not found")
@@ -1326,6 +1560,16 @@ async def set_page_chat_session(req: PageChatSessionRequest) -> dict[str, Any]:
         )
     if book is None:
         raise HTTPException(status_code=404, detail="Book or page not found")
+    from deeptutor.book.chat_sessions import tag_book_chat_session
+    from deeptutor.services.session import get_session_store
+
+    # The conversation names its book too, so the sidebar can file it there.
+    await tag_book_chat_session(
+        get_session_store(),
+        book_id=req.book_id,
+        page_id=req.page_id,
+        session_id=req.session_id.strip(),
+    )
     return {"book": _book_payload(book, resolved)}
 
 
@@ -1526,7 +1770,21 @@ async def book_websocket(ws: WebSocket) -> None:
                     await send({"type": "error", "content": f"Book not found: {book_id}"})
                     continue
 
+            activity = None
             try:
+                from deeptutor.services.workspace.activity import acquire_activity
+                from deeptutor.services.workspace.context import (
+                    current_workspace_id,
+                    resolve_workspace_scope,
+                )
+                from deeptutor.services.workspace.models import WorkspaceError
+
+                activity = acquire_activity()
+                if (
+                    msg_type != "subscribe"
+                    and resolve_workspace_scope(current_workspace_id()).archived
+                ):
+                    raise WorkspaceError("Restore this workspace before changing its data.")
                 if msg_type == "subscribe":
                     if not book_id:
                         await send({"type": "error", "content": "subscribe requires book_id"})
@@ -1557,6 +1815,7 @@ async def book_websocket(ws: WebSocket) -> None:
                     engine = get_book_engine()
                     book, proposal = await engine.create_book(
                         user_intent=str(data.get("user_intent") or ""),
+                        source_refs=data.get("source_refs") or [],
                         chat_session_id=str(data.get("chat_session_id") or ""),
                         chat_selections=data.get("chat_selections") or [],
                         notebook_refs=data.get("notebook_refs") or [],
@@ -1725,6 +1984,9 @@ async def book_websocket(ws: WebSocket) -> None:
             except Exception as exc:
                 logger.error(f"book ws action {msg_type} failed: {exc}", exc_info=True)
                 await send({"type": "error", "content": str(exc)})
+            finally:
+                if activity is not None:
+                    activity.close()
 
     except WebSocketDisconnect:
         pass
@@ -1743,3 +2005,58 @@ async def book_websocket(ws: WebSocket) -> None:
                 reset_current_user(user_token)
             except Exception:
                 logger.debug("Could not reset Book WebSocket user context", exc_info=True)
+
+
+# Book authoring is deliberately proposal-only until an authenticated UI apply.
+class ApplyBookEditRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+
+
+@router.post("/books/{book_id}/edits/preview")
+async def preview_book_edit(book_id: str, req: BookEdit) -> dict[str, Any]:
+    from deeptutor.book.authoring import preview_edit
+
+    resolved = _resolve_book_or_404(book_id, edit=True)
+    try:
+        return preview_edit(resolved.engine.storage, book_id, req)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/books/{book_id}/edits")
+async def get_book_edits(book_id: str, page_id: str | None = None) -> dict[str, Any]:
+    from deeptutor.book.authoring import list_edits
+
+    resolved = _resolve_book_or_404(book_id, edit=True)
+    try:
+        return {"edits": list_edits(resolved.engine.storage, book_id, page_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/books/{book_id}/edits/{edit_id}/apply")
+async def apply_book_edit(book_id: str, edit_id: str, req: ApplyBookEditRequest) -> dict[str, Any]:
+    from deeptutor.book.authoring import apply_edit
+
+    resolved = _resolve_book_or_404(book_id, edit=True)
+    try:
+        result = apply_edit(resolved.engine.storage, book_id, edit_id, req.expected_revision)
+        log_admin_action("book.edit.apply", summary={"book_id": book_id, "edit_id": edit_id})
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/books/{book_id}/edits/{edit_id}/undo")
+async def undo_book_edit(book_id: str, edit_id: str, req: ApplyBookEditRequest) -> dict[str, Any]:
+    from deeptutor.book.authoring import apply_edit
+
+    resolved = _resolve_book_or_404(book_id, edit=True)
+    try:
+        result = apply_edit(
+            resolved.engine.storage, book_id, edit_id, req.expected_revision, undo=True
+        )
+        log_admin_action("book.edit.undo", summary={"book_id": book_id, "edit_id": edit_id})
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

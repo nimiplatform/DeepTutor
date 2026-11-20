@@ -87,6 +87,25 @@ export class StorageStore {
     }
   }
 
+  /** Snapshot raw entries by prefix without exposing Storage APIs to callers. */
+  listRaw(scope: StorageScope, prefix: string): Array<[string, string]> {
+    const storage = this.provider(scope);
+    if (!storage) return [];
+    try {
+      const names: string[] = [];
+      for (let index = 0; index < storage.length; index += 1) {
+        const name = storage.key(index);
+        if (name?.startsWith(prefix)) names.push(name);
+      }
+      return names.flatMap((name) => {
+        const value = storage.getItem(name);
+        return value === null ? [] : [[name, value] as [string, string]];
+      });
+    } catch {
+      return [];
+    }
+  }
+
   writeRaw(scope: StorageScope, name: string, value: string): boolean {
     try {
       const storage = this.provider(scope);
@@ -148,8 +167,17 @@ export class StorageStore {
 
 export function createBrowserStorageStore(): StorageStore {
   if (typeof window === "undefined") return new StorageStore({});
+  let local: StorageLike | undefined;
+  let session: StorageLike | undefined;
+  // A browser can deny one storage area at the property getter (for example
+  // in a restricted iframe) while still allowing the other.
+  try { local = window.localStorage; } catch { /* unavailable */ }
+  try { session = window.sessionStorage; } catch { /* unavailable */ }
   return new StorageStore(
-    { local: scopedBrowserStorage(window.localStorage), session: scopedBrowserStorage(window.sessionStorage) },
+    {
+      local: local ? scopedBrowserStorage(local as Storage) : undefined,
+      session: session ? scopedBrowserStorage(session as Storage) : undefined,
+    },
     window as unknown as StorageEventTargetLike,
   );
 }
@@ -173,6 +201,10 @@ class BrowserStorageStore extends StorageStore {
 
   override readRaw(scope: StorageScope, name: string): string | null {
     return createBrowserStorageStore().readRaw(scope, name);
+  }
+
+  override listRaw(scope: StorageScope, prefix: string): Array<[string, string]> {
+    return createBrowserStorageStore().listRaw(scope, prefix);
   }
 
   override writeRaw(scope: StorageScope, name: string, value: string): boolean {

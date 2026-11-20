@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING, Any
 
 from deeptutor.core.stream import StreamEvent, StreamEventType
@@ -104,6 +105,20 @@ class SessionTitleService:
                 )
 
             async def _collect_title() -> str:
+                if os.getenv("DEEPTUTOR_CHAT_ENGINE") == "typescript-native":
+                    from deeptutor.runtime.ts_engine.completion import complete_native
+                    from deeptutor.runtime.ts_engine.config import compatibility_reason
+                    from deeptutor.services.llm import get_llm_config
+
+                    config = get_llm_config()
+                    if not compatibility_reason(config):
+                        return await complete_native(
+                            config,
+                            system=sys_prompt,
+                            prompt=user_prompt,
+                            temperature=0.3,
+                            max_tokens=80,
+                        )
                 buf: list[str] = []
                 async for c in llm_stream(
                     prompt=user_prompt,
@@ -114,11 +129,11 @@ class SessionTitleService:
                     buf.append(c)
                 return "".join(buf)
 
-            from deeptutor.services.model_selection.tasks import task_llm_scope
+            from deeptutor.services.model_selection.tasks import TaskKind, task_llm_scope
 
             # The scope is entered before the task is created so `wait_for`'s
             # inner task copies it; with no task model configured it is a no-op.
-            with task_llm_scope():
+            with task_llm_scope(TaskKind.SESSION_TITLE):
                 raw_title = await asyncio.wait_for(_collect_title(), timeout=20.0)
             if _looks_like_error_payload(raw_title):
                 logger.debug("Title model streamed an error payload — falling back")

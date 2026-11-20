@@ -93,9 +93,21 @@ def prepare_workspace_execution_env(
         "HF_HOME": str(locations["cache"] / "huggingface"),
         "TORCH_HOME": str(locations["cache"] / "torch"),
         "MPLCONFIGDIR": str(locations["cache"] / "matplotlib"),
+        # The exec sandbox has no GUI session. A figure's ``show()`` (including
+        # schemdraw's default ``Drawing(show=True)`` on context exit) blocks
+        # until the tool timeout in that environment. Pin the non-interactive
+        # backend so printing, saving, and ``plt.show()`` all return at once.
+        "MPLBACKEND": "Agg",
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "PYTHONUNBUFFERED": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
+        # Model-authored Python must not fall back to the host's ANSI code page
+        # (cp936, cp1252, …): a bare ``open()`` / ``Path.read_text()`` would then
+        # mis-decode the UTF-8 files this workspace and every skill writes, and
+        # printing a non-ASCII path or message would reach the caller mojibaked.
+        # The exec environment inherits only a fixed subset of host variables,
+        # so UTF-8 mode has to be requested explicitly rather than assumed.
+        "PYTHONUTF8": "1",
     }
     if workspace_root:
         # A stable symbolic handle for model-authored code that needs to open

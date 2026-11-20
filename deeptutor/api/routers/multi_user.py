@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, StrictBool, field_validator
 
 from deeptutor.api.routers.auth import require_admin, require_auth
-from deeptutor.knowledge.manager import KnowledgeBaseManager
+from deeptutor.modules.catalog import module_enabled, require_module
 from deeptutor.multi_user.audit import log_admin_action, log_guardian_action
 from deeptutor.multi_user.book_permission import (
     BookDefaultLevel,
@@ -29,7 +29,9 @@ from deeptutor.multi_user.grants import (
     learner_grant,
     load_grant,
     normalize_grant,
+    restore_grant_if_unchanged,
     save_grant,
+    save_grant_with_receipt,
     validate_grant,
 )
 from deeptutor.multi_user.guardians import (
@@ -45,6 +47,7 @@ from deeptutor.multi_user.identity import (
     list_user_info,
     set_book_permission,
     set_password,
+    set_preset,
 )
 from deeptutor.multi_user.knowledge_access import admin_kb_base_dir
 from deeptutor.multi_user.model_access import is_owner_bound
@@ -53,11 +56,8 @@ from deeptutor.multi_user.paths import (
     get_path_service_for_scope,
     scope_for_user,
 )
-from deeptutor.reading import ReadingStore
-from deeptutor.reading.extensions import get_reading_extension_registry
 from deeptutor.services.auth import POCKETBASE_ENABLED, hash_password
 from deeptutor.services.config.model_catalog import ModelCatalogService
-from deeptutor.services.skill.service import SkillService
 
 router = APIRouter()
 
@@ -163,6 +163,14 @@ def _admin_catalog_summary() -> dict[str, list[dict[str, Any]]]:
             profile_id = str(profile.get("id") or "")
             models = []
             for model in profile.get("models", []) or []:
+                from deeptutor.services.config.provider_links import resolve_profile_provider
+
+                try:
+                    effective = resolve_profile_provider(catalog, service, profile, model)
+                except ValueError:
+                    continue
+                if is_owner_bound(effective):
+                    continue
                 models.append(
                     {
                         "model_id": model.get("id", ""),
@@ -170,6 +178,8 @@ def _admin_catalog_summary() -> dict[str, list[dict[str, Any]]]:
                         "model": model.get("model", ""),
                     }
                 )
+            if profile.get("models") and not models:
+                continue
             out[service].append(
                 {
                     "profile_id": profile_id,
@@ -181,6 +191,10 @@ def _admin_catalog_summary() -> dict[str, list[dict[str, Any]]]:
 
 
 def _admin_kb_summary() -> list[dict[str, Any]]:
+    if not module_enabled("knowledge"):
+        return []
+    from deeptutor.knowledge.manager import KnowledgeBaseManager
+
     manager = KnowledgeBaseManager(base_dir=str(admin_kb_base_dir()))
     return [
         {
@@ -193,8 +207,9 @@ def _admin_kb_summary() -> list[dict[str, Any]]:
 
 
 def _admin_skill_summary() -> list[dict[str, Any]]:
-    root = get_admin_path_service().get_workspace_dir() / "skills"
-    service = SkillService(root=root)
+    from deeptutor.services.skill.service import get_admin_skill_service
+
+    service = get_admin_skill_service()
     return [item.to_dict() for item in service.list_skills()]
 
 
@@ -207,6 +222,8 @@ def _admin_partner_summary() -> list[dict[str, Any]]:
     soul, which people write personally) by a single click. Identity only: no
     channel wiring or model selection leaks into the assignable summary.
     """
+    if not module_enabled("partners"):
+        return []
     from deeptutor.services.partners import get_partner_manager
 
     admin_id = get_current_user().id
@@ -227,6 +244,10 @@ def _reading_root(service: Any) -> Path:
 
 
 def _admin_reading_summary() -> list[dict[str, Any]]:
+    if not module_enabled("reading"):
+        return []
+    from deeptutor.reading import ReadingStore
+
     store = ReadingStore(_reading_root(get_admin_path_service()))
     return [manifest.to_dict() for manifest in store.list_materials()]
 
@@ -241,6 +262,9 @@ def _stage_assigned_materials(user_id: str, grant: dict[str, Any]) -> None:
     material_ids.discard("*")
     if not material_ids:
         return
+
+    require_module("reading")
+    from deeptutor.reading import ReadingStore
 
     admin_root = _reading_root(get_admin_path_service())
     admin_store = ReadingStore(admin_root)
@@ -268,9 +292,7 @@ def _validate_reading_policy(grant: dict[str, Any]) -> None:
     reading = policy.get("reading") if isinstance(policy, dict) else None
     if not isinstance(reading, dict):
         return
-    allowed_extensions = {
-        extension.manifest.id for extension in get_reading_extension_registry().all()
-    }
+    allowed_extensions = {extension.manifest.id for extension in _reading_extensions()}
     unknown = sorted(set(reading.get("extensions") or []) - allowed_extensions)
     if unknown:
         raise ValueError(f"Unknown reading extensions: {', '.join(unknown)}")
@@ -352,7 +374,7 @@ async def admin_resources(_: object = Depends(require_admin)) -> dict[str, Any]:
         "partners": _admin_partner_summary(),
         "reading_materials": _admin_reading_summary(),
         "reading_extensions": [
-            extension.manifest.model_dump() for extension in get_reading_extension_registry().all()
+            extension.manifest.model_dump() for extension in _reading_extensions()
         ],
         "tools": tool_options["tools"],
         "mcp_tools": tool_options["mcp_tools"],
@@ -481,6 +503,9 @@ async def guardian_report(
     learner_username, learner_record, actor_user_id, is_admin = _require_guardian_access(
         current, learner_user_id, "view_reports"
     )
+    from deeptutor.multi_user.guardian_reading import reading_report_for
+
+    reading = await reading_report_for(learner_user_id)
     from deeptutor.multi_user.book_access import admin_book_catalog
     from deeptutor.multi_user.book_permission import (
         normalize_book_permission,
@@ -510,6 +535,7 @@ async def guardian_report(
         },
         "book_permission": permission_dict,
         "assigned_materials": assigned_materials,
+        "reading": reading,
         "grant_summary": {
             "model_count": len(grant.get("models", {}).get("llm", []) or []),
             "knowledge_base_count": len(grant.get("knowledge_bases") or []),
@@ -635,7 +661,7 @@ async def get_guardian_restrictions(
     return {
         "restrictions": restrictions,
         "available_extensions": [
-            extension.manifest.model_dump() for extension in get_reading_extension_registry().all()
+            extension.manifest.model_dump() for extension in _reading_extensions()
         ],
     }
 
@@ -646,12 +672,10 @@ async def put_guardian_restrictions(
     payload: GuardianRestrictionsPayload,
     current: object = Depends(require_auth),
 ) -> dict[str, Any]:
-    _learner_username, learner_record, actor_user_id, is_admin = _require_guardian_access(
+    learner_username, learner_record, actor_user_id, is_admin = _require_guardian_access(
         current, learner_user_id, "manage_restrictions"
     )
-    available_extensions = {
-        extension.manifest.id for extension in get_reading_extension_registry().all()
-    }
+    available_extensions = {extension.manifest.id for extension in _reading_extensions()}
     unknown_extensions = sorted(set(payload.extensions) - available_extensions)
     if unknown_extensions:
         raise HTTPException(
@@ -660,6 +684,12 @@ async def put_guardian_restrictions(
         )
     grant = deepcopy(_restriction_grant(learner_user_id, learner_record))
     policy = grant.get("learning_policy")
+    if not isinstance(policy, dict):
+        # Assigning guardian restrictions is what makes an account a learning
+        # account. Seed the default learning policy; the preset is switched
+        # only after the updated grant has passed validation and been saved.
+        grant = deepcopy(learner_grant(learner_user_id))
+        policy = grant.get("learning_policy")
     if not isinstance(policy, dict):
         raise HTTPException(status_code=409, detail="Learner account has no learning policy")
     reading = policy.get("reading")
@@ -670,13 +700,43 @@ async def put_guardian_restrictions(
     policy["allowed_surfaces"] = payload.allowed_surfaces
     reading["allow_upload"] = payload.allow_upload
     reading["extensions"] = payload.extensions
+    needs_preset_update = learner_record.get("preset") != "learner"
     try:
         grant = normalize_grant(learner_user_id, grant)
         validate_grant(grant)
         _validate_reading_policy(grant)
-        grant = save_grant(learner_user_id, grant)
+        if needs_preset_update:
+            grant, receipt = save_grant_with_receipt(learner_user_id, grant)
+        else:
+            grant = save_grant(learner_user_id, grant)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Learner grant could not be saved") from exc
+    if needs_preset_update:
+        preset_error: Exception | None = None
+        try:
+            preset_saved = set_preset(learner_username, "learner", expected_user_id=learner_user_id)
+        except Exception as exc:
+            preset_saved = False
+            preset_error = exc
+        if not preset_saved:
+            try:
+                restored = restore_grant_if_unchanged(learner_user_id, receipt)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Learner preset update failed and the prior grant could not be restored",
+                ) from exc
+            if not restored:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Learner preset update failed; a later grant change was preserved",
+                ) from preset_error
+            raise HTTPException(
+                status_code=500 if preset_error is not None else 409,
+                detail="Learner preset update failed; the prior grant was restored",
+            ) from preset_error
     restrictions = _guardian_restrictions(grant)
     _log_supervisor_action(
         "guardian_restrictions_set",
@@ -835,9 +895,10 @@ async def admin_install_skill(
         InvalidSkillNameError,
         SkillExistsError,
         SkillImportError,
+        get_admin_skill_service,
     )
 
-    service = SkillService(root=get_admin_path_service().get_workspace_dir() / "skills")
+    service = get_admin_skill_service()
     try:
         outcome = await asyncio.to_thread(
             install_from_hub,
@@ -876,3 +937,11 @@ async def admin_install_skill(
 @router.get("/users")
 async def multi_user_list_users(_: object = Depends(require_admin)) -> dict[str, Any]:
     return {"users": list_user_info()}
+
+
+def _reading_extensions():
+    if not module_enabled("reading"):
+        return ()
+    from deeptutor.reading.extensions import get_reading_extension_registry
+
+    return get_reading_extension_registry().all()

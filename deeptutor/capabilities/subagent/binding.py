@@ -32,6 +32,34 @@ def connection_for_turn(context: UnifiedContext) -> dict[str, str] | None:
 
 
 def _resolve(context: UnifiedContext) -> dict[str, str] | None:
+    group_id = str(context.runtime.partner_discussion_group_id or "").strip()
+    if group_id:
+        from deeptutor.services.partner_groups.manager import get_partner_group_manager
+
+        group = get_partner_group_manager().get_group(group_id)
+        # Keep an unavailable selection active so the consult reports the error;
+        # never silently answer as though a requested discussion had happened.
+        return {
+            "name": group.name if group else group_id,
+            "kind": "partner_group",
+            "partner_id": group_id,
+            "cwd": "",
+        }
+
+    partner_id = str(context.runtime.consult_partner_id or "").strip()
+    if partner_id:
+        from deeptutor.multi_user.partner_access import visible_partner_cards
+
+        partner = next((p for p in visible_partner_cards() if p["partner_id"] == partner_id), None)
+        return {
+            "name": partner["name"] if partner else partner_id,
+            "kind": "partner",
+            "partner_id": partner_id,
+            "cwd": "",
+        }
+
+    if not context.knowledge_bases:
+        return None
     from deeptutor.multi_user.knowledge_access import resolve_kb_metadata
 
     for ref in context.knowledge_bases or []:
@@ -42,7 +70,7 @@ def _resolve(context: UnifiedContext) -> dict[str, str] | None:
         if not meta or meta.get("type") != SUBAGENT_KB_TYPE:
             continue
         kind = str(meta.get("agent_kind") or "").strip()
-        if not kind:
+        if not kind or kind == "partner":
             continue
         return {
             "name": str(meta.get("name") or ref),

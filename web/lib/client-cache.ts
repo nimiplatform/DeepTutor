@@ -1,3 +1,5 @@
+import { activeWorkspaceId } from "./workspace-scope";
+
 type CacheEntry<T> = {
   data?: T;
   promise?: Promise<T>;
@@ -9,6 +11,14 @@ const clientCache = new Map<string, CacheEntry<unknown>>();
 interface CacheOptions {
   ttlMs?: number;
   force?: boolean;
+}
+
+/** A synchronous, workspace-scoped snapshot for views re-entered during SPA navigation. */
+export function readClientCache<T>(key: string): T | undefined {
+  if (typeof window === "undefined") return undefined;
+  const cached = clientCache.get(`${key}:workspace=${activeWorkspaceId()}`) as
+    CacheEntry<T> | undefined;
+  return cached && cached.expiresAt > Date.now() ? cached.data : undefined;
 }
 
 export async function withClientCache<T>(
@@ -23,6 +33,7 @@ export async function withClientCache<T>(
   }
 
   const now = Date.now();
+  key = `${key}:workspace=${activeWorkspaceId()}`;
   const cached = clientCache.get(key) as CacheEntry<T> | undefined;
   if (!force && cached) {
     if (cached.data !== undefined && cached.expiresAt > now) {
@@ -34,19 +45,23 @@ export async function withClientCache<T>(
   }
 
   const promise = loader()
-    .then((value) => {
-      clientCache.set(key, {
-        data: value,
-        expiresAt: Date.now() + ttlMs,
-      });
+    .then(value => {
+      // Invalidated or superseded requests must not repopulate stale data.
+      if (clientCache.get(key)?.promise === promise) {
+        clientCache.set(key, {
+          data: value,
+          expiresAt: Date.now() + ttlMs,
+        });
+      }
       return value;
     })
-    .catch((error) => {
-      clientCache.delete(key);
+    .catch(error => {
+      if (clientCache.get(key)?.promise === promise) clientCache.delete(key);
       throw error;
     });
 
   clientCache.set(key, {
+    data: cached?.data,
     promise,
     expiresAt: now + ttlMs,
   });

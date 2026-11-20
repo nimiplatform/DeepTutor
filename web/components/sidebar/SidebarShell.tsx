@@ -1,86 +1,57 @@
 "use client";
 
+import { navigateTask } from "@/lib/workspace-scope";
 import Image from "next/image";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
+  Suspense,
   type ReactNode,
+  type CSSProperties,
 } from "react";
 import { useAppShell } from "@/context/AppShellContext";
-import { BookText, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, PanelLeftClose, Search, SquarePen } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import SessionList from "@/components/SessionList";
+import { useChatWorkspaces } from "@/hooks/useChatWorkspaces";
+
 import { useSidebarDrawer } from "@/components/layout/AppShell";
 import { useDevice } from "@/hooks/useDevice";
-import { VersionBadge } from "@/components/sidebar/VersionBadge";
 import NimiConnectionControl from "@/components/settings/NimiConnectionControl";
 import type {
   SessionOrganizationPatch,
   SessionSummary,
 } from "@/lib/session-api";
 import type { MasteryTopicLabel } from "@/lib/learning-api";
+import { isNoteSession } from "@/lib/mastery-session";
 import type { ReadingCollectionLabel } from "@/lib/reading-workspace-api";
-import type { StudyCourse } from "@/lib/courses-api";
-import { SidebarNav } from "@/components/sidebar/SidebarNav";
-import { SECONDARY_NAV, isNavActive } from "@/components/sidebar/nav-entries";
-import {
-  mergeManualOrder,
-  readSessionOrder,
-  writeSessionOrder,
-} from "@/lib/sidebar-layout";
+import { useSidebarResize } from "@/hooks/useSidebarResize";
+import { CategoryBody, CategoryTabs, useCategoryNavigation } from "@/components/sidebar/CategoryNavigation";
+import { isLearningSession } from "@/lib/navigation";
+import Tooltip from "@/shared/ui/Tooltip";
+import { WorkspaceMenu } from "@/components/sidebar/WorkspaceMenu";
+import { SHORTCUTS, matchesShortcut } from "@/lib/shortcuts";
+import { RecordHeader, useRecordView } from "@/components/sidebar/RecordList";
+import type { LearningSessions } from "@/components/sidebar/LearningNavigation";
 
-const GITHUB_REPO_URL = "https://github.com/HKUDS/DeepTutor";
-const DOCS_URL = "https://deeptutor.info/";
+// The fallback history list is needed only by shells without organization.
+const SessionList = dynamic(() => import("@/components/SessionList"), { ssr: false });
 
-// The GitHub octocat mark (CC0 path from `simple-icons`, identical to the
-// `github` entry in `lib/brand-icons.generated.ts`). Kept inline instead of
-// going through <BrandGlyph/> so the whole generated brand-icon table — every
-// store logo, ~95KB — does not ride along in the app-shell chunk that every
-// route shares, for the sake of one footer link. Store surfaces that actually
-// render brand rows still import the table through BrandIcon directly.
-const GITHUB_MARK_PATH =
-  "M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12";
-
-function GitHubMarkLink({
-  className = "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)]/55 transition-colors hover:bg-[var(--background)]/50 hover:text-[var(--muted-foreground)]",
-  size = 15,
-}: {
-  className?: string;
-  size?: number;
-}) {
-  return (
-    <a
-      href={GITHUB_REPO_URL}
-      target="_blank"
-      rel="noreferrer noopener"
-      title="GitHub"
-      aria-label="GitHub"
-      className={className}
-    >
-      <svg
-        viewBox="0 0 24 24"
-        width={size}
-        height={size}
-        fill="currentColor"
-        role="presentation"
-        aria-hidden
-        className="text-[#181717] dark:text-white"
-      >
-        <path d={GITHUB_MARK_PATH} />
-      </svg>
-    </a>
-  );
-}
+// Loaded on first ⌘K, with the learning and partner indexes it searches.
+const CommandPalette = dynamic(
+  () => import("@/components/sidebar/CommandPalette").then((module) => module.CommandPalette),
+  { ssr: false },
+);
 
 // Session data arrives after mount; defer its organization UI with it so
 // every workspace route does not download it as part of the initial shell.
 const OrganizedSessionList = dynamic(
-  () => import("@/components/courses/OrganizedSessionList"),
+  () => import("@/components/sessions/OrganizedSessionList"),
   {
     ssr: false,
     loading: () => (
@@ -88,7 +59,7 @@ const OrganizedSessionList = dynamic(
         {[1, 2, 3].map((i) => (
           <div
             key={i}
-            className="h-4 w-3/4 animate-pulse rounded bg-[var(--muted)]/40"
+            className="h-4 w-3/4 animate-pulse rounded bg-muted/40"
           />
         ))}
       </div>
@@ -96,7 +67,14 @@ const OrganizedSessionList = dynamic(
   },
 );
 
-interface SidebarShellProps {
+export interface SidebarShellProps {
+  /** Reuse the shell's resizing/collapse behavior with embedded navigation. */
+  homeSlot?: (collapsed: boolean) => ReactNode;
+  bodySlot?: (collapsed: boolean) => ReactNode;
+  footerOverride?: (collapsed: boolean) => ReactNode;
+  brandHref?: string;
+  initialWidth?: number;
+  widthStorageKey?: string;
   sessions?: SessionSummary[];
   activeSessionId?: string | null;
   /** Conversations the caller is streaming right now; they sort to the top. */
@@ -108,7 +86,6 @@ interface SidebarShellProps {
   onSelectSession?: (sessionId: string) => void | Promise<void>;
   onRenameSession?: (sessionId: string, title: string) => void | Promise<void>;
   onDeleteSession?: (sessionId: string) => void | Promise<void>;
-  courses?: StudyCourse[];
   /** Topic labels for grouping mastery study conversations under their path. */
   masteryTopics?: MasteryTopicLabel[];
   /** Collection labels for grouping reading conversations under their shelf. */
@@ -117,8 +94,6 @@ interface SidebarShellProps {
     sessionId: string,
     patch: SessionOrganizationPatch,
   ) => void | Promise<void>;
-  /** Optional recycle-bin section rendered below the session list. */
-  recycleBinSlot?: ReactNode;
   /**
    * Footer content rendered below the nav. Pass a render function to receive
    * the current ``collapsed`` state so footer items (e.g. Admin / Sign out) can
@@ -128,6 +103,12 @@ interface SidebarShellProps {
 }
 
 export function SidebarShell({
+  homeSlot,
+  bodySlot,
+  footerOverride,
+  brandHref = "/",
+  initialWidth = 272,
+  widthStorageKey,
   sessions = [],
   activeSessionId = null,
   liveSessionIds,
@@ -140,59 +121,38 @@ export function SidebarShell({
   masteryTopics = [],
   readingCollections = [],
   onOrganizeSession,
-  recycleBinSlot,
   footerSlot,
 }: SidebarShellProps) {
-  const pathname = usePathname();
+  const categoryNav = useCategoryNavigation();
   const router = useRouter();
   const { t } = useTranslation();
   const { sidebarCollapsed, setSidebarCollapsed: setCollapsed } = useAppShell();
   const { isMobile } = useDevice();
   const drawer = useSidebarDrawer();
   const recentsScrollRef = useRef<HTMLDivElement>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  // The row menus offer these as move destinations.
+  const { workspaces } = useChatWorkspaces();
 
   // Inside the mobile drawer the icon-only rail is pointless — the panel is
   // already hidden when you don't want it, so it always opens fully expanded
   // regardless of the persisted desktop preference.
   const collapsed = sidebarCollapsed && !isMobile;
+  const resize = useSidebarResize(collapsed || isMobile, initialWidth, widthStorageKey);
 
-  /** Dismiss the drawer on nav clicks that actually navigate in-place. */
-  const closeDrawerOnNav = (event: React.MouseEvent) => {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.button === 1)
-      return;
-    drawer?.close();
-  };
-
+  // The account links live in the workspace menu, which always shows them in
+  // full, open sidebar or rail.
   const renderedFooter =
-    typeof footerSlot === "function" ? footerSlot(collapsed) : footerSlot;
-  // The order the learner dragged the history region into — conversation ids
-  // and group ids in one list, since the two are peers there. Like the
-  // collapse preference above it is per-machine view state, hydrated after
-  // mount.
-  const [sessionOrder, setSessionOrder] = useState<string[]>([]);
-  const sessionOrderRef = useRef<string[]>([]);
+    typeof footerSlot === "function" ? footerSlot(false) : footerSlot;
+  // Conversations read like the learning and partner records: by day, in
+  // the order the learner picked, searchable in place.
+  const chatView = useRecordView("deeptutor.navigation.chats.sort");
 
-  useEffect(() => {
-    const stored = readSessionOrder();
-    sessionOrderRef.current = stored;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSessionOrder(stored);
-  }, []);
-
-  // A drag only ever speaks for the entries on screen, so it is merged into
-  // the stored order rather than replacing it.
-  const handleReorderSessions = useCallback((nextIds: string[]) => {
-    const merged = mergeManualOrder(sessionOrderRef.current, nextIds);
-    sessionOrderRef.current = merged;
-    setSessionOrder(merged);
-    writeSessionOrder(merged);
-  }, []);
-
-  const handleResetSessionOrder = useCallback(() => {
-    sessionOrderRef.current = [];
-    setSessionOrder([]);
-    writeSessionOrder([]);
-  }, []);
+  const startNewChat = () => {
+    drawer?.close();
+    onNewChat?.();
+    navigateTask("/chat", router.push);
+  };
 
   const handleHomeClick = (event: React.MouseEvent) => {
     // Always reset to a fresh session (mirrors the old "New Chat" affordance);
@@ -201,250 +161,307 @@ export function SidebarShell({
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.button === 1)
       return;
     event.preventDefault();
-    drawer?.close();
-    onNewChat?.();
-    router.push("/chat");
+    startNewChat();
   };
+
+  // Shell shortcuts. The handler is re-bound after every render so it always
+  // sees the current category list; the listener itself is installed once.
+  const hotkeys = useRef<(event: KeyboardEvent) => void>(() => {});
+  const handleHotkey = (event: KeyboardEvent) => {
+    if (matchesShortcut(event, SHORTCUTS.search)) {
+      event.preventDefault();
+      setPaletteOpen((open) => !open);
+    } else if (matchesShortcut(event, SHORTCUTS.newChat)) {
+      event.preventDefault();
+      startNewChat();
+    } else {
+      const index = categoryNav.categories.findIndex((_, position) =>
+        matchesShortcut(event, SHORTCUTS.category(position)),
+      );
+      if (index < 0) return;
+      event.preventDefault();
+      const target = categoryNav.categories[index];
+      categoryNav.select(target.id);
+      if (collapsed) navigateTask(target.href, router.push);
+    }
+  };
+  useLayoutEffect(() => {
+    hotkeys.current = handleHotkey;
+  });
+  useEffect(() => {
+    if (bodySlot) return;
+    const onKeyDown = (event: KeyboardEvent) => hotkeys.current(event);
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [bodySlot]);
+
+  const palette =
+    !bodySlot && paletteOpen ? (
+      <CommandPalette
+        open
+        onClose={() => setPaletteOpen(false)}
+        categories={categoryNav.categories}
+        allowedSurfaces={categoryNav.allowedSurfaces}
+        sessions={sessions}
+        onSelectSession={onSelectSession}
+        onNewChat={startNewChat}
+      />
+    ) : null;
 
   // Everything the learner has, minus the archived and minus the tutor threads
   // that render nested under the conversation that spawned them.
   //
-  // No recents window any more. The region used to cut the home conversations
-  // at eight, which was survivable only because the "Chat" heading above them
-  // printed the real count; with the conversations listed directly there is
-  // nothing on screen to say that older ones exist, and a sidebar that quietly
-  // drops your conversation from yesterday is worse than one you scroll.
-  const visibleSessions = sessions.filter(
+  // Keep the complete index here. OrganizedSessionList limits the initial
+  // rendering and exposes older conversations through Show more.
+  // The product shell files learning conversations under Learning only; an
+  // embedded body (the /preview demo) brings its own lists.
+  const listed = sessions.filter(
     (session) =>
-      !session.preferences?.archived && !session.preferences?.parent_session_id,
+      !session.preferences?.archived &&
+      !session.preferences?.parent_session_id &&
+      !isNoteSession(session),
+  );
+  const visibleSessions = bodySlot ? listed : listed.filter((session) => !isLearningSession(session));
+
+  // Learning conversations are filed under the record they were held in; the
+  // learning shelf draws them with the same rows and actions as these.
+  const learningSessions: LearningSessions | undefined =
+    !bodySlot && showSessions && onSelectSession && onRenameSession && onDeleteSession && onOrganizeSession
+      ? {
+          rows: listed.filter(isLearningSession),
+          activeSessionId,
+          render: (rows) => (
+            <OrganizedSessionList
+              sessions={rows}
+              workspaces={workspaces}
+              nested={false}
+              times
+              activeSessionId={activeSessionId}
+              liveSessionIds={liveSessionIds}
+              onSelect={(sessionId) => {
+                drawer?.close();
+                return onSelectSession(sessionId);
+              }}
+              onRename={onRenameSession}
+              onDelete={onDeleteSession}
+              onOrganize={onOrganizeSession}
+            />
+          ),
+        }
+      : undefined;
+
+  // Conversation history follows the category's entries in the same scroller.
+  const sessionContent = (
+    <>
+      {showSessions &&
+      onSelectSession &&
+      onRenameSession &&
+      onDeleteSession &&
+      onOrganizeSession ? (
+        <section className="dt-navigation-section dt-session-section">
+          <RecordHeader
+            title={t("navigation.chatRecords")}
+            count={loadingSessions ? undefined : visibleSessions.length}
+            view={chatView}
+            searchLabel={t("navigation.searchChats")}
+          />
+          {loadingSessions ? (
+            <SessionList
+              sessions={[]}
+              activeSessionId={activeSessionId}
+              loading
+              onSelect={onSelectSession}
+              onRename={onRenameSession}
+              onDelete={onDeleteSession}
+              compact
+            />
+          ) : (
+            <OrganizedSessionList
+              sessions={visibleSessions}
+              workspaces={workspaces}
+              timeline={chatView}
+              masteryTopics={masteryTopics}
+              readingCollections={readingCollections}
+              activeSessionId={activeSessionId}
+              liveSessionIds={liveSessionIds}
+              onSelect={(sessionId) => {
+                drawer?.close();
+                return onSelectSession(sessionId);
+              }}
+              onRename={onRenameSession}
+              onDelete={onDeleteSession}
+              onOrganize={onOrganizeSession}
+            />
+          )}
+        </section>
+      ) : null}
+    </>
   );
 
   /* ---- Collapsed state ---- */
   if (collapsed) {
     return (
-      <aside className="group/sb relative flex h-dvh w-[60px] shrink-0 flex-col items-center bg-[var(--secondary)] py-3 transition-all duration-200">
-        {/* Header: logo + collapse toggle (toggle replaces logo on hover) */}
-        <div className="relative mb-2 flex h-9 w-9 items-center justify-center">
-          <Link
-            href="/"
-            aria-label="DeepTutor"
-            className="flex items-center justify-center transition-opacity duration-150 group-hover/sb:opacity-0"
-          >
-            <Image
-              src="/logo.png"
-              alt="DeepTutor"
-              width={22}
-              height={22}
-              className="h-[22px] w-[22px] rounded-md"
-            />
+      <aside className={`${bodySlot ? "" : "dt-product-sidebar"} dt-rail relative flex h-dvh w-[60px] shrink-0 flex-col items-center bg-[var(--secondary)] py-3 transition-all duration-200`}>
+        {/* The open sidebar's header, stood on end: the workspace (with its
+            menu of settings and account), the way back out, then search. */}
+        {bodySlot ? (
+          <Link href={brandHref} prefetch={false} aria-label="DeepTutor" className="dt-rail-brand">
+            <Image src="/brand/color-logo.png" alt="DeepTutor" width={22} height={22} className="h-[22px] w-[22px] rounded-md" />
           </Link>
+        ) : (
+          <WorkspaceMenu compact accountSlot={renderedFooter} onNavigate={() => drawer?.close()} />
+        )}
+        <Tooltip label={t("Expand sidebar")} side="right">
           <button
+            type="button"
             onClick={() => setCollapsed(false)}
-            className="absolute inset-0 flex items-center justify-center rounded-lg text-[var(--muted-foreground)] opacity-0 transition-all duration-150 hover:bg-[var(--background)]/60 hover:text-[var(--foreground)] group-hover/sb:opacity-100"
+            className="dt-nav-icon"
             aria-label={t("Expand sidebar")}
           >
-            <PanelLeftOpen size={16} />
+            <ChevronsRight size={17} strokeWidth={1.6} />
           </button>
+        </Tooltip>
+        <div aria-hidden className="dt-rail-divider" />
+        {!bodySlot && (
+          <Tooltip label={t("navigation.search")} side="right" shortcut={SHORTCUTS.search}>
+            <button
+              type="button"
+              className="dt-nav-icon"
+              aria-label={t("navigation.search")}
+              aria-haspopup="dialog"
+              onClick={() => setPaletteOpen(true)}
+            >
+              <Search size={17} strokeWidth={1.6} />
+            </button>
+          </Tooltip>
+        )}
+
+        {homeSlot ? homeSlot(true) : <CategoryTabs nav={categoryNav} collapsed />}
+        <div className="min-h-0 w-full flex-1 overflow-y-auto overscroll-contain">
+          {bodySlot ? bodySlot(true) : <CategoryBody nav={categoryNav} collapsed sessions={null} />}
         </div>
 
-        {/* Primary nav — order and folding are the learner's, see SidebarNav */}
-        <SidebarNav
-          collapsed
-          onHomeClick={handleHomeClick}
-          onNavigate={closeDrawerOnNav}
-        />
-
-        <div className="flex-1" />
-
-        {/* Secondary nav + footer */}
-        <div className="flex w-full flex-col items-center gap-1 px-1.5">
-          <div className="my-1 h-px w-7 bg-[var(--border)]/40" />
-          {SECONDARY_NAV.map((item) => {
-            const active = isNavActive(pathname, item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                title={t(item.label) as string}
-                className={`relative flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-150 ${
-                  active
-                    ? "bg-[var(--accent)] text-[var(--foreground)] shadow-sm"
-                    : "text-[var(--foreground)]/85 hover:bg-[var(--background)]/60 hover:text-[var(--foreground)]"
-                }`}
-              >
-                <item.icon size={18} strokeWidth={active ? 2 : 1.6} />
+        {footerOverride ? footerOverride(true) : (
+          <div className="dt-rail-foot">
+            <Tooltip label={t("navigation.newChat")} side="right" shortcut={SHORTCUTS.newChat}>
+              <Link prefetch={false} href="/chat" onClick={handleHomeClick} aria-label={t("navigation.newChat")} className="dt-nav-icon">
+                <SquarePen size={17} strokeWidth={1.6} />
               </Link>
-            );
-          })}
-          <NimiConnectionControl collapsed />
-          {renderedFooter}
-          <a
-            href={DOCS_URL}
-            target="_blank"
-            rel="noreferrer noopener"
-            title={t("Docs") as string}
-            aria-label={t("Docs") as string}
-            className="mt-1 flex h-9 w-9 items-center justify-center rounded-xl text-[var(--muted-foreground)]/70 transition-colors hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
-          >
-            <BookText
-              size={15}
-              strokeWidth={1.8}
-              className="text-blue-600 dark:text-blue-400"
-            />
-          </a>
-          <GitHubMarkLink className="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--muted-foreground)]/70 transition-colors hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]" />
-          <VersionBadge collapsed />
-        </div>
+            </Tooltip>
+            <NimiConnectionControl collapsed />
+          </div>
+        )}
+        {palette}
       </aside>
     );
   }
 
   /* ---- Expanded state ---- */
   return (
-    <aside className="flex w-[220px] h-dvh shrink-0 flex-col bg-[var(--secondary)] transition-all duration-200">
-      {/* Header: logo + collapse toggle */}
-      <div className="flex h-14 items-center justify-between px-4">
-        <Link href="/" className="group flex items-center gap-1.5">
-          <Image
-            src="/logo.png"
-            alt="DeepTutor"
-            width={22}
-            height={22}
-            className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105"
-          />
-          <Image
-            src="/banner.png"
-            alt="DeepTutor"
-            width={897}
-            height={236}
-            priority
-            className="h-[22px] w-auto transition-transform duration-200 group-hover:scale-105"
-          />
-        </Link>
-        {/* The rail is a desktop affordance; in the drawer the scrim and the
-            top-bar toggle already own "make this go away". */}
-        <button
-          onClick={() => setCollapsed(true)}
-          className="rounded-md p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] max-md:hidden"
-          aria-label={t("Collapse sidebar")}
-        >
-          <PanelLeftClose size={15} />
-        </button>
-      </div>
-
-      {/* Primary nav */}
-      <SidebarNav
-        collapsed={false}
-        onHomeClick={handleHomeClick}
-        onNavigate={closeDrawerOnNav}
-      />
-
-      {/* Chat history — its own region below the nav, takes remaining height */}
-      {showSessions && onSelectSession && onRenameSession && onDeleteSession ? (
-        <section className="mt-3 flex min-h-0 flex-1 flex-col">
-          <div
-            ref={recentsScrollRef}
-            className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 pt-0.5"
+    <aside
+      style={{ "--sidebar-width": `${resize.width}px` } as CSSProperties}
+      className={`${bodySlot ? "" : "dt-product-sidebar"} relative flex h-dvh w-[var(--sidebar-width)] max-w-[45vw] shrink-0 flex-col bg-[var(--secondary)] max-md:w-[220px] max-md:max-w-[85vw]`}
+    >
+      {bodySlot ? (
+        <div className="flex h-[52px] shrink-0 items-center justify-between px-4">
+          <Link href={brandHref} prefetch={false} className="group flex items-center gap-1.5">
+            <Image
+              src="/brand/color-logo.png"
+              alt="DeepTutor"
+              width={22}
+              height={22}
+              className="h-[22px] w-[22px] transition-transform duration-200 group-hover:scale-105"
+            />
+            <Image
+              src="/brand/color-word.png"
+              alt="DeepTutor"
+              width={1200}
+              height={310}
+              priority
+              className="h-[22px] w-auto transition-transform duration-200 group-hover:scale-105"
+            />
+          </Link>
+          {/* The rail is a desktop affordance; in the drawer the scrim and the
+              top-bar toggle already own "make this go away". */}
+          <button
+            onClick={() => setCollapsed(true)}
+            className="rounded-md p-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] max-md:hidden"
+            aria-label={t("Collapse sidebar")}
           >
-            {loadingSessions ? (
-              <SessionList
-                sessions={[]}
-                activeSessionId={activeSessionId}
-                loading
-                onSelect={onSelectSession}
-                onRename={onRenameSession}
-                onDelete={onDeleteSession}
-                compact
-              />
-            ) : onOrganizeSession ? (
-              <OrganizedSessionList
-                sessions={visibleSessions}
-                // Course grouping temporarily hidden pending further product
-                // work; passing [] keeps the list flat without touching the
-                // course data callers still fetch.
-                courses={[]}
-                masteryTopics={masteryTopics}
-                readingCollections={readingCollections}
-                activeSessionId={activeSessionId}
-                liveSessionIds={liveSessionIds}
-                manualOrder={sessionOrder}
-                onReorder={handleReorderSessions}
-                onResetOrder={handleResetSessionOrder}
-                scrollRef={recentsScrollRef}
-                onSelect={(sessionId) => {
-                  drawer?.close();
-                  return onSelectSession(sessionId);
-                }}
-                onRename={onRenameSession}
-                onDelete={onDeleteSession}
-                onOrganize={onOrganizeSession}
-              />
-            ) : (
-              <SessionList
-                sessions={visibleSessions}
-                activeSessionId={activeSessionId}
-                onSelect={(sessionId) => {
-                  drawer?.close();
-                  return onSelectSession(sessionId);
-                }}
-                onRename={onRenameSession}
-                onDelete={onDeleteSession}
-                compact
-              />
-            )}
-          </div>
-        </section>
-      ) : null}
+            <PanelLeftClose size={15} />
+          </button>
+        </div>
+      ) : (
+        <div className="dt-sidebar-header">
+          <WorkspaceMenu accountSlot={renderedFooter} onNavigate={() => drawer?.close()} />
+          <Tooltip label={t("navigation.search")} side="bottom" shortcut={SHORTCUTS.search}>
+            <button
+              type="button"
+              className="dt-nav-icon dt-sidebar-search"
+              aria-label={t("navigation.search")}
+              aria-haspopup="dialog"
+              onClick={() => setPaletteOpen(true)}
+            >
+              <Search size={16} strokeWidth={1.7} />
+            </button>
+          </Tooltip>
+          {/* The rail is a desktop affordance; in the drawer the scrim and the
+              top-bar toggle already own "make this go away". */}
+          <Tooltip label={t("Collapse sidebar")} side="bottom">
+            <button
+              type="button"
+              onClick={() => setCollapsed(true)}
+              className="dt-nav-icon max-md:hidden"
+              aria-label={t("Collapse sidebar")}
+            >
+              <ChevronsLeft size={17} strokeWidth={1.6} />
+            </button>
+          </Tooltip>
+        </div>
+      )}
 
-      {recycleBinSlot}
+      {homeSlot ? homeSlot(false) : <CategoryTabs nav={categoryNav} collapsed={false} />}
 
-      {/* With no session list at all, fill the gap above the footer. */}
-      {(!showSessions ||
-        !onSelectSession ||
-        !onRenameSession ||
-        !onDeleteSession) && <div className="flex-1" />}
+      {/* Partner previews stay visible while their conversation list scrolls. */}
+      <div
+        ref={recentsScrollRef}
+        className={`min-h-0 flex-1 ${!bodySlot && ["partners", "learning"].includes(categoryNav.category) ? "overflow-hidden" : "overflow-y-auto overscroll-contain pb-2"}`}
+      >
+        <Suspense fallback={<div aria-busy="true" className="mx-4 mt-5 h-3 w-28 rounded bg-muted" />}>
+          {bodySlot ? bodySlot(false) : <CategoryBody nav={categoryNav} collapsed={false} sessions={sessionContent} learningSessions={learningSessions} />}
+        </Suspense>
+      </div>
 
       {/* Secondary nav + footer */}
-      <div className="border-t border-[var(--border)]/40 px-2 py-2">
-        {SECONDARY_NAV.map((item) => {
-          const active = isNavActive(pathname, item.href);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={closeDrawerOnNav}
-              className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] transition-colors ${
-                active
-                  ? "bg-[var(--accent)] font-medium text-[var(--foreground)]"
-                  : "text-[var(--foreground)]/85 hover:bg-[var(--background)]/60 hover:text-[var(--foreground)]"
-              }`}
-            >
-              <item.icon size={16} strokeWidth={active ? 1.9 : 1.5} />
-              <span>{t(item.label)}</span>
+      {footerOverride ? footerOverride(false) : (
+        <div className="dt-sidebar-footer">
+          <Tooltip label={t("navigation.newChat")} side="top" shortcut={SHORTCUTS.newChat} as="div" className="block w-full">
+            <Link prefetch={false} href="/chat" onClick={handleHomeClick} className="dt-new-conversation">
+              <SquarePen size={16} strokeWidth={1.7} />
+              <span>{t("navigation.newChat")}</span>
             </Link>
-          );
-        })}
-        <NimiConnectionControl />
-        {renderedFooter}
-        <div className="mt-0.5 flex items-center gap-0.5">
-          <VersionBadge />
-          <a
-            href={DOCS_URL}
-            target="_blank"
-            rel="noreferrer noopener"
-            title={t("Docs") as string}
-            aria-label={t("Docs") as string}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)]/55 transition-colors hover:bg-[var(--background)]/50 hover:text-[var(--muted-foreground)]"
-          >
-            <BookText
-              size={15}
-              strokeWidth={1.9}
-              className="text-blue-600 dark:text-blue-400"
-            />
-          </a>
-          <GitHubMarkLink />
+          </Tooltip>
+          <NimiConnectionControl />
         </div>
-      </div>
+      )}
+      {!isMobile && (
+        <div
+          role="separator"
+          aria-label={t("Resize sidebar")}
+          aria-orientation="vertical"
+          aria-valuemin={resize.min}
+          aria-valuemax={resize.max}
+          aria-valuenow={resize.width}
+          tabIndex={0}
+          {...resize.handleProps}
+          className="group/resize absolute inset-y-0 -right-1 z-30 w-2 touch-none cursor-col-resize outline-none max-md:hidden"
+        >
+          <div
+            className={`mx-auto h-full w-0.5 transition-colors group-hover/resize:bg-[var(--ring)] group-focus-visible/resize:bg-[var(--ring)] ${resize.resizing ? "bg-[var(--ring)]" : "bg-transparent"}`}
+          />
+        </div>
+      )}
+      {palette}
     </aside>
   );
 }

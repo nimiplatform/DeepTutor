@@ -14,13 +14,9 @@ import shutil
 from typing import Any
 import uuid
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows development fallback
-    fcntl = None  # type: ignore[assignment]
-
 from deeptutor.services.file_io import atomic_write_json
 
+from .migration_lock import exclusive_lock
 from .protocol import SessionRepository
 
 
@@ -46,14 +42,8 @@ class LegacyMigrationReport:
 @contextmanager
 def _migration_lock(archive_root: Path) -> Iterator[None]:
     archive_root.mkdir(parents=True, exist_ok=True)
-    with (archive_root / ".migration.lock").open("a+b") as handle:
-        if fcntl is not None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    with exclusive_lock(archive_root / ".migration.lock"):
+        yield
 
 
 def _timestamp() -> str:
@@ -262,13 +252,24 @@ async def migrate_all_legacy_chat_scopes(*, dry_run: bool = False) -> list[dict[
             continue
         seen_scopes.add(user.scope.cache_key)
         with user_context(user):
-            paths = get_path_service()
-            migrator = LegacyChatSessionMigrator(
-                get_session_store(),
-                paths.get_session_file("chat"),
-                paths.get_user_root() / "archive" / "legacy-chat",
-            )
-            reports.append((await migrator.migrate(dry_run=dry_run)).to_dict())
+            from deeptutor.services.workspace.activity import acquire_activity
+            from deeptutor.services.workspace.models import WorkspaceError
+
+            try:
+                activity = acquire_activity()
+            except WorkspaceError as exc:
+                reports.append({"user_id": user.id, "skipped": str(exc)})
+                continue
+            try:
+                paths = get_path_service()
+                migrator = LegacyChatSessionMigrator(
+                    get_session_store(),
+                    paths.get_session_file("chat"),
+                    paths.get_user_root() / "archive" / "legacy-chat",
+                )
+                reports.append((await migrator.migrate(dry_run=dry_run)).to_dict())
+            finally:
+                activity.close()
     return reports
 
 

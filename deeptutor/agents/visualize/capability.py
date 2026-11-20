@@ -7,17 +7,18 @@ import logging
 from typing import Any
 
 from deeptutor.agents._shared.capability_result import emit_capability_result
-from deeptutor.core.capability_protocol import CapabilityManifest, TurnCapability
+from deeptutor.core.capability_protocol import TurnCapability
 from deeptutor.core.context import UnifiedContext
 from deeptutor.core.trace import merge_trace_metadata
 from deeptutor.i18n import StatusI18n
 from deeptutor.runtime.agentic.usage import UsageTracker
+from deeptutor.runtime.bootstrap.builtin_capabilities import builtin_capability_manifest
 from deeptutor.runtime.request_contracts import (
     VisualizeRequestConfig,
-    get_capability_request_schema,
     validate_visualize_request_config,
 )
 from deeptutor.runtime.stream_bus import StreamBus
+from deeptutor.services.config.capabilities_settings import get_visualize_params
 from deeptutor.visualizers.protocol import (
     REQUESTED_VISUALIZER_KEY,
     VISUALIZATION_RESULT_KEY,
@@ -34,17 +35,23 @@ logger = logging.getLogger(__name__)
 _TOOL_CALLING_DISABLED_WARNING = (
     "Tool calling is disabled for {target}, but a visualization only reaches "
     "the canvas through the submit_visualization tool call. Enable it in "
-    "Settings → Models → LLM → Capabilities → Tool calling → Supported."
+    "Settings → Language models → Model capabilities → Tool calling → Supported."
 )
 _NO_PAYLOAD_TOOL_CALLING_DISABLED = (
     "No visualization was committed: tool calling is disabled for {target}, so "
     "the model could not call submit_visualization — the only way to hand a "
     "payload to the canvas. Local servers (LM Studio, Ollama, vLLM, llama.cpp) "
     "are opted out by default; declare the model as tool-capable in "
-    "Settings → Models → LLM → Capabilities → Tool calling → Supported, "
+    "Settings → Language models → Model capabilities → Tool calling → Supported, "
     "then run the visualization again."
 )
-_NO_PAYLOAD = "The visualization agent finished without a valid canvas payload."
+_NO_PAYLOAD = (
+    "The visualization agent finished without a valid canvas payload. A "
+    "reasoning model can spend most of its output budget on internal "
+    "thinking before the submit_visualization call is even written, which "
+    "cuts the call off mid-argument. If this repeats, raise Max tokens for "
+    "Visualize in Settings → Capabilities → Visualize."
+)
 
 # Stages exposed in the manifest. The first three cover the text-emitting
 # path (svg/chartjs/mermaid/html); the rest cover the manim subprocess
@@ -80,17 +87,7 @@ _VISUALIZE_SAFE_BUILTINS = (
 
 
 class VisualizeCapability(TurnCapability):
-    manifest = CapabilityManifest(
-        name="visualize",
-        description=(
-            "Generate a validated visualization with any installed visualizer "
-            "type, or render a Manim animation/storyboard artifact."
-        ),
-        stages=_VISUALIZE_STAGES,
-        tools_used=["submit_visualization"],
-        cli_aliases=["visualize", "viz"],
-        request_schema=get_capability_request_schema("visualize"),
-    )
+    manifest = builtin_capability_manifest("visualize")
 
     async def run(self, context: UnifiedContext, stream: StreamBus) -> None:
         request_config = validate_visualize_request_config(context.config_overrides)
@@ -168,11 +165,21 @@ class VisualizeCapability(TurnCapability):
             context.allowed_builtin_tools = [
                 name for name in _VISUALIZE_SAFE_BUILTINS if name in allowed
             ]
+        # Read the visualize budget instead of stating it here: a reasoning
+        # model can spend most of one round on chain-of-thought, which truncated
+        # the submit_visualization arguments mid-JSON and left a blank canvas
+        # with no error (#1546). The defaults are the values this call used to
+        # hardcode, so an untouched install behaves exactly as before.
+        try:
+            params = get_visualize_params()
+        except Exception as exc:  # pragma: no cover - defensive config read
+            logger.warning("Failed to load visualize params, using defaults: %s", exc)
+            params = {}
         pipeline = AgenticChatPipeline(
             language=context.language,
             max_rounds=5,
-            temperature=0.15,
-            max_tokens=16000,
+            temperature=params.get("temperature", 0.15),
+            max_tokens=params.get("max_tokens", 16000),
             event_source=self.name,
             event_stage="generating",
             emit_result=False,
@@ -269,6 +276,9 @@ class VisualizeCapability(TurnCapability):
         import importlib.util
         import time
 
+        from deeptutor.modules.catalog import require_module
+
+        require_module("renderer-manim")
         if importlib.util.find_spec("manim") is None:
             raise RuntimeError(
                 "Manim rendering requires optional dependencies. "
@@ -288,6 +298,7 @@ class VisualizeCapability(TurnCapability):
             output_mode=output_mode,  # type: ignore[arg-type]
             quality=visualize_config.quality,
             style_hint=visualize_config.style_hint,
+            enable_visual_review=visualize_config.enable_visual_review,
         )
 
         llm_config = get_llm_config()
@@ -297,6 +308,7 @@ class VisualizeCapability(TurnCapability):
             base_url=llm_config.base_url,
             api_version=llm_config.api_version,
             language=context.language,
+            enable_visual_review=request_config.enable_visual_review,
             trace_callback=self._build_trace_bridge(stream, i18n=i18n),
             workspace_output_dir=workspace.output_dir if workspace else None,
             workspace_root=workspace.root if workspace else None,

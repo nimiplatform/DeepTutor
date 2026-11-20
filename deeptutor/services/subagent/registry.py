@@ -2,28 +2,29 @@
 
 Add a new subagent by writing a :class:`SubagentBackend` and listing it here;
 the capability, API and UI all discover it through these helpers. Local-CLI
-backends (Claude Code, Codex, Antigravity CLI, Kimi CLI, opencode,
-MiMo Code, Hermes Agent, OpenClaw, DeepSeek Harness), configured remote
-backends, and the in-process partner backend live in the same registry.
-``local_cli`` and ``detectable`` control which backends participate in
-connection discovery.
+backends (Claude Code, Codex, Grok CLI, Antigravity CLI, Kimi CLI, opencode,
+MiMo Code, Hermes Agent, OpenClaw, DeepSeek Harness, a configured ACP host),
+configured remote backends, and the in-process partner backend live in the
+same registry. ``local_cli`` and ``detectable`` control which backends
+participate in connection discovery.
 """
 
 from __future__ import annotations
 
 import asyncio
 
+from deeptutor.services.subagent.acp import AcpBackend
 from deeptutor.services.subagent.antigravity import AntigravityBackend
 from deeptutor.services.subagent.base import SubagentBackend
 from deeptutor.services.subagent.claude_code import ClaudeCodeBackend
 from deeptutor.services.subagent.codex import CodexBackend
 from deeptutor.services.subagent.deepseek_harness import DeepSeekHarnessBackend
+from deeptutor.services.subagent.grok import GrokBackend
 from deeptutor.services.subagent.hermes import HermesBackend
 from deeptutor.services.subagent.hermes_remote import HermesRemoteBackend
 from deeptutor.services.subagent.kimi import KimiBackend
 from deeptutor.services.subagent.openclaw import OpenClawBackend
 from deeptutor.services.subagent.opencode_family import MimoBackend, OpencodeBackend
-from deeptutor.services.subagent.partner import PartnerBackend
 from deeptutor.services.subagent.types import DetectResult
 
 _BACKENDS: dict[str, SubagentBackend] = {
@@ -31,6 +32,7 @@ _BACKENDS: dict[str, SubagentBackend] = {
     for backend in (
         ClaudeCodeBackend(),
         CodexBackend(),
+        GrokBackend(),
         AntigravityBackend(),
         KimiBackend(),
         OpencodeBackend(),
@@ -39,7 +41,7 @@ _BACKENDS: dict[str, SubagentBackend] = {
         HermesRemoteBackend(),
         OpenClawBackend(),
         DeepSeekHarnessBackend(),
-        PartnerBackend(),
+        AcpBackend(),
     )
 }
 

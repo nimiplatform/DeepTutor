@@ -8,10 +8,12 @@ page's "sync" button just re-reads it:
 * **Codex** publishes an authoritative, server-synced cache at
   ``$CODEX_HOME/models_cache.json`` (slugs + per-model reasoning levels) and the
   user's current default in ``config.toml`` — we read both.
-* **Claude Code** has no model-list CLI; its ``--model`` takes stable aliases
-  (opus / sonnet / haiku) plus any full name, and ``--effort`` a fixed set — so
-  we offer those as suggestions and the UI also allows a free-text model.
+* **Claude Code** sync prefers the optional official SDK's initialization
+  catalog, then falls back to the terminal picker. Without a successful sync
+  we offer version-neutral aliases; the UI also accepts a free-text model.
 * **Kimi CLI** has no model-list surface — free text only.
+* **Grok CLI** keeps its account-specific CLI defaults, with free-text model
+  and effort overrides (the human-readable ``grok models`` catalog is not parsed).
 * **opencode / MiMo Code** enumerate ``provider/model`` slugs via their own
   ``<cli> models`` command (models.dev catalog); syncing re-runs it with
   ``--refresh``. Reasoning effort is their ``--variant`` scale.
@@ -48,10 +50,10 @@ logger = logging.getLogger(__name__)
 # cache (see ``claude_models``). The aliases + ``[1m]`` variants mirror the
 # ``/model`` picker; the UI also accepts a free-text model name.
 _CLAUDE_MODELS = (
-    ("opus", "Opus 4.8 · 1M context"),
-    ("sonnet", "Sonnet 4.6"),
-    ("sonnet[1m]", "Sonnet 4.6 · 1M context"),
-    ("haiku", "Haiku 4.5"),
+    ("opus", "Opus (CLI alias)"),
+    ("sonnet", "Sonnet (CLI alias)"),
+    ("sonnet[1m]", "Sonnet (1M CLI alias)"),
+    ("haiku", "Haiku (CLI alias)"),
 )
 _CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -264,6 +266,23 @@ async def _kimi_options() -> BackendOptions:
     )
 
 
+async def _grok_options() -> BackendOptions:
+    backend = get_backend("grok")
+    detected = await backend.detect() if backend else None
+    return BackendOptions(
+        kind="grok",
+        display_name="Grok CLI",
+        available=detected.available if detected else False,
+        version=detected.version if detected else "",
+        # `grok models` is human-readable and account-specific. Keep the CLI
+        # default or accept a model/effort the operator has verified there.
+        models=[],
+        efforts=[],
+        allow_custom_model=True,
+        detail=detected.detail if detected else "Grok CLI backend unavailable",
+    )
+
+
 async def _list_cli_models(cli_command: str, *, refresh: bool = False) -> list[ModelOption]:
     """Parse ``<cli> models`` output — one ``provider/model`` slug per line."""
     cmd = [cli_command, "models"]
@@ -379,6 +398,7 @@ async def _deepseek_harness_options() -> BackendOptions:
 _PROVIDERS: dict[str, Callable[..., Awaitable[BackendOptions]]] = {
     "claude_code": _claude_options,
     "codex": _codex_options,
+    "grok": _grok_options,
     "antigravity": _antigravity_options,
     "kimi": _kimi_options,
     "opencode": _opencode_options,

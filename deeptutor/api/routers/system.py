@@ -21,6 +21,7 @@ from deeptutor.api.routers.auth import require_admin
 from deeptutor.multi_user.context import get_current_user
 from deeptutor.runtime import memory_probe
 from deeptutor.services.app_update import (
+    SYSTEMD_UPDATE_REASON,
     Installation,
     UpdateInProgressError,
     UpdateJob,
@@ -31,6 +32,7 @@ from deeptutor.services.app_update import (
     detect_installation,
     get_version_check_service,
     launcher_available,
+    running_under_systemd_service,
     update_store_root,
 )
 from deeptutor.services.config import (
@@ -269,6 +271,8 @@ async def request_managed_update(_request: ManagedUpdateRequest) -> dict[str, An
     settings = get_runtime_settings_service().load_system()
     if not settings["version_check_enabled"]:
         raise HTTPException(status_code=409, detail="Version checks are disabled")
+    if running_under_systemd_service():
+        raise HTTPException(status_code=409, detail=SYSTEMD_UPDATE_REASON)
     if not launcher_available():
         raise HTTPException(
             status_code=409,
@@ -373,7 +377,7 @@ async def get_system_status():
                 result["search"]["status"] = "not_configured"
                 result["search"]["error"] = (
                     f"{search_config.requested_provider} requires api_key. "
-                    "Set profile.api_key in Settings > Catalog."
+                    "Set profile.api_key in Settings > Search."
                 )
             elif search_config.provider == "none":
                 result["search"]["status"] = "disabled"
@@ -587,7 +591,7 @@ async def test_search_connection():
             return TestResponse(
                 success=False,
                 message="Search is disabled",
-                error="Set a Search provider in Settings > Catalog.",
+                error="Set a Search provider in Settings > Search.",
             )
         if search_config.unsupported_provider:
             return TestResponse(
@@ -601,7 +605,7 @@ async def test_search_connection():
             return TestResponse(
                 success=False,
                 message=f"Search provider `{search_config.requested_provider}` missing credentials.",
-                error="Set profile.api_key in Settings > Catalog.",
+                error="Set profile.api_key in Settings > Search.",
             )
         result = web_search("DeepTutor health check", provider=search_config.provider)
         response_time = (time.time() - start_time) * 1000

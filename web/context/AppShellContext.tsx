@@ -12,6 +12,7 @@ import { apiFetch, apiUrl } from "@/lib/api";
 import {
   getStoredTheme,
   getSystemTheme,
+  initializeTheme,
   setTheme as applyThemePreference,
   subscribeToThemeChanges,
   type Theme,
@@ -52,6 +53,19 @@ import {
   writeStoredSidebarCollapsed,
   type AppLanguage,
 } from "@/context/app-shell-storage";
+import { fetchAuthStatus } from "@/lib/auth";
+import {
+  recoveryPrincipal,
+  RECOVERY_PRINCIPAL_CHANGED,
+} from "@/lib/recovery-principal";
+import {
+  DEFAULT_LEARNING_DISPLAY,
+  CONTENT_LINE_SPACING,
+  LEARNING_DISPLAY_APPLIED,
+  normalizeLearningDisplay,
+  type LearningDisplay,
+} from "@/lib/learning-display";
+import { isAppLanguage } from "@/i18n/languages";
 
 interface AppShellContextValue {
   theme: Theme;
@@ -94,6 +108,76 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   const [codeBlockWrapLongLines, setCodeBlockWrapLongLinesState] =
     useState<boolean>(DEFAULT_CODE_BLOCK_WRAP_LONG_LINES);
 
+  const [learningDisplay, setLearningDisplay] = useState(
+    DEFAULT_LEARNING_DISPLAY,
+  );
+
+  useEffect(() => {
+    let generation = 0;
+    let alive = true;
+    const reload = async () => {
+      const request = ++generation;
+      setLearningDisplay(DEFAULT_LEARNING_DISPLAY);
+      // The existing auth boundary is authoritative, including cross-tab logout.
+      const owner = recoveryPrincipal();
+      if (!owner) return;
+      try {
+        const response = await apiFetch(apiUrl("/api/settings/display"), {
+          skipAuthRedirect: true,
+        });
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (alive && request === generation && recoveryPrincipal() === owner) {
+          setLearningDisplay(normalizeLearningDisplay(payload));
+        }
+      } catch {
+        /* Offline: retain defaults, never another account's preferences. */
+      }
+    };
+    const onBoundary = () => {
+      void reload();
+    };
+    const onApplied = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          preferences: LearningDisplay;
+          principal: string | null;
+        }>
+      ).detail;
+      if (!recoveryPrincipal() || detail?.principal !== recoveryPrincipal())
+        return;
+      // A successful Apply supersedes any in-flight bootstrap response.
+      generation += 1;
+      setLearningDisplay(normalizeLearningDisplay(detail.preferences));
+    };
+    window.addEventListener(RECOVERY_PRINCIPAL_CHANGED, onBoundary);
+    window.addEventListener(LEARNING_DISPLAY_APPLIED, onApplied);
+    if (recoveryPrincipal()) void reload();
+    else void fetchAuthStatus();
+    return () => {
+      alive = false;
+      generation += 1;
+      window.removeEventListener(RECOVERY_PRINCIPAL_CHANGED, onBoundary);
+      window.removeEventListener(LEARNING_DISPLAY_APPLIED, onApplied);
+    };
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty(
+      "--learning-font-scale",
+      String(learningDisplay.content_font_scale / 100),
+    );
+    root.style.setProperty(
+      "--learning-line-height",
+      String(CONTENT_LINE_SPACING[learningDisplay.content_line_spacing]),
+    );
+    return () => {
+      root.style.removeProperty("--learning-font-scale");
+      root.style.removeProperty("--learning-line-height");
+    };
+  }, [learningDisplay]);
+
   useEffect(() => {
     // Hydrate client-only preferences after SSR-safe first render.
     setSidebarCollapsedState(readStoredSidebarCollapsed());
@@ -122,9 +206,12 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
       // split has `deeptutor-language` and no `deeptutor-response-language` —
       // and returning here on the first alone locked it out of ever adopting
       // the account's model output language.
-      if (hasStoredLanguage() && hasStoredResponseLanguage()) {
+      const hadLanguageAtStart = hasStoredLanguage();
+      if (hadLanguageAtStart && !cancelled) {
+        setLanguageState(readStoredLanguage());
+      }
+      if (hadLanguageAtStart && hasStoredResponseLanguage()) {
         if (!cancelled) {
-          setLanguageState(readStoredLanguage());
           setLanguageReady(true);
         }
         return;
@@ -143,7 +230,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
           language?: unknown;
           response_language?: unknown;
         };
-        if (payload.language !== "zh" && payload.language !== "en") return;
+        if (!isAppLanguage(payload.language)) return;
         // Only what this browser is actually missing: a stored interface
         // language is this user's own choice and the server must not overwrite
         // it just because the response key was absent.
@@ -175,6 +262,12 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
       if (fallbackTimer) clearTimeout(fallbackTimer);
       controller.abort();
     };
+  }, []);
+
+  useEffect(() => {
+    // ThemeScript paints before hydration. This starts the live
+    // prefers-color-scheme listener when the choice is system or unset.
+    setThemeState(initializeTheme());
   }, []);
 
   useEffect(() => {

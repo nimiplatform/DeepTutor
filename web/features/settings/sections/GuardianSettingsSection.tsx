@@ -1,15 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useStagedSettings } from "@/features/settings/store/useStagedSettings";
+import { useEffect, useRef, useState } from "react";
 import {
   KeyRound,
   Library,
-  Save,
   ShieldOff,
   SlidersHorizontal,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { GuardianReadingReport } from "@/features/multi-user/components/GuardianReadingReport";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import {
   getGuardianMaterials,
@@ -18,8 +19,6 @@ import {
   listGuardianRelationships,
   resetLearnerCredentials,
   revokeMyGuardianRelationship,
-  saveGuardianMaterials,
-  saveGuardianRestrictions,
   type GuardianExtension,
   type GuardianMaterial,
   type GuardianRelationship,
@@ -45,6 +44,7 @@ const permissionKeys: Record<string, string> = {
 
 export default function GuardianSettingsPage() {
   const { t } = useTranslation();
+  const selectionGeneration = useRef(0);
   const [relationships, setRelationships] = useState<GuardianRelationship[]>(
     [],
   );
@@ -52,10 +52,12 @@ export default function GuardianSettingsPage() {
     useState<GuardianRelationship | null>(null);
   const [report, setReport] = useState<GuardianReport | null>(null);
   const [materials, setMaterials] = useState<GuardianMaterial[]>([]);
-  const [selectedMaterialIds, setSelectedMaterialIds] = useState<string[]>([]);
-  const [restrictions, setRestrictions] = useState<GuardianRestrictions | null>(
+  const [liveMaterialIds, setLiveMaterialIds] = useState<string[]>([]);
+  const [selectedMaterialIds, setSelectedMaterialIds] = useStagedSettings(`guardian:materials:${selectedRelationship?.learner_user_id ?? ""}`, liveMaterialIds, setLiveMaterialIds);
+  const [liveRestrictions, setLiveRestrictions] = useState<GuardianRestrictions | null>(
     null,
   );
+  const [restrictions, setRestrictions] = useStagedSettings(`guardian:restrictions:${selectedRelationship?.learner_user_id ?? ""}`, liveRestrictions, setLiveRestrictions);
   const [extensions, setExtensions] = useState<GuardianExtension[]>([]);
   const [newPassword, setNewPassword] = useState("");
   const [loading, setLoading] = useState(true);
@@ -78,6 +80,7 @@ export default function GuardianSettingsPage() {
       });
     return () => {
       cancelled = true;
+      selectionGeneration.current += 1;
     };
   }, []);
 
@@ -85,11 +88,12 @@ export default function GuardianSettingsPage() {
     selectedRelationship?.permissions.includes(permission) ?? false;
 
   const selectLearner = async (relationship: GuardianRelationship) => {
+    const generation = ++selectionGeneration.current;
     setSelectedRelationship(relationship);
     setReport(null);
     setMaterials([]);
-    setSelectedMaterialIds([]);
-    setRestrictions(null);
+    setLiveMaterialIds([]);
+    setLiveRestrictions(null);
     setExtensions([]);
     setNewPassword("");
     setMessage(null);
@@ -107,72 +111,24 @@ export default function GuardianSettingsPage() {
           ? getGuardianRestrictions(relationship.learner_user_id)
           : Promise.resolve(null),
       ]);
+      if (generation !== selectionGeneration.current) return;
       setReport(nextReport);
       if (nextMaterials) {
         setMaterials(nextMaterials);
-        setSelectedMaterialIds(
+        setLiveMaterialIds(
           nextMaterials
             .filter((item) => item.assigned)
             .map((item) => item.book_id),
         );
       }
       if (nextRestrictions) {
-        setRestrictions(nextRestrictions.restrictions);
+        setLiveRestrictions(nextRestrictions.restrictions);
         setExtensions(nextRestrictions.available_extensions);
       }
     } catch (reason) {
-      setError((reason as Error).message);
+      if (generation === selectionGeneration.current) setError((reason as Error).message);
     } finally {
-      setBusy(null);
-    }
-  };
-
-  const saveMaterials = async () => {
-    if (!selectedRelationship || !can("assign_materials")) return;
-    setBusy("materials");
-    setError(null);
-    setMessage(null);
-    try {
-      await saveGuardianMaterials(
-        selectedRelationship.learner_user_id,
-        selectedMaterialIds,
-      );
-      const nextMaterials = await getGuardianMaterials(
-        selectedRelationship.learner_user_id,
-      );
-      setMaterials(nextMaterials);
-      if (can("view_reports")) {
-        setReport(
-          await getGuardianReport(selectedRelationship.learner_user_id),
-        );
-      }
-      setMessage(t("Approved materials saved."));
-    } catch (reason) {
-      setError((reason as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const saveRestrictions = async () => {
-    if (!selectedRelationship || !restrictions || !can("manage_restrictions")) {
-      return;
-    }
-    setBusy("restrictions");
-    setError(null);
-    setMessage(null);
-    try {
-      setRestrictions(
-        await saveGuardianRestrictions(
-          selectedRelationship.learner_user_id,
-          restrictions,
-        ),
-      );
-      setMessage(t("Learning restrictions saved."));
-    } catch (reason) {
-      setError((reason as Error).message);
-    } finally {
-      setBusy(null);
+      if (generation === selectionGeneration.current) setBusy(null);
     }
   };
 
@@ -325,21 +281,17 @@ export default function GuardianSettingsPage() {
             </p>
           ) : null}
 
+          {busy !== "loading" && can("view_reports") && report?.reading && report.learner.id === selectedRelationship.learner_user_id && (
+            <GuardianReadingReport reading={report.reading} />
+          )}
+
           {can("assign_materials") && (
             <div className="rounded-lg border border-[var(--border)] p-4">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <h3 className="text-sm font-medium">
                   {t("Approved materials")}
                 </h3>
-                <button
-                  type="button"
-                  onClick={() => void saveMaterials()}
-                  disabled={busy !== null}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-3 py-1.5 text-xs text-[var(--primary-foreground)] disabled:opacity-50"
-                >
-                  <Save className="h-3.5 w-3.5" />
-                  {busy === "materials" ? t("Saving…") : t("Save materials")}
-                </button>
+
               </div>
               {materials.length === 0 ? (
                 <p className="text-xs text-[var(--muted-foreground)]">
@@ -381,17 +333,7 @@ export default function GuardianSettingsPage() {
                   <SlidersHorizontal className="h-4 w-4" />
                   {t("Learning restrictions")}
                 </h3>
-                <button
-                  type="button"
-                  onClick={() => void saveRestrictions()}
-                  disabled={busy !== null}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-[var(--primary)] px-3 py-1.5 text-xs text-[var(--primary-foreground)] disabled:opacity-50"
-                >
-                  <Save className="h-3.5 w-3.5" />
-                  {busy === "restrictions"
-                    ? t("Saving…")
-                    : t("Save restrictions")}
-                </button>
+
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="text-xs">

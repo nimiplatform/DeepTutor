@@ -15,6 +15,8 @@ The database file lives under ``data/marginnote4/<kb_name>.db`` by default.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -172,11 +174,21 @@ class MarginNoteStore:
 
     # -- internal helpers ---------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # A connection's own context manager commits or rolls back but never
+        # closes, so the file stayed open until the GC reached it. On Windows
+        # an open file cannot be removed: deleting the KB left the store, and
+        # its paired device tokens, for a library reconnected under the same
+        # name to pick up again. ``with conn`` keeps each call one transaction.
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
@@ -388,12 +400,12 @@ class MarginNoteStore:
         query = (query or "").strip()
         if not query:
             return []
-        needle = f"%{query.lower()}%"
+        needle = f"%{_escape_like(query.lower())}%"
         sql = (
             "SELECT * FROM mn4_objects "
-            "WHERE (LOWER(title) LIKE ? OR LOWER(content) LIKE ? "
-            "OR LOWER(COALESCE(excerpt, '')) LIKE ? "
-            "OR LOWER(COALESCE(document_title, '')) LIKE ?)"
+            "WHERE (LOWER(title) LIKE ? ESCAPE '\\' OR LOWER(content) LIKE ? ESCAPE '\\' "
+            "OR LOWER(COALESCE(excerpt, '')) LIKE ? ESCAPE '\\' "
+            "OR LOWER(COALESCE(document_title, '')) LIKE ? ESCAPE '\\')"
         )
         params: list[Any] = [needle, needle, needle, needle]
         if object_type:
@@ -464,8 +476,8 @@ class MarginNoteStore:
         linked_ids = set(obj.links)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT object_id FROM mn4_objects WHERE links LIKE ?",
-                (f'%"{object_id}"%',),
+                "SELECT object_id FROM mn4_objects WHERE links LIKE ? ESCAPE '\\'",
+                (f'%"{_escape_like(object_id)}"%',),
             ).fetchall()
         for r in rows:
             linked_ids.add(r["object_id"])
@@ -531,6 +543,11 @@ def _to_summary(obj: MarginNoteObject, query: str) -> dict[str, Any]:
         "snippet": _snippet(body, query),
         "updated_at": obj.updated_at,
     }
+
+
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcards so a search term matches itself literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _snippet(body: str, query: str, width: int = 160) -> str:

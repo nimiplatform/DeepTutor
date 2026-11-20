@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass
 
 
@@ -26,8 +29,31 @@ class EmbeddingConfig:
     batch_delay: float = 0.0
 
 
-def get_embedding_config() -> EmbeddingConfig:
+_scoped_config: ContextVar[EmbeddingConfig | None] = ContextVar("embedding_config", default=None)
+
+
+def scoped_embedding_config() -> EmbeddingConfig | None:
+    return _scoped_config.get()
+
+
+@contextmanager
+def embedding_config_scope(config: EmbeddingConfig):
+    """Bind one operation, including its worker threads, to a resolved model."""
+    token = _scoped_config.set(config)
+    try:
+        yield
+    finally:
+        _scoped_config.reset(token)
+
+
+def get_embedding_config(
+    selection: dict | None = None, *, catalog: dict | None = None
+) -> EmbeddingConfig:
     """Execution selection belongs to the current App AIConfig."""
+    if selection is None and catalog is None and _scoped_config.get() is not None:
+        return _scoped_config.get()
+    if selection is not None:
+        raise ValueError("Configure embeddings through Nimi App AIConfig.")
     return EmbeddingConfig(
         model="text.embed", api_key="", binding="nimi", provider_name="nimi", provider_mode="nimi"
     )

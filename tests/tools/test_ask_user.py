@@ -7,6 +7,8 @@ single-question shorthand which auto-wraps into a one-element list.
 
 from __future__ import annotations
 
+import pytest
+
 from deeptutor.tools.ask_user import (
     MAX_HEADER_CHARS,
     MAX_OPTION_CHARS,
@@ -283,6 +285,44 @@ def test_v3_drops_model_supplied_other_option() -> None:
     assert _labels(payload.questions[0]) == ("A", "B")
 
 
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        (["First answer", " first   ANSWER "], ("First answer",)),
+        (["Straße", "STRASSE"], ("Straße",)),
+        (
+            [
+                {"label": "First answer", "description": "keep"},
+                {"label": "  first\tanswer  ", "description": "drop"},
+            ],
+            ("First answer",),
+        ),
+    ],
+)
+def test_ask_user_drops_duplicate_labels_like_mastery_quiz(options, expected) -> None:
+    """A visible duplicate makes an interactive question unanswerable (#1409)."""
+    payload, err = build_ask_user_payload(
+        questions=[{"prompt": "Which answer?", "options": options}]
+    )
+    assert err is None
+    assert payload is not None
+    assert _labels(payload.questions[0]) == expected
+
+
+def test_ask_user_deduplicates_even_when_free_text_is_disabled() -> None:
+    payload, _ = build_ask_user_payload(
+        questions=[
+            {
+                "prompt": "Which answer?",
+                "options": ["Answer", " answer "],
+                "allow_free_text": False,
+            }
+        ]
+    )
+    assert payload is not None
+    assert _labels(payload.questions[0]) == ("Answer",)
+
+
 def test_v3_keeps_other_option_when_free_text_disabled() -> None:
     """Without the automatic free-text row there is no duplicate to drop."""
     payload, _ = build_ask_user_payload(
@@ -421,6 +461,18 @@ def test_prompt_decodes_dense_unicode_escapes() -> None:
     assert payload is not None
     assert payload.intro == "「数制转换」"
     assert payload.questions[0].prompt == "「数制转换」"
+
+
+def test_option_label_decodes_escaped_emoji() -> None:
+    """Escaped emoji arrive as surrogate pairs and must decode to UTF-8 text."""
+    escaped = "\\ud83d\\udc4d\\u662f\\u7684"
+    payload, err = build_ask_user_payload(
+        questions=[{"prompt": "Ready?", "options": [escaped, "No"]}],
+    )
+    assert err is None
+    assert payload is not None
+    label = payload.questions[0].options[0].label
+    assert label == "👍是的"
 
 
 # --------------------------- streaming previews ---------------------------

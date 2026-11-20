@@ -34,8 +34,9 @@ from collections.abc import Awaitable, Callable
 import logging
 from typing import Any
 
-from deeptutor.agents.base_agent import BaseAgent
+from deeptutor.book.generation_context import BookAgent
 from deeptutor.services.llm.structured_retry import json_with_reasoning_retry
+from deeptutor.services.llm.types import StreamOutcome
 
 from ..models import (
     BookProposal,
@@ -79,7 +80,7 @@ _FALLBACK_USER = "Proposal:\n{proposal_block}\n\nExploration:\n{exploration_summ
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class SpineSynthesizer(BaseAgent):
+class SpineSynthesizer(BookAgent):
     """Draft → Critique → Revise spine designer with concept-graph output."""
 
     def __init__(
@@ -265,17 +266,23 @@ class SpineSynthesizer(BaseAgent):
         system_prompt = system_prompt.rstrip() + language_directive(self.language)
 
         async def _run(reasoning_effort: str | None) -> str:
-            # Blocking rather than streamed: nothing consumes the partial JSON,
-            # and a reasoning model's <think> prelude never reaches the parser
-            # this way, so a truncated spine cannot collapse to one placeholder
-            # chapter (#707).
-            return await self.call_llm(
+            # Collect the whole stream before parsing. Its terminal reason
+            # distinguishes a capped, repairable fragment from a finished JSON
+            # object; accepting that fragment can silently lose chapters.
+            outcome = StreamOutcome()
+            chunks: list[str] = []
+            async for chunk in self.stream_llm(
                 user_prompt=user_prompt,
                 system_prompt=system_prompt,
                 response_format={"type": "json_object"},
                 stage=stage,
                 reasoning_effort=reasoning_effort,
-            )
+                outcome=outcome,
+            ):
+                chunks.append(chunk)
+            if outcome.truncated:
+                return ""
+            return "".join(chunks)
 
         try:
             # A reasoning model can spend the whole budget thinking and return

@@ -13,186 +13,109 @@ import {
 import { useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
 
+import {
+  recoveryPrincipal,
+  RECOVERY_PRINCIPAL_CHANGED,
+} from "@/lib/recovery-principal";
+import {
+  DEFAULT_LEARNING_DISPLAY,
+  normalizeLearningDisplay,
+  publishLearningDisplay,
+  type LearningDisplay,
+} from "@/lib/learning-display";
+
 import type { CodeBlockThemeId } from "@/components/common/code-block-themes";
 import {
   normalizeCodeBlockTheme,
   writeStoredCodeBlockShowLineNumbers,
   writeStoredCodeBlockTheme,
   writeStoredCodeBlockWrapLongLines,
-  hasStoredResponseLanguage,
   writeStoredLanguage,
   writeStoredResponseLanguage,
+  type ResponseLanguage,
 } from "@/context/app-shell-storage";
 import { useAppShell } from "@/context/AppShellContext";
 import { apiFetch, apiUrl } from "@/lib/api";
+import { asJsonOrThrow } from "@/shared/api/client";
 import { invalidateLLMOptionsCache } from "@/lib/llm-options";
 import { setModelReasoningEffort } from "@/lib/reasoning-effort";
 import { applyExtensionPayload } from "@/lib/settings-extensions";
-import { setTheme as applyThemePreference } from "@/lib/theme";
+import {
+  getStoredThemePreference,
+  setTheme as applyThemePreference,
+} from "@/lib/theme";
+import {
+  detachProfileConnection,
+  firstIncompleteModel,
+  modelTestKey,
+  reconcileProviderSave,
+  modelTestFingerprint,
+  type IncompleteModel,
+  type ModelTestState,
+} from "@/lib/model-settings";
+import {
+  reconcileRegistrySave,
+  type RegistryEdit,
+} from "@/lib/provider-registry";
 import { browserStorage } from "@/shared/storage";
+import type { AppLanguage } from "@/i18n/init";
+
+import {
+  CONNECTABLE_SERVICES,
+  type ProviderRef,
+  type Discovery,
+  type ServiceName,
+  type ModelCapabilities,
+  type ModelCapabilityKey,
+  type ApiFormat,
+  type CatalogModel,
+  type LlmContextWindowDetection,
+  type CatalogProfile,
+  type CatalogService,
+  type CatalogConnection,
+  type ConnectionTargetService,
+  type ConnectionTarget,
+  type Catalog,
+  type ProviderOption,
+  type CatalogTaskOverride,
+  type TaskKindInfo,
+} from "@/lib/model-catalog-types";
+export { CONNECTABLE_SERVICES } from "@/lib/model-catalog-types";
+export type {
+  ProviderRef,
+  Discovery,
+  ServiceName,
+  ModelCapabilities,
+  ModelCapabilityKey,
+  ApiFormat,
+  CatalogModel,
+  LlmContextWindowDetection,
+  CatalogProfile,
+  CatalogService,
+  CatalogTaskOverride,
+  TaskKindInfo,
+  CatalogConnection,
+  ConnectionTargetService,
+  ConnectionTarget,
+  Catalog,
+  ProviderOption,
+} from "@/lib/model-catalog-types";
 
 // ─── Domain types ─────────────────────────────────────────────────────────
 
-export type ServiceName =
-  | "llm"
-  /** Same shape as `llm`; stands in for it on the calls DeepTutor makes itself. */
-  | "task"
-  | "embedding"
-  | "search"
-  | "tts"
-  | "stt"
-  | "imagegen"
-  | "videogen";
-
-/**
- * What the user declared about a model, overriding the built-in capability
- * tables. A missing key means "let DeepTutor decide".
- */
-export type ModelCapabilities = {
-  tools?: boolean;
-  vision?: boolean;
-  json_output?: boolean;
-  reasoning?: boolean;
-};
-export type ModelCapabilityKey = keyof ModelCapabilities;
-
-export type ApiFormat = "auto" | "openai_chat" | "openai_responses" | "anthropic";
-
-export type CatalogModel = {
-  id: string;
-  name: string;
-  model: string;
-  managed_by?: string;
-  capabilities?: ModelCapabilities;
-  dimension?: string;
-  send_dimensions?: boolean;
-  supported_dimensions?: string;
-  context_window?: string;
-  context_window_source?: string;
-  context_window_detected_at?: string;
-  reasoning_effort?: string;
-  codex_supported_reasoning_levels?: string[];
-  // Voice (TTS): free-form provider/model-specific voice string, e.g.
-  // "alloy", "autumn", "model:voice". `response_format` is the TTS output
-  // codec (mp3/wav/...) and is reused by imagegen ("url"/"b64_json").
-  // `language` is an optional STT hint.
-  voice?: string;
-  response_format?: string;
-  language?: string;
-  // Image generation: pixel size (e.g. "1024x1024"), quality, and style.
-  size?: string;
-  quality?: string;
-  style?: string;
-  // Video generation: aspect ratio (e.g. "16:9"), duration (seconds), resolution.
-  aspect_ratio?: string;
-  duration?: string;
-  resolution?: string;
-};
-
-export type LlmContextWindowDetection = {
-  profileId: string | null;
-  modelId: string | null;
-  contextWindow: number;
-  source: string;
-  detail?: string;
-  detectedAt?: string;
-};
-
-export type CatalogProfile = {
-  id: string;
-  name: string;
-  managed_by?: string;
-  codex_account_binding?: string;
-  read_only?: boolean;
-  binding?: string;
-  provider?: string;
-  base_url: string;
-  api_key: string;
-  api_version: string;
-  extra_headers?: Record<string, string> | string;
-  wire_api?: "auto" | "responses" | "chat_completions";
-  /** The protocol this endpoint speaks; the backend derives wire_api from it. */
-  api_format?: ApiFormat;
-  proxy?: string;
-  max_results?: number;
-  /** Set when this profile's credentials come from a catalog connection. */
-  connection_id?: string;
-  models: CatalogModel[];
-};
-
-export type CatalogService = {
-  active_profile_id: string | null;
-  active_model_id?: string | null;
-  profiles: CatalogProfile[];
-};
-
-/**
- * One vendor credential, typed once and mirrored into every service profile
- * that links to it. The backend does the mirroring on save, so a linked
- * profile still stores its own resolved credentials — linking changes where
- * they were typed, not how they resolve.
- */
-export type CatalogConnection = {
-  id: string;
-  name: string;
-  provider: string;
-  api_key: string;
-  /** Optional endpoint override; blank means each service's own default. */
-  base_url: string;
-  api_version: string;
-  extra_headers?: Record<string, string> | string;
-};
-
-/** Per-service prefills a connection's provider can supply, from the backend. */
-export type ConnectionTargetService = {
-  provider: string;
-  base_url: string;
-  default_model: string;
-  default_dim?: string;
-  default_voice?: string;
-};
-
-export type ConnectionTarget = {
-  provider: string;
-  label: string;
-  default_base_url: string;
-  services: Partial<Record<ServiceName, ConnectionTargetService>>;
-};
-
-/** Services a connection can supply, in the order the UI lists them. */
-export const CONNECTABLE_SERVICES: ServiceName[] = [
-  "llm",
-  "task",
-  "embedding",
-  "tts",
-  "stt",
-  "imagegen",
-  "videogen",
-];
-
-export type Catalog = {
-  version: number;
-  connections?: CatalogConnection[];
-  services: {
-    llm: CatalogService;
-    task: CatalogService;
-    embedding: CatalogService;
-    search: CatalogService;
-    tts: CatalogService;
-    stt: CatalogService;
-    imagegen: CatalogService;
-    videogen: CatalogService;
-  };
-};
-
-export type UiSettings = {
-  theme: "light" | "dark" | "glass" | "snow";
-  language: "en" | "zh";
-  response_language: "en" | "zh";
+export type UiSettings = LearningDisplay & {
+  theme: "system" | "light" | "dark" | "glass" | "snow";
+  language: AppLanguage;
+  response_language: ResponseLanguage;
   code_block_theme: string;
   code_block_show_line_numbers: boolean;
   code_block_wrap_long_lines: boolean;
 };
+
+export {
+  RESPONSE_LANGUAGE_OPTIONS,
+  type ResponseLanguageOption,
+} from "./response-language-options";
 
 type CodeBlockUiSettings = Pick<
   UiSettings,
@@ -202,6 +125,12 @@ type CodeBlockUiSettings = Pick<
 >;
 
 type UiSettingsPatch = Partial<UiSettings>;
+
+/** Drop theme so an unconfirmed placeholder cannot be staged or applied. */
+function withoutUnconfirmedTheme(ui: UiSettings): Omit<UiSettings, "theme"> {
+  const { theme: _theme, ...rest } = ui;
+  return rest;
+}
 
 export function syncLoadedCodeBlockSettingsToAppShell(
   ui: Partial<CodeBlockUiSettings>,
@@ -234,29 +163,6 @@ export async function persistUiSettingsPatch(
   });
 }
 
-export type ProviderOption = {
-  value: string;
-  label: string;
-  base_url?: string;
-  default_dim?: string;
-  default_model?: string;
-  default_voice?: string;
-  auth_mode?: "api_key" | "oauth";
-  supports_wire_api_selection?: boolean;
-  // LLM-shaped services: which API formats a profile may pick, the one a new
-  // profile starts on, and the vendor endpoint per format where it differs.
-  api_formats?: string[];
-  default_api_format?: string;
-  base_urls?: Record<string, string>;
-  // Search providers only, from the backend SEARCH_PROVIDERS spec table:
-  // which connection fields the provider consumes, whether missing ones fall
-  // back to a free provider or fail hard, and whether it is still offered.
-  requires_api_key?: boolean;
-  requires_base_url?: boolean;
-  soft_fallback?: boolean;
-  status?: "supported" | "deprecated" | "legacy";
-};
-
 export type SystemStatus = {
   backend: { status: string; timestamp: string };
   llm: { status: string; model?: string; error?: string };
@@ -282,10 +188,7 @@ export type DiagnosticsResult = {
 };
 
 export type ServiceReadiness =
-  | "not_configured"
-  | "untested"
-  | "passed"
-  | "failed";
+  "not_configured" | "untested" | "passed" | "failed";
 
 /**
  * Where the current settings state lives.
@@ -308,6 +211,7 @@ type SettingsPayload = {
   catalog?: Catalog;
   providers?: Record<ServiceName, ProviderOption[]>;
   connection_targets?: ConnectionTarget[];
+  task_kinds?: TaskKindInfo[];
 };
 
 const DIAGNOSTICS_RESULTS_KEY = "deeptutor.settings.diagnosticsResults.v1";
@@ -333,43 +237,43 @@ export type TourStep = {
 export const TOUR_STEPS: TourStep[] = [
   {
     target: "tour-status",
-    route: "/settings",
+    route: "/settings/status",
     titleKey: "settingsTour.status.title",
     descKey: "settingsTour.status.desc",
   },
   {
-    target: "tour-nav-appearance",
-    route: "/settings",
+    target: "tour-page-heading",
+    route: "/settings/appearance",
     titleKey: "settingsTour.appearance.title",
     descKey: "settingsTour.appearance.desc",
   },
   {
-    target: "tour-nav-network",
-    route: "/settings",
+    target: "tour-page-heading",
+    route: "/settings/network",
     titleKey: "settingsTour.network.title",
     descKey: "settingsTour.network.desc",
   },
   {
-    target: "tour-nav-models",
-    route: "/settings",
+    target: "tour-page-heading",
+    route: "/settings/llm",
     titleKey: "settingsTour.models.title",
     descKey: "settingsTour.models.desc",
   },
   {
-    target: "tour-nav-knowledge",
-    route: "/settings",
+    target: "tour-page-heading",
+    route: "/settings/knowledge",
     titleKey: "settingsTour.knowledge.title",
     descKey: "settingsTour.knowledge.desc",
   },
   {
-    target: "tour-nav-chat",
-    route: "/settings",
+    target: "tour-page-heading",
+    route: "/settings/starters",
     titleKey: "settingsTour.chat.title",
     descKey: "settingsTour.chat.desc",
   },
   {
-    target: "tour-nav-memory",
-    route: "/settings",
+    target: "tour-page-heading",
+    route: "/settings/memory",
     titleKey: "settingsTour.memory.title",
     descKey: "settingsTour.memory.desc",
   },
@@ -402,7 +306,11 @@ export function defaultCatalog(): Catalog {
     connections: [],
     services: {
       llm: { active_profile_id: null, active_model_id: null, profiles: [] },
-      task: { active_profile_id: null, active_model_id: null, profiles: [] },
+      task: {
+        active_profile_id: null,
+        active_model_id: null,
+        profiles: [],
+      },
       embedding: {
         active_profile_id: null,
         active_model_id: null,
@@ -564,8 +472,13 @@ export type SettingsContextValue = {
   codeBlockTheme: UiSettings["code_block_theme"];
   codeBlockShowLineNumbers: UiSettings["code_block_show_line_numbers"];
   codeBlockWrapLongLines: UiSettings["code_block_wrap_long_lines"];
+  contentFontScale: LearningDisplay["content_font_scale"];
+  contentLineSpacing: LearningDisplay["content_line_spacing"];
   toast: string;
   setToast: (value: string) => void;
+  /** A blank model Apply refused, so its own page can open that row. */
+  focusModel: IncompleteModel | null;
+  clearFocusModel: () => void;
 
   // UI prefs
   updateTheme: (next: UiSettings["theme"]) => Promise<void>;
@@ -576,6 +489,14 @@ export type SettingsContextValue = {
   updateCodeBlockTheme: (next: CodeBlockThemeId) => Promise<void>;
   updateCodeBlockShowLineNumbers: (next: boolean) => Promise<void>;
   updateCodeBlockWrapLongLines: (next: boolean) => Promise<void>;
+
+  updateContentFontScale: (
+    next: LearningDisplay["content_font_scale"],
+  ) => Promise<void>;
+  updateContentLineSpacing: (
+    next: LearningDisplay["content_line_spacing"],
+  ) => Promise<void>;
+  resetLearningText: () => Promise<void>;
 
   // Catalog mutation
   mutateCatalog: (mutator: (next: Catalog) => void) => void;
@@ -629,6 +550,8 @@ export type SettingsContextValue = {
 
   // Connections + task models
   connectionTargets: ConnectionTarget[];
+  /** The calls DeepTutor makes on its own, in the order the backend lists them. */
+  taskKinds: TaskKindInfo[];
   connectionTarget: (provider: string) => ConnectionTarget | null;
   addConnection: (input: {
     provider: string;
@@ -656,11 +579,15 @@ export type SettingsContextValue = {
   // Save / apply
   saving: boolean;
   applying: boolean;
-  saveDraft: () => Promise<void>;
+  saveDraft: () => Promise<boolean | null>;
   applyCatalog: () => Promise<void>;
   /** Promote one model service without applying unrelated Settings drafts. */
   applyService: (service: ServiceName) => Promise<boolean>;
+  saveRegistry: (edit: RegistryEdit) => Promise<boolean>;
+  saveProvider: (service: ServiceName, profileId: string) => Promise<boolean>;
   discardDraft: () => Promise<void>;
+  /** Stage a named Settings preset as a reviewable draft. */
+  stagePreset: (presetId: string) => Promise<boolean>;
   /** A draft parked on the server, waiting to be applied. */
   storedDraft: StoredDraft | null;
   draftState: DraftState;
@@ -675,11 +602,15 @@ export type SettingsContextValue = {
   registerExtension: (key: string, ext: SettingsExtension | null) => void;
 
   // Diagnostics
+  modelTests: Record<string, ModelTestState>;
   logs: string;
   testRunning: ServiceName | null;
   diagnosticsResults: Partial<Record<ServiceName, DiagnosticsResult>>;
   embeddingCapabilities: EmbeddingCapabilities | null;
-  runDetailedTest: (service: ServiceName) => Promise<void>;
+  runDetailedTest: (
+    service: ServiceName,
+    selection?: { profileId: string; modelId?: string },
+  ) => Promise<void>;
 
   // Helpers
   embeddingDefaultDim: (binding?: string) => string;
@@ -720,13 +651,33 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     codeBlockTheme,
     codeBlockShowLineNumbers,
     codeBlockWrapLongLines,
-    setCodeBlockTheme: setAppShellCodeBlockTheme,
-    setCodeBlockShowLineNumbers: setAppShellCodeBlockShowLineNumbers,
-    setCodeBlockWrapLongLines: setAppShellCodeBlockWrapLongLines,
   } = useAppShell();
 
   const [status, setStatus] = useState<SystemStatus | null>(null);
-  const [theme, setTheme] = useState<UiSettings["theme"]>("snow");
+  const [theme, setTheme] = useState<UiSettings["theme"]>("system");
+  // Stays false until GET /api/settings returns a theme. The "system"
+  // placeholder above must not be written over a palette this browser chose.
+  const serverThemeLoadedRef = useRef(false);
+  const serverDisplayLoadedRef = useRef(false);
+  // An ownership epoch also rejects Alice → Bob → Alice stale responses.
+  const settingsGenerationRef = useRef(0);
+  const captureSettingsOwnership = useCallback(() => {
+    const owner = recoveryPrincipal();
+    const generation = settingsGenerationRef.current;
+    return () =>
+      generation === settingsGenerationRef.current &&
+      owner === recoveryPrincipal();
+  }, []);
+  const initialSettingsSettledRef = useRef(false);
+  const awaitingInitialPrincipalRef = useRef(recoveryPrincipal() === null);
+  const displayOwnerRef = useRef<string | null | undefined>(undefined);
+  const [learningDisplay, setLearningDisplay] = useState(
+    DEFAULT_LEARNING_DISPLAY,
+  );
+  // Latest stageUi, so a confirmed load can rebuild a draft that omitted theme.
+  const stageUiRef = useRef<(patch: Partial<UiSettings>) => Promise<void>>(
+    async () => {},
+  );
   const [language, setLanguage] = useState<UiSettings["language"]>("en");
   const [responseLanguage, setResponseLanguage] =
     useState<UiSettings["response_language"]>("en");
@@ -748,6 +699,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [connectionTargets, setConnectionTargets] = useState<
     ConnectionTarget[]
   >([]);
+  const [taskKinds, setTaskKinds] = useState<TaskKindInfo[]>([]);
   const [storedDraft, setStoredDraft] = useState<StoredDraft | null>(null);
   // Signature of the envelope as last written to the draft store.
   const [savedSignature, setSavedSignature] = useState<string | null>(null);
@@ -755,10 +707,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState("");
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [focusModel, setFocusModel] = useState<IncompleteModel | null>(null);
+  const clearFocusModel = useCallback(() => setFocusModel(null), []);
   // Empty string is the "no diagnostics yet" sentinel; the editor renders
   // a localized placeholder when logs is falsy. Don't seed an English
   // literal here — older code did, then read it back via .startsWith.
   const [logs, setLogs] = useState<string>("");
+  const [modelTests, setModelTests] = useState<Record<string, ModelTestState>>(
+    {},
+  );
+  const testBusyRef = useRef(false);
   const [testRunning, setTestRunning] = useState<ServiceName | null>(null);
   const [diagnosticsResults, setDiagnosticsResults] = useState<
     Partial<Record<ServiceName, DiagnosticsResult>>
@@ -820,26 +778,41 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const clearPending = useCallback(() => {
-    pendingRef.current.clear();
+  const clearPending = useCallback((applied?: Map<string, unknown>) => {
+    for (const [key, payload] of pendingRef.current) {
+      if (!applied || (applied.has(key) && applied.get(key) === payload)) {
+        pendingRef.current.delete(key);
+      }
+    }
+    for (const [key, ext] of extensionsRef.current) {
+      if (!applied || (applied.has(key) && applied.get(key) === ext.payload)) {
+        ext.dirty = false;
+      }
+    }
     syncPendingKeys();
-  }, [syncPendingKeys]);
+  }, [syncPendingKeys],
+  );
 
   const [settingsError, setSettingsError] = useState<string | null>(null);
 
   // Single load step. Kept separate from the mount effect so a "Retry" action
   // can re-run it without remounting the provider.
   const loadSettings = useCallback(async () => {
+    const displayOwner = recoveryPrincipal();
+    if (displayOwner) awaitingInitialPrincipalRef.current = false;
+    const isCurrent = captureSettingsOwnership();
     setSettingsError(null);
     let settingsLoaded = false;
     try {
       const settingsResponse = await apiFetch(apiUrl("/api/settings"));
+      if (!isCurrent()) return;
       if (!settingsResponse.ok) {
         throw new Error(
           `Settings fetch failed: HTTP ${settingsResponse.status}`,
         );
       }
       const payload = (await settingsResponse.json()) as SettingsPayload;
+      if (!isCurrent()) return;
       if (payload.catalog) {
         setCatalog(payload.catalog);
         setDraft(cloneCatalog(payload.catalog));
@@ -847,7 +820,17 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       } else {
         setCatalogEditable(false);
       }
-      setTheme(payload.ui.theme);
+      initialSettingsSettledRef.current = true;
+      const loadedTheme = payload.ui.theme;
+      const loadedDisplay = normalizeLearningDisplay(payload.ui);
+      if (displayOwner === recoveryPrincipal()) {
+        serverDisplayLoadedRef.current = true;
+        displayOwnerRef.current = displayOwner;
+        setLearningDisplay(loadedDisplay);
+        publishLearningDisplay(loadedDisplay, displayOwner);
+      }
+      serverThemeLoadedRef.current = true;
+      setTheme(loadedTheme);
       setLanguage(payload.ui.language);
       const loadedResponseLanguage =
         payload.ui.response_language ?? payload.ui.language;
@@ -868,15 +851,18 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       if (payload.providers) setProviders(payload.providers);
       if (payload.connection_targets)
         setConnectionTargets(payload.connection_targets);
+      if (payload.task_kinds) setTaskKinds(payload.task_kinds);
 
       // A draft parked in an earlier session takes over the editable copy —
       // otherwise "Save Draft" would look like it had done nothing at all.
       try {
         const draftResponse = await apiFetch(apiUrl("/api/settings/draft"));
+        if (!isCurrent()) return;
         if (draftResponse.ok) {
           const stored = (await draftResponse.json()) as {
             draft: StoredDraft | null;
           };
+          if (!isCurrent()) return;
           if (stored.draft) {
             setStoredDraft(stored.draft);
             if (stored.draft.catalog)
@@ -887,6 +873,20 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
               pendingRef.current.set(key, value);
             }
             syncPendingKeys();
+            setSavedSignature(
+              JSON.stringify({
+                catalog: payload.catalog
+                  ? (stored.draft.catalog ?? payload.catalog)
+                  : null,
+                extensions: JSON.stringify(
+                  Object.fromEntries(
+                    Array.from(pendingRef.current.entries()).sort(([a], [b]) =>
+                      a < b ? -1 : a > b ? 1 : 0,
+                    ),
+                  ),
+                ),
+              }),
+            );
             // Pages fetch their own state in parallel with this and may have
             // already read an empty pending map. Bumping the revision re-runs
             // their load effect now that the draft is actually here.
@@ -894,24 +894,47 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
           }
         }
       } catch {
+        if (!isCurrent()) return;
         // No draft is the normal case and a failed read must not block the
         // page; the live settings above are already in hand.
       }
+      // A UI draft staged while this GET was failing omitted theme so a
+      // placeholder could not be saved. Once the server confirms a theme,
+      // put that value on the draft; Apply otherwise keeps the closed-over
+      // payload and leaves localStorage and the document unchanged.
+      if (!isCurrent()) return;
+      const pendingUi = pendingRef.current.get("ui");
+      if (
+        loadedTheme &&
+        extensionsRef.current.get("ui")?.dirty &&
+        pendingUi &&
+        typeof pendingUi === "object" &&
+        !("theme" in pendingUi)
+      ) {
+        await stageUiRef.current({ theme: loadedTheme });
+      }
+      if (!isCurrent()) return;
       settingsLoaded = true;
     } catch (err) {
+      if (!isCurrent()) return;
       console.error("Failed to load settings:", err);
       const message = err instanceof Error ? err.message : String(err);
       setSettingsError(message);
       // Resolve the loading gate so the page can render the error UI instead
       // of staying in an infinite skeleton state.
       setCatalogEditable((current) => (current === null ? false : current));
+      initialSettingsSettledRef.current = true;
     }
     try {
       const statusResponse = await apiFetch(apiUrl("/api/system/status"));
+      if (!isCurrent()) return;
       if (statusResponse.ok) {
-        setStatus((await statusResponse.json()) as SystemStatus);
+        const payload = (await statusResponse.json()) as SystemStatus;
+        if (!isCurrent()) return;
+        setStatus(payload);
       }
     } catch (err) {
+      if (!isCurrent()) return;
       console.error("Failed to load system status:", err);
       // Only surface this when settings itself loaded; otherwise the
       // settings-fetch error already explains the disconnect.
@@ -927,28 +950,20 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         );
       }
     }
-  }, [syncPendingKeys, t]);
+  }, [captureSettingsOwnership, syncPendingKeys, t]);
+  const loadSettingsRef = useRef(loadSettings);
+  loadSettingsRef.current = loadSettings;
 
-  // Load settings + status once on mount. Subsequent navigations between
-  // settings sub-pages share this state via the layout-level provider.
-  // Code-block switch hydration lives in AppShellContext (the single source),
-  // so no separate post-mount re-read is needed here.
-  //
-  // Guarded because `loadSettings` closes over `t`, whose identity changes
-  // once i18n resolves: without this the load ran a second time a moment
-  // after mount and re-cloned `draft` from the server, silently discarding
-  // anything edited in between. `reloadSettings` is the deliberate way to
-  // re-read.
-  const loadedOnce = useRef(false);
+  // Paint a stored palette while the server theme is still unknown. A missing
+  // key stays on the placeholder and is not persisted.
   useEffect(() => {
-    if (!loadedOnce.current) {
-      loadedOnce.current = true;
-      loadSettings();
-    }
-    return () => {
-      if (eventSourceRef.current) eventSourceRef.current.close();
-    };
-  }, [loadSettings]);
+    if (serverThemeLoadedRef.current) return;
+    const stored = getStoredThemePreference();
+    if (stored) setTheme(stored);
+  }, []);
+
+  // A language change recreates loadSettings; it must not close an ongoing test.
+  useEffect(() => () => eventSourceRef.current?.close(), []);
 
   useEffect(() => {
     if (!toast) return;
@@ -968,65 +983,151 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }
   }, [diagnosticsResults]);
 
-  // ── UI preferences ──────────────────────────────────────────────────────
-  const updateTheme = useCallback(async (next: UiSettings["theme"]) => {
-    setTheme(next);
-    applyThemePreference(next);
-    await persistUiSettingsPatch({ theme: next });
+  // Preferences are drafts too. Browser-wide appearance/language changes only
+  // when Apply succeeds, so Discard has no global side effects to undo.
+  const liveUi = useMemo<UiSettings>(() => ({
+      ...learningDisplay,
+      theme, language, response_language: responseLanguage,
+    code_block_theme: codeBlockTheme,
+    code_block_show_line_numbers: codeBlockShowLineNumbers,
+    code_block_wrap_long_lines: codeBlockWrapLongLines,
+  }), [
+      learningDisplay,
+      theme, language, responseLanguage, codeBlockTheme, codeBlockShowLineNumbers, codeBlockWrapLongLines,
+    ],
+  );
+  const applyUi = useCallback((ui: Partial<UiSettings>) => {
+    if (serverThemeLoadedRef.current && ui.theme) {
+      setTheme(ui.theme);
+      applyThemePreference(ui.theme);
+    }
+    if (ui.language) {
+      setLanguage(ui.language);
+      writeStoredLanguage(ui.language);
+    }
+    if (ui.response_language) {
+      setResponseLanguage(ui.response_language);
+      writeStoredResponseLanguage(ui.response_language);
+    }
+    syncLoadedCodeBlockSettingsToAppShell(ui);
   }, []);
-
-  const updateLanguage = useCallback(
-    async (next: UiSettings["language"]) => {
-      setLanguage(next);
-      writeStoredLanguage(next);
-      // `PUT /ui` merges, so an account that never chose a model output
-      // language still has no stored `response_language` — and the server
-      // derives it from `language` on the next read. Mirror that here, or the
-      // page shows a value the browser will not send.
-      if (!hasStoredResponseLanguage()) {
-        setResponseLanguage(next);
-        writeStoredResponseLanguage(next);
+  const stageUi = useCallback(async (patch: Partial<UiSettings>) => {
+    const merged: UiSettings = {
+      ...liveUi,
+      ...(pendingRef.current.get("ui") as Partial<UiSettings> | undefined),
+      ...patch,
+    };
+    // Do not stage or apply a theme until the server has confirmed one.
+    const next: Partial<UiSettings> = serverThemeLoadedRef.current ? merged : withoutUnconfirmedTheme(merged);
+    const baseline: Partial<UiSettings> = serverThemeLoadedRef.current ? { ...liveUi }
+        : withoutUnconfirmedTheme(liveUi);
+      if (!serverDisplayLoadedRef.current) {
+        const pending = pendingRef.current.get("ui") as
+          Partial<UiSettings> | undefined;
+        for (const key of [
+          "content_font_scale",
+          "content_line_spacing",
+        ] as const) {
+          // A failed GET must not turn placeholder defaults into a preference.
+          if (!(key in patch) && !(pending && key in pending)) delete next[key];
+          delete baseline[key];
+        }
       }
-      await persistUiSettingsPatch({ language: next });
-    },
-    [],
+      registerExtension("ui", {
+      dirty: JSON.stringify(next) !== JSON.stringify(baseline),
+      payload: next,
+      save: async () => { await applyExtensionPayload("ui", next);
+        },
+    });
+  }, [liveUi, registerExtension],
+  );
+  stageUiRef.current = stageUi;
+  const updateTheme = useCallback(async (theme: UiSettings["theme"]) => stageUi({ theme }), [stageUi],
+  );
+  const updateLanguage = useCallback(async (language: UiSettings["language"]) => stageUi({ language }), [stageUi],
+  );
+  const updateResponseLanguage = useCallback(async (response_language: UiSettings["response_language"]) => stageUi({ response_language }), [stageUi],
+  );
+  const updateCodeBlockTheme = useCallback(async (code_block_theme: CodeBlockThemeId) => stageUi({ code_block_theme }), [stageUi],
+  );
+  const updateCodeBlockShowLineNumbers = useCallback(async (code_block_show_line_numbers: boolean) => stageUi({ code_block_show_line_numbers }), [stageUi],
+  );
+  const updateCodeBlockWrapLongLines = useCallback(async (code_block_wrap_long_lines: boolean) => stageUi({ code_block_wrap_long_lines }), [stageUi],
   );
 
-  const updateResponseLanguage = useCallback(
-    async (next: UiSettings["response_language"]) => {
-      setResponseLanguage(next);
-      writeStoredResponseLanguage(next);
-      await persistUiSettingsPatch({ response_language: next });
-    },
-    [],
+  const updateContentFontScale = useCallback(
+    async (content_font_scale: LearningDisplay["content_font_scale"]) =>
+      stageUi({ content_font_scale }),
+    [stageUi],
+  );
+  const updateContentLineSpacing = useCallback(
+    async (content_line_spacing: LearningDisplay["content_line_spacing"]) =>
+      stageUi({ content_line_spacing }),
+    [stageUi],
+  );
+  const resetLearningText = useCallback(
+    async () => stageUi(DEFAULT_LEARNING_DISPLAY),
+    [stageUi],
   );
 
-  // Each setter updates the app-shell source of truth (which normalizes,
-  // persists to localStorage, and notifies consumers) then mirrors the change
-  // to the backend.
-  const updateCodeBlockTheme = useCallback(
-    async (next: CodeBlockThemeId) => {
-      setAppShellCodeBlockTheme(next);
-      await persistUiSettingsPatch({ code_block_theme: next });
-    },
-    [setAppShellCodeBlockTheme],
-  );
-
-  const updateCodeBlockShowLineNumbers = useCallback(
-    async (next: boolean) => {
-      setAppShellCodeBlockShowLineNumbers(next);
-      await persistUiSettingsPatch({ code_block_show_line_numbers: next });
-    },
-    [setAppShellCodeBlockShowLineNumbers],
-  );
-
-  const updateCodeBlockWrapLongLines = useCallback(
-    async (next: boolean) => {
-      setAppShellCodeBlockWrapLongLines(next);
-      await persistUiSettingsPatch({ code_block_wrap_long_lines: next });
-    },
-    [setAppShellCodeBlockWrapLongLines],
-  );
+  useEffect(() => {
+    let request = 0;
+    const onBoundary = () => {
+      settingsGenerationRef.current += 1;
+      setApplying(false);
+      setSaving(false);
+      const generation = ++request;
+      const owner = recoveryPrincipal();
+      serverDisplayLoadedRef.current = false;
+      displayOwnerRef.current = owner;
+      setLearningDisplay(DEFAULT_LEARNING_DISPLAY);
+      // Display drafts belong to the account that authored them. Preserve
+      // other settings while removing this account's unsaved typography.
+      const pending = pendingRef.current.get("ui") as
+        Partial<UiSettings> | undefined;
+      if (pending) {
+        const next = { ...pending };
+        delete next.content_font_scale;
+        delete next.content_line_spacing;
+        pendingRef.current.set("ui", next);
+        void stageUiRef.current({});
+      }
+      if (!owner) return;
+      if (
+        awaitingInitialPrincipalRef.current ||
+        !initialSettingsSettledRef.current
+      ) {
+        // Replace an invalidated initial read, including its parked draft,
+        // until a current response or error has settled the core settings gate.
+        awaitingInitialPrincipalRef.current = false;
+        void loadSettingsRef.current();
+        return;
+      }
+      void (async () => {
+        try {
+          const response = await apiFetch(apiUrl("/api/settings/display"), {
+            skipAuthRedirect: true,
+          });
+          if (!response.ok) return;
+          const display = normalizeLearningDisplay(await response.json());
+          if (generation !== request || recoveryPrincipal() !== owner) return;
+          serverDisplayLoadedRef.current = true;
+          setLearningDisplay(display);
+        } catch {
+          /* An unavailable account starts at defaults. */
+        }
+      })();
+    };
+    window.addEventListener(RECOVERY_PRINCIPAL_CHANGED, onBoundary);
+    // Tie the initial attempt to this lifecycle, not to the translated callback.
+    // StrictMode cleanup invalidates an unfinished read; replay starts its replacement.
+    if (!initialSettingsSettledRef.current) void loadSettingsRef.current();
+    return () => {
+      request += 1;
+      settingsGenerationRef.current += 1;
+      window.removeEventListener(RECOVERY_PRINCIPAL_CHANGED, onBoundary);
+    };
+  }, []);
 
   // ── Catalog mutators ────────────────────────────────────────────────────
   const mutateCatalog = useCallback((mutator: (next: Catalog) => void) => {
@@ -1066,12 +1167,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
           name: providerLabel,
           binding: defaultBinding,
           provider: defaultProvider,
-          base_url: "",
+          base_url: providerOption?.base_url ?? "",
           api_key: "",
           api_version: "",
           extra_headers: service === "search" ? undefined : {},
           wire_api: service === "llm" ? "auto" : undefined,
-          api_format: service === "llm" || service === "task" ? "auto" : undefined,
+          api_format:
+            service === "llm" || service === "task" ? "auto" : undefined,
           proxy: service === "search" ? "" : undefined,
           models: [],
         };
@@ -1092,15 +1194,15 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
               : {}),
             ...(service === "tts"
               ? {
-                  voice: providerOption?.default_voice ?? "",
-                  response_format: "mp3",
+                  voice: "",
+                  response_format: "",
                 }
               : {}),
           });
-          target.active_model_id = modelId;
+          if (!target.active_profile_id) target.active_model_id = modelId;
         }
         target.profiles.push(profile);
-        target.active_profile_id = profileId;
+        if (!target.active_profile_id) target.active_profile_id = profileId;
       });
     },
     [embeddingDefaultDim, language, mutateCatalog, providers],
@@ -1157,14 +1259,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
             : {}),
           ...(service === "tts"
             ? {
-                voice: providerOption?.default_voice ?? "",
-                response_format: "mp3",
+                voice: "",
+                response_format: "",
               }
             : {}),
         });
-        // A model added to the profile in use becomes the one in use; adding
-        // to any other profile must not move what chat resolves.
-        if (profile.id === target.active_profile_id) {
+        // Adding an option must not silently replace an existing selection.
+        if (
+          profile.id === target.active_profile_id &&
+          !target.active_model_id
+        ) {
           target.active_model_id = modelId;
         }
       });
@@ -1193,9 +1297,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       base_url: string;
     }) => {
       const connection: CatalogConnection = {
-        id: `conn-${Date.now().toString(36)}${Math.random()
-          .toString(36)
-          .slice(2, 6)}`,
+        id: `conn-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
         name: input.name.trim() || input.provider,
         provider: input.provider,
         api_key: input.api_key,
@@ -1233,14 +1335,15 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const removeConnection = useCallback(
     (id: string) => {
       mutateCatalog((next) => {
+        for (const service of CONNECTABLE_SERVICES) {
+          for (const profile of next.services[service].profiles) {
+            if (profile.connection_id === id)
+              detachProfileConnection(next, service, profile);
+          }
+        }
         next.connections = (next.connections ?? []).filter(
           (item) => item.id !== id,
         );
-        for (const service of CONNECTABLE_SERVICES) {
-          for (const profile of next.services[service].profiles) {
-            if (profile.connection_id === id) delete profile.connection_id;
-          }
-        }
       });
     },
     [mutateCatalog],
@@ -1252,7 +1355,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         const profile = next.services[service].profiles.find(
           (item) => item.id === profileId,
         );
-        if (profile) delete profile.connection_id;
+        if (profile) detachProfileConnection(next, service, profile);
       });
     },
     [mutateCatalog],
@@ -1282,9 +1385,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       const target = connectionTargets.find(
         (item) => item.provider === connection.provider,
       );
-      const stamp = `${Date.now().toString(36)}${Math.random()
-        .toString(36)
-        .slice(2, 6)}`;
+      const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
       const base = connection.base_url.trim().replace(/\/+$/, "");
       const plan = requests.flatMap((request, index) => {
         const spec = target?.services[request.service];
@@ -1333,8 +1434,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
                   : {}),
                 ...(item.service === "tts"
                   ? {
-                      voice: item.spec.default_voice || "",
-                      response_format: "mp3",
+                      voice: "",
+                      response_format: "",
                     }
                   : {}),
               },
@@ -1522,7 +1623,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   );
 
   const applyDetectedContextWindow = useCallback(() => {
-    if (!llmContextDetection) return;
+    if (!llmContextDetection || llmContextDetection.source === "default") return;
     mutateCatalog((next) => {
       const target = next.services.llm;
       if (
@@ -1562,7 +1663,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
    * the catalog too; previously this button only ever wrote the catalog and
    * reported success for edits it had not touched.
    */
-  const saveDraft = useCallback(async () => {
+  const saveDraft = useCallback(async (): Promise<boolean | null> => {
+    const isCurrent = captureSettingsOwnership();
     setSaving(true);
     const signature = envelopeSignatureRef.current;
     try {
@@ -1571,21 +1673,28 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(draftEnvelope()),
       });
+      if (!isCurrent()) return null;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const payload = (await response.json()) as { draft: StoredDraft | null };
+      const payload = (await response.json()) as {
+        draft: StoredDraft | null;
+      };
+      if (!isCurrent()) return null;
       setStoredDraft(payload.draft ?? null);
       setSavedSignature(signature);
       setToast(t("Draft saved — not applied yet"));
+      return true;
     } catch (err) {
+      if (!isCurrent()) return null;
       setToast(
         t("Could not save the draft: {{message}}", {
           message: err instanceof Error ? err.message : String(err),
         }),
       );
+      return false;
     } finally {
-      setSaving(false);
+      if (isCurrent()) setSaving(false);
     }
-  }, [draftEnvelope, t]);
+  }, [captureSettingsOwnership, draftEnvelope, t]);
 
   /** Apply one model-service editor without promoting unrelated settings. */
   const applyService = useCallback(
@@ -1609,7 +1718,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         setCatalog(payload.catalog);
         setDraft((current) => {
           const next = cloneCatalog(current);
-          next.services[service] = appliedService;
+          if (
+            JSON.stringify(current.services[service]) ===
+            JSON.stringify(draft.services[service])
+          )
+            next.services[service] = appliedService;
           return next;
         });
         setStoredDraft(payload.draft ?? null);
@@ -1643,63 +1756,407 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     [draft.services, t],
   );
 
+  const saveRegistry = useCallback(
+    async (edit: RegistryEdit): Promise<boolean> => {
+      setApplying(true);
+      try {
+        const response = await apiFetch(
+          apiUrl("/api/settings/apply/registry"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(edit),
+          },
+        );
+        const payload = await response.json();
+        if (!response.ok)
+          throw new Error(
+            typeof payload.detail === "string"
+              ? payload.detail
+              : `HTTP ${response.status}`,
+          );
+        setCatalog(payload.catalog);
+        setDraft((current) =>
+          reconcileRegistrySave(current, draft, payload.catalog, edit),
+        );
+        const normalized = reconcileRegistrySave(
+          draft,
+          draft,
+          payload.catalog,
+          edit,
+        );
+        setModelTests((current) => {
+          const next = { ...current };
+          for (const [key, result] of Object.entries(next)) {
+            const [service, profileId, modelId] = JSON.parse(key) as [
+              ServiceName,
+              string,
+              string | null,
+            ];
+            if (
+              result.fingerprint ===
+              modelTestFingerprint(draft, service, profileId, modelId)
+            )
+              next[key] = {
+                ...result,
+                fingerprint: modelTestFingerprint(
+                  normalized,
+                  service,
+                  profileId,
+                  modelId,
+                ),
+              };
+          }
+          return next;
+        });
+        setStoredDraft(payload.draft ?? null);
+        setSavedSignature(null);
+        invalidateLLMOptionsCache();
+        setToast(t("Applied"));
+        return true;
+      } catch (error) {
+        setToast(
+          t("Could not apply: {{message}}", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        return false;
+      } finally {
+        setApplying(false);
+      }
+    },
+    [draft, t],
+  );
+
+  const saveProvider = useCallback(
+    async (service: ServiceName, profileId: string): Promise<boolean> => {
+      const profile = draft.services[service].profiles.find(
+        (item) => item.id === profileId,
+      );
+      if (!profile) return false;
+      const connection = draft.connections?.find(
+        (item) => item.id === profile.connection_id,
+      );
+      const activate =
+        draft.services[service].active_profile_id === profileId &&
+        (service !== "task" ||
+          !["inherit", "reference"].includes(
+            draft.services.task.mode ?? "profiles",
+          ));
+      setApplying(true);
+      try {
+        const response = await apiFetch(
+          apiUrl("/api/settings/apply/provider"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              service,
+              profile,
+              connection,
+              activate,
+              active_model_id: draft.services[service].active_model_id,
+            }),
+          },
+        );
+        const payload = await response.json();
+        if (!response.ok)
+          throw new Error(
+            typeof payload.detail === "string"
+              ? payload.detail
+              : `HTTP ${response.status}`,
+          );
+        const live = payload.catalog as Catalog;
+        setCatalog(live);
+        setDraft((current) =>
+          reconcileProviderSave(current, draft, live, service, profileId),
+        );
+        // Saving masks credentials and normalizes fields. Keep tests valid for
+        // that exact submission; subsequent user edits still invalidate them.
+        const normalized = reconcileProviderSave(
+          draft,
+          draft,
+          live,
+          service,
+          profileId,
+        );
+        setModelTests((current) => {
+          const next = { ...current };
+          const modelIds =
+            service === "search"
+              ? [undefined]
+              : profile.models.map((model) => model.id);
+          for (const modelId of modelIds) {
+            const key = modelTestKey(service, profileId, modelId);
+            const result = next[key];
+            if (
+              result?.fingerprint ===
+              modelTestFingerprint(draft, service, profileId, modelId)
+            )
+              next[key] = {
+                ...result,
+                fingerprint: modelTestFingerprint(
+                  normalized,
+                  service,
+                  profileId,
+                  modelId,
+                ),
+              };
+          }
+          return next;
+        });
+        setStoredDraft(payload.draft ?? null);
+        setSavedSignature(null);
+        invalidateLLMOptionsCache();
+        setToast(t("Provider saved"));
+        return true;
+      } catch (error) {
+        setToast(
+          t("Could not apply: {{message}}", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        return false;
+      } finally {
+        setApplying(false);
+      }
+    },
+    [draft, t],
+  );
+
   /** Apply — move everything into the live files and clear the draft. */
   const applyCatalog = useCallback(async () => {
+    const displayOwner = recoveryPrincipal();
+    const isCurrent = captureSettingsOwnership();
+    // Name the culprit and take the user to the field that can fix it. The
+    // old check only threw a generic message, so a blank model created on
+    // another page blocked Apply with nothing on screen to act on.
+    if (catalogEditable) {
+      const incomplete = firstIncompleteModel(draft);
+      if (incomplete) {
+        setToast(
+          t(
+            "Add a model ID for {{name}} on the {{page}} page before applying changes.",
+            {
+              name: incomplete.name || t("New model"),
+              page: t(incomplete.page.labelKey),
+            },
+          ),
+        );
+        setFocusModel(incomplete);
+        router.push(
+          `${incomplete.page.path}?profile=${encodeURIComponent(incomplete.profileId)}&model=${encodeURIComponent(incomplete.modelId)}`,
+        );
+        return;
+      }
+    }
+
     setApplying(true);
+    // Save the payloads and callbacks represented by this Apply. Edits made
+    // during a request remain a new draft, including on the same page.
+    const applyingExtensions = Array.from(pendingRef.current, ([key, payload]) => {
+      const ext = extensionsRef.current.get(key);
+      return { key, payload, save: ext?.dirty ? ext.save : null };
+    },
+    );
     try {
+      const uiPayload = applyingExtensions.find(({ key }) => key === "ui")
+        ?.payload as Partial<UiSettings> | undefined;
+      if (
+        uiPayload &&
+        ("content_font_scale" in uiPayload ||
+          "content_line_spacing" in uiPayload) &&
+        displayOwnerRef.current !== undefined &&
+        displayOwnerRef.current !== displayOwner
+      ) {
+        throw new Error(
+          t(
+            "Your account changed. Reload settings before applying learning text.",
+          ),
+        );
+      }
       // Park the current state server-side first so Apply promotes exactly
       // what is on screen, and so credentials typed into a draft never have
       // to round-trip through the browser as placeholders.
-      await apiFetch(apiUrl("/api/settings/draft"), {
+      const draftResponse = await apiFetch(apiUrl("/api/settings/draft"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(draftEnvelope()),
       });
 
+      if (!isCurrent()) return;
+      await asJsonOrThrow(draftResponse);
+      if (!isCurrent()) return;
+
       // Pages still on screen save themselves — they refresh their own local
       // state and surface their own errors. Everything else pending is
       // written straight to the endpoint that owns it.
-      const mounted = extensionsRef.current;
-      for (const [key, payload] of pendingRef.current.entries()) {
-        const ext = mounted.get(key);
-        if (ext?.dirty) await ext.save();
+      for (const { key, payload, save } of applyingExtensions) {
+        if (!isCurrent()) return;
+        if (save) await save();
         else await applyExtensionPayload(key, payload);
+        if (!isCurrent()) return;
+        if (key === "ui") applyUi(payload as UiSettings);
       }
 
+      if (!isCurrent()) return;
       if (catalogEditable) {
         const response = await apiFetch(apiUrl("/api/settings/apply"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
         });
-        const payload = await response.json();
+        if (!isCurrent()) return;
+        const payload = await asJsonOrThrow(response);
+        if (!isCurrent()) return;
+        if (!payload.catalog)
+          throw new Error("Missing catalog in apply response");
         setCatalog(payload.catalog);
         setDraft(cloneCatalog(payload.catalog));
         invalidateLLMOptionsCache();
-        const statusResponse = await apiFetch(apiUrl("/api/system/status"));
-        setStatus((await statusResponse.json()) as SystemStatus);
+        try {
+          const statusResponse = await apiFetch(apiUrl("/api/system/status"));
+          if (!isCurrent()) return;
+          if (statusResponse.ok) {
+            const status = (await statusResponse.json()) as SystemStatus;
+            if (!isCurrent()) return;
+            setStatus(status);
+        }
+        } catch {
+          if (!isCurrent()) return;
+          /* Applying succeeded; diagnostics can be retried independently. */
+        }
       } else {
-        await apiFetch(apiUrl("/api/settings/draft"), { method: "DELETE" });
+        const response = await apiFetch(apiUrl("/api/settings/draft"), {
+          method: "DELETE",
+        });
+        if (!isCurrent()) return;
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
       }
-      clearPending();
+      if (!isCurrent()) return;
+      const appliedUi = applyingExtensions.find(({ key }) => key === "ui")
+        ?.payload as Partial<UiSettings> | undefined;
+      if (
+        displayOwner === recoveryPrincipal() &&
+        appliedUi &&
+        ("content_font_scale" in appliedUi ||
+          "content_line_spacing" in appliedUi)
+      ) {
+        let display = normalizeLearningDisplay({
+          ...learningDisplay,
+          ...appliedUi,
+        });
+        if (!serverDisplayLoadedRef.current) {
+          // A partial edit after a failed settings load must inherit the
+          // omitted field from the server, never from a placeholder default.
+          const response = await apiFetch(apiUrl("/api/settings/display"));
+          if (!isCurrent()) return;
+          display = normalizeLearningDisplay(await asJsonOrThrow(response));
+          if (!isCurrent()) return;
+          serverDisplayLoadedRef.current = true;
+        }
+        setLearningDisplay(display);
+        publishLearningDisplay(display, displayOwner);
+      }
+      if (!isCurrent()) return;
+      clearPending(
+        new Map(applyingExtensions.map(({ key, payload }) => [key, payload])),
+      );
       setStoredDraft(null);
       setSavedSignature(null);
+      setDraftRevision((value) => value + 1);
       setToast(t("Applied"));
     } catch (err) {
+      if (!isCurrent()) return;
       setToast(
         t("Could not apply: {{message}}", {
           message: err instanceof Error ? err.message : String(err),
         }),
       );
     } finally {
-      setApplying(false);
+      if (isCurrent()) setApplying(false);
     }
-  }, [catalogEditable, clearPending, draftEnvelope, t]);
+  }, [
+    captureSettingsOwnership,
+    draft,
+    catalogEditable,
+    clearPending,
+    draftEnvelope,
+    applyUi,
+    learningDisplay,
+    router,
+    t,
+  ]);
+
+  /** Stage a named preset over the current draft without applying anything. */
+  const stagePreset = useCallback(
+    async (presetId: string): Promise<boolean> => {
+      const isCurrent = captureSettingsOwnership();
+      setSaving(true);
+      try {
+        const response = await apiFetch(
+          apiUrl(`/api/settings/presets/${presetId}/draft`),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(draftEnvelope()),
+          },
+        );
+        if (!isCurrent()) return false;
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = (await response.json()) as {
+          draft: StoredDraft | null;
+        };
+        if (!isCurrent()) return false;
+        const stored = payload.draft;
+        const pending = new Map(
+          Object.entries(stored?.extensions ?? {}));
+
+        pendingRef.current.clear();
+        for (const [key, value] of pending.entries()) {
+          pendingRef.current.set(key, value);
+        }
+        syncPendingKeys();
+        if (stored?.catalog) setDraft(cloneCatalog(stored.catalog));
+        setStoredDraft(stored);
+        // The server has the exact staged envelope; avoid the toolbar calling
+        // it unsaved while the new draft signature is still propagating.
+        setSavedSignature(
+          JSON.stringify({
+            catalog: catalogEditable ? (stored?.catalog ?? draft) : null,
+            extensions: JSON.stringify(Object.fromEntries(pending.entries())),
+          }),
+        );
+        setDraftRevision((value) => value + 1);
+        setToast(t("Preset loaded as a draft — review before applying"));
+        return true;
+      } catch (err) {
+        if (!isCurrent()) return false;
+        setToast(
+          t("Could not load the preset: {{message}}", {
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        );
+        return false;
+      } finally {
+        if (isCurrent()) setSaving(false);
+      }
+    },
+    [
+      captureSettingsOwnership,
+      catalogEditable, draft, draftEnvelope, syncPendingKeys, t,
+    ],
+  );
 
   /** Throw the draft away and go back to what is actually live. */
   const discardDraft = useCallback(async () => {
+    const isCurrent = captureSettingsOwnership();
     setApplying(true);
     try {
-      await apiFetch(apiUrl("/api/settings/draft"), { method: "DELETE" });
+      const response = await apiFetch(apiUrl("/api/settings/draft"), {
+        method: "DELETE",
+      });
+      if (!isCurrent()) return;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       clearPending();
       setStoredDraft(null);
       setSavedSignature(null);
@@ -1707,10 +2164,17 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setToast(t("Draft discarded"));
       // Pages holding their own copy of a discarded payload have to re-read.
       setDraftRevision((value) => value + 1);
+    } catch (err) {
+      if (!isCurrent()) return;
+      setToast(
+        t("Could not discard the draft: {{message}}", {
+          message: err instanceof Error ? err.message : String(err),
+        }),
+      );
     } finally {
-      setApplying(false);
+      if (isCurrent()) setApplying(false);
     }
-  }, [catalog, clearPending, t]);
+  }, [captureSettingsOwnership, catalog, clearPending, t]);
 
   // ── Diagnostics ─────────────────────────────────────────────────────────
   // Reset capability snapshot when switching embedding profile/model so a
@@ -1738,147 +2202,155 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [llmActiveProfileId, llmActiveModelId]);
 
   const runDetailedTest = useCallback(
-    async (service: ServiceName) => {
-      if (!catalogEditable) return;
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
-      setLogs(t("Preparing {{service}} diagnostics...", { service }) + "\n");
-      setTestRunning(service);
-      const target = draft.services[service];
-      const runProfileId = target.active_profile_id ?? null;
+    async (
+      service: ServiceName,
+      selection?: { profileId: string; modelId?: string },
+    ) => {
+      if (!catalogEditable || testBusyRef.current) return;
+      const diagnosticCatalog = cloneCatalog(draft);
+      const target = diagnosticCatalog.services[service];
+      const runProfileId = selection?.profileId ?? target.active_profile_id;
       const runModelId =
-        service === "search" ? null : (target.active_model_id ?? null);
-      setDiagnosticsResults((current) => {
-        const next = { ...current };
-        delete next[service];
-        return next;
-      });
-      if (service === "llm") setLlmContextDetection(null);
-      if (service === "embedding") setEmbeddingCapabilities(null);
+        service === "search"
+          ? null
+          : (selection?.modelId ?? target.active_model_id);
+      const profile = target.profiles.find((item) => item.id === runProfileId);
+      if (
+        !profile ||
+        (service !== "search" &&
+          !profile.models.some(
+            (item) => item.id === runModelId && item.model.trim(),
+          ))
+      )
+        return;
+      if (service === "task") target.mode = "profiles";
+      target.active_profile_id = runProfileId;
+      if (service !== "search") target.active_model_id = runModelId;
+      const key = modelTestKey(service, profile.id, runModelId);
+      const fingerprint = modelTestFingerprint(
+        draft,
+        service,
+        profile.id,
+        runModelId,
+      );
+      let finished = false;
+      testBusyRef.current = true;
+      setTestRunning(service);
+      setLogs("");
+      setModelTests((current) => ({
+        ...current,
+        [key]: {
+          state: "running",
+          fingerprint,
+          logs: "",
+          message: t("Testing model…"),
+        },
+      }));
+      const update = (patch: Partial<ModelTestState>) =>
+        setModelTests((current) => ({
+          ...current,
+          [key]: { ...current[key], ...patch },
+        }));
+      const finish = (state: "success" | "failed", message: string) => {
+        if (finished) return;
+        finished = true;
+        eventSourceRef.current?.close();
+        eventSourceRef.current = null;
+        testBusyRef.current = false;
+        setTestRunning(null);
+        update({ state, message });
+        setDiagnosticsResults((current) => ({
+          ...current,
+          [service]: {
+            state,
+            message,
+            profileId: profile.id,
+            modelId: runModelId ?? null,
+          },
+        }));
+      };
       try {
         const response = await apiFetch(
           apiUrl(`/api/settings/tests/${service}/start`),
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ catalog: draft }),
+            body: JSON.stringify({ catalog: diagnosticCatalog }),
           },
         );
-        const payload = (await response.json()) as {
-          run_id?: string;
-          detail?: string;
-        };
-        if (!response.ok || !payload.run_id) {
-          throw new Error(payload.detail || t("Could not start diagnostics."));
-        }
+        const payload = await response.json();
+        if (!response.ok || !payload.run_id)
+          throw new Error(
+            typeof payload.detail === "string"
+              ? payload.detail
+              : t("Could not start diagnostics."),
+          );
         const source = new EventSource(
           apiUrl(`/api/settings/tests/${service}/${payload.run_id}/events`),
           { withCredentials: true },
         );
         eventSourceRef.current = source;
         source.onmessage = (event) => {
-          const entry = JSON.parse(event.data) as {
-            type: string;
-            message: string;
-            catalog?: Catalog;
-            detected_dim?: number;
-            default_dim?: number;
-            supported_dimensions?: number[];
-            supports_variable_dimensions?: boolean;
-            model_known?: boolean;
-            active_dim?: number;
-            active_dim_source?: string;
-            context_window?: number;
-            source?: string;
-            detail?: string;
-            detected_at?: string;
-          };
-          setLogs((current) => `${current}[${entry.type}] ${entry.message}\n`);
-          if (service === "llm" && entry.type === "context_window") {
-            const detected =
-              typeof entry.context_window === "number"
-                ? entry.context_window
-                : Number.parseInt(String(entry.context_window ?? ""), 10);
-            if (Number.isFinite(detected) && detected > 0) {
-              setLlmContextDetection({
-                profileId: runProfileId,
-                modelId: runModelId,
-                contextWindow: detected,
+          if (finished) return;
+          try {
+            const entry = JSON.parse(event.data);
+            const line = `[${entry.type}] ${entry.message || ""}\n`;
+            setLogs((current) => current + line);
+            setModelTests((current) => ({
+              ...current,
+              [key]: {
+                ...current[key],
+                logs: current[key].logs + line,
+                message: entry.message || current[key].message,
+              },
+            }));
+            if (entry.type === "response" && entry.snippet)
+              update({ response: entry.snippet });
+            if (
+              entry.type === "context_window" &&
+              Number(entry.context_window) > 0
+            ) {
+              const context = {
+                value: Number(entry.context_window),
                 source: entry.source || "metadata",
                 detail: entry.detail,
                 detectedAt: entry.detected_at,
-              });
+              };
+              update({ context });
+              if (service === "llm")
+                setLlmContextDetection({
+                  profileId: profile.id,
+                  modelId: runModelId ?? null,
+                  contextWindow: context.value,
+                  source: context.source,
+                  detail: context.detail,
+                  detectedAt: context.detectedAt,
+                });
             }
-          }
-          if (entry.type === "capabilities") {
-            setEmbeddingCapabilities({
-              detected_dim: entry.detected_dim,
-              default_dim: entry.default_dim,
-              supported_dimensions: entry.supported_dimensions,
-              supports_variable_dimensions: entry.supports_variable_dimensions,
-              model_known: entry.model_known,
-              active_dim: entry.active_dim,
-              active_dim_source: entry.active_dim_source,
-            });
-          }
-          if (entry.catalog) {
-            setCatalog(entry.catalog);
-            setDraft(cloneCatalog(entry.catalog));
-          }
-          if (entry.type === "completed" || entry.type === "failed") {
-            source.close();
-            eventSourceRef.current = null;
-            setTestRunning(null);
-            setDiagnosticsResults((current) => ({
-              ...current,
-              [service]: {
-                state: entry.type === "completed" ? "success" : "failed",
-                message: entry.message,
-                profileId: runProfileId,
-                modelId: runModelId,
-              },
-            }));
-            setToast(entry.message);
+            if (entry.type === "capabilities") {
+              update({
+                dimension: entry.detected_dim,
+                supportedDimensions: entry.supported_dimensions,
+              });
+              setEmbeddingCapabilities(entry);
+            }
+            // A probe never replaces the catalog or the user's in-progress edits.
+            // Metadata is offered to the addressed model for explicit adoption.
+            if (entry.type === "completed") finish("success", entry.message);
+            if (entry.type === "failed") finish("failed", entry.message);
+          } catch {
+            finish("failed", t("Could not read the model test result."));
           }
         };
-        source.onerror = () => {
-          source.close();
-          eventSourceRef.current = null;
-          setTestRunning(null);
-          setLogs(
-            (current) =>
-              `${current}[failed] ${t("Diagnostics stream disconnected.")}\n`,
-          );
-          setDiagnosticsResults((current) => ({
-            ...current,
-            [service]: {
-              state: "failed",
-              message: t("Diagnostics stream disconnected."),
-              profileId: runProfileId,
-              modelId: runModelId,
-            },
-          }));
-          setToast(t("Diagnostics stream disconnected"));
-        };
+        source.onerror = () =>
+          finish("failed", t("Diagnostics stream disconnected."));
       } catch (error) {
-        const message =
+        finish(
+          "failed",
           error instanceof Error
             ? error.message
-            : t("Could not start diagnostics.");
-        setLogs((current) => `${current}[failed] ${message}\n`);
-        setDiagnosticsResults((current) => ({
-          ...current,
-          [service]: {
-            state: "failed",
-            message,
-            profileId: runProfileId,
-            modelId: runModelId,
-          },
-        }));
-        setToast(message);
-        setTestRunning(null);
+            : t("Could not start diagnostics."),
+        );
       }
     },
     [catalogEditable, draft, t],
@@ -1947,7 +2419,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const envelopeSignatureRef = useRef(envelopeSignature);
   envelopeSignatureRef.current = envelopeSignature;
 
-  const draftState: DraftState = !differsFromLive
+  const changedStoredDraft = storedDraft !== null && savedSignature !== null && envelopeSignature !== savedSignature;
+  const draftState: DraftState = !differsFromLive && !changedStoredDraft
     ? "clean"
     : envelopeSignature === savedSignature
       ? "saved"
@@ -1971,6 +2444,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   const settingsLoading = catalogEditable === null;
 
+  const editedUi = useMemo(() => ({ ...liveUi, ...(JSON.parse(pendingSignature).ui as Partial<UiSettings> | undefined),
+    }), [liveUi, pendingSignature],
+  );
   const value = useMemo<SettingsContextValue>(
     () => ({
       catalog,
@@ -1982,14 +2458,21 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       settingsError,
       reloadSettings: loadSettings,
       hasUnsavedChanges,
-      theme,
-      language,
-      responseLanguage,
-      codeBlockTheme,
-      codeBlockShowLineNumbers,
-      codeBlockWrapLongLines,
+      theme: editedUi.theme,
+      language: editedUi.language,
+      responseLanguage: editedUi.response_language,
+      codeBlockTheme: editedUi.code_block_theme,
+      codeBlockShowLineNumbers: editedUi.code_block_show_line_numbers,
+      codeBlockWrapLongLines: editedUi.code_block_wrap_long_lines,
+      contentFontScale: editedUi.content_font_scale,
+      contentLineSpacing: editedUi.content_line_spacing,
+      updateContentFontScale,
+      updateContentLineSpacing,
+      resetLearningText,
       toast,
       setToast,
+      focusModel,
+      clearFocusModel,
       updateTheme,
       updateLanguage,
       updateResponseLanguage,
@@ -2008,6 +2491,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       updateReasoningEffort,
       updateModelCapability,
       connectionTargets,
+      taskKinds,
       connectionTarget,
       addConnection,
       updateConnectionField,
@@ -2020,8 +2504,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       applying,
       saveDraft,
       applyCatalog,
+      saveProvider,
+      saveRegistry,
       applyService,
       discardDraft,
+      stagePreset,
       storedDraft,
       draftState,
       draftRevision,
@@ -2029,6 +2516,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       registerExtension,
       logs,
       testRunning,
+      modelTests,
       diagnosticsResults,
       embeddingCapabilities,
       runDetailedTest,
@@ -2042,13 +2530,17 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       setActiveSection,
     }),
     [
+      editedUi,
       activeSection,
       addModel,
       addProfile,
       applyDetectedContextWindow,
       applyCatalog,
+      saveProvider,
+      saveRegistry,
       applyService,
       applying,
+      stagePreset,
       draftState,
       storedDraft,
       draftRevision,
@@ -2056,20 +2548,17 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       discardDraft,
       catalog,
       catalogEditable,
-      codeBlockShowLineNumbers,
-      codeBlockTheme,
-      codeBlockWrapLongLines,
+      modelTests,
       diagnosticsResults,
       draft,
       embeddingCapabilities,
       embeddingDefaultDim,
       hasUnsavedChanges,
-      language,
-      responseLanguage,
       llmContextDetection,
       logs,
       mutateCatalog,
       connectionTargets,
+      taskKinds,
       connectionTarget,
       addConnection,
       updateConnectionField,
@@ -2093,8 +2582,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       goBackTour,
       status,
       testRunning,
-      theme,
       toast,
+      focusModel,
+      clearFocusModel,
       tourStepIndex,
       updateCodeBlockShowLineNumbers,
       updateCodeBlockTheme,
@@ -2107,6 +2597,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       updateModelBoolField,
       updateModelField,
       updateProfileField,
+      updateContentFontScale,
+      updateContentLineSpacing,
+      resetLearningText,
       updateTheme,
     ],
   );

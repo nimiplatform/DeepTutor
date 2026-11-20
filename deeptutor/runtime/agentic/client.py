@@ -54,7 +54,9 @@ _NATIVE_TOOL_BLOCKED_BINDINGS: frozenset[str] = frozenset(
 # backend needs an adapter branch, or tool schemas would be attached to a plain
 # AsyncOpenAI client pointed at a non-OpenAI wire format. github_copilot is
 # adapter-routed but deliberately excluded from this set.
-_NATIVE_TOOL_BACKENDS: frozenset[str] = frozenset({"anthropic", "openai_codex", "codebuddy"})
+_NATIVE_TOOL_BACKENDS: frozenset[str] = frozenset(
+    {"anthropic", "openai_codex", "codebuddy", "claude_code"}
+)
 _AGENTIC_CLIENT_POOL_MAXSIZE = 2
 _agentic_client_pool: "OrderedDict[tuple[Any, ...], Any]" = OrderedDict()
 _agentic_client_pool_lock = threading.RLock()
@@ -114,8 +116,24 @@ def _client_cache_key(
     )
 
 
+def AsyncOpenAI(**kwargs: Any) -> Any:
+    """Lazy SDK constructor; native turns need only the parameter helpers."""
+    from openai import AsyncOpenAI as Client
+
+    return Client(**kwargs)
+
+
+def AsyncAzureOpenAI(**kwargs: Any) -> Any:
+    from openai import AsyncAzureOpenAI as Client
+
+    return Client(**kwargs)
+
+
 def _build_openai_client(
-    config: LLMClientConfig, *, disable_ssl_verify: bool, sdk_max_retries: int | None = None
+    config: LLMClientConfig,
+    *,
+    disable_ssl_verify: bool,
+    sdk_max_retries: int | None = 0,
 ) -> Any:
     """Keep the loop's client shape while routing model execution through Nimi."""
     from deeptutor.nimi.llm import NimiLLMProvider
@@ -132,7 +150,8 @@ class _KeyRotatingCompletions:
         self._clients = clients
 
     async def create(self, **kwargs: Any) -> Any:
-        for attempt in range(2):
+        attempts = max(2, len(self._key_pool))
+        for attempt in range(attempts):
             api_key = self._key_pool.next()
             try:
                 return await self._clients[api_key].chat.completions.create(**kwargs)
@@ -143,7 +162,7 @@ class _KeyRotatingCompletions:
                 if status != 429:
                     raise
                 self._key_pool.mark_429(api_key)
-                if attempt:
+                if attempt == attempts - 1:
                     raise
         raise RuntimeError("LLM key rotation exhausted")
 
@@ -181,11 +200,17 @@ def build_openai_client(config: LLMClientConfig) -> Any:
     handle itself owns an HTTP connection pool, so reusing it is both faster
     and prevents a new allocator/socket high-water mark on every turn.
     """
+    from deeptutor.services.llm.metrics import instrument_client
+
     disable_ssl_verify = bool(load_system_settings()["disable_ssl_verify"])
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        return _build_openai_client(config, disable_ssl_verify=disable_ssl_verify)
+        return instrument_client(
+            _build_openai_client(config, disable_ssl_verify=disable_ssl_verify),
+            model=config.model or "",
+            provider=config.binding,
+        )
 
     key = _client_cache_key(config, loop, disable_ssl_verify)
     with _agentic_client_pool_lock:
@@ -193,7 +218,11 @@ def build_openai_client(config: LLMClientConfig) -> Any:
         if cached is not None:
             _agentic_client_pool.move_to_end(key)
             return cached
-        client = _build_openai_client(config, disable_ssl_verify=disable_ssl_verify)
+        client = instrument_client(
+            _build_openai_client(config, disable_ssl_verify=disable_ssl_verify),
+            model=config.model or "",
+            provider=config.binding,
+        )
         _agentic_client_pool[key] = client
         _agentic_client_pool.move_to_end(key)
         while len(_agentic_client_pool) > _AGENTIC_CLIENT_POOL_MAXSIZE:
@@ -241,6 +270,7 @@ def _build_anthropic_adapter(config: LLMClientConfig, spec: Any) -> Any:
         default_model=config.model or "claude-sonnet-4-20250514",
         extra_headers=config.extra_headers,
         supports_prompt_caching=spec.supports_prompt_caching,
+        binding=spec.name,
     )
     return _ProviderOpenAIAdapter(anthropic_provider)
 
@@ -251,6 +281,7 @@ def _build_codex_adapter(config: LLMClientConfig, spec: Any) -> Any:
 
     oauth_provider = OpenAICodexProvider(
         default_model=config.model or CODEX_DEFAULT_MODEL_ID,
+        extra_headers=config.extra_headers,
     )
     return _ProviderOpenAIAdapter(oauth_provider)
 
@@ -276,6 +307,12 @@ def _build_codebuddy_adapter(config: LLMClientConfig, spec: Any) -> Any:
     return _ProviderOpenAIAdapter(codebuddy_provider)
 
 
+def _build_claude_code_adapter(config: LLMClientConfig, spec: Any) -> Any:
+    from deeptutor.services.llm.provider_core import ClaudeCodeProvider
+
+    return _ProviderOpenAIAdapter(ClaudeCodeProvider(default_model=config.model or None))
+
+
 def _build_direct_openai_adapter(config: LLMClientConfig, spec: Any) -> Any:
     from deeptutor.services.llm.provider_core import OpenAICompatProvider
 
@@ -296,6 +333,7 @@ _NATIVE_ADAPTER_BUILDERS: dict[str, Callable[[LLMClientConfig, Any], Any]] = {
     "openai_codex": _build_codex_adapter,
     "github_copilot": _build_copilot_adapter,
     "codebuddy": _build_codebuddy_adapter,
+    "claude_code": _build_claude_code_adapter,
 }
 
 
@@ -350,6 +388,18 @@ class _ProviderOpenAIAdapter:
         if max_tokens is None:
             max_tokens = kwargs.pop("max_tokens", 4096)
         reasoning_effort = kwargs.pop("reasoning_effort", None)
+        if getattr(self._provider, "_binding", "") in {"minimax", "minimax_anthropic"} and (
+            model or self._provider.default_model
+        ).lower() in {"minimax-m3.1-flash", "minimax-m3"}:
+            # Convert the facade's OpenAI-only controls back to intent before
+            # the native Anthropic provider builds its protocol-specific body.
+            extra_body = dict(kwargs.pop("extra_body", None) or {})
+            thinking = extra_body.pop("thinking", None)
+            extra_body.pop("reasoning_split", None)
+            if thinking and reasoning_effort is None:
+                reasoning_effort = "none" if thinking.get("type") == "disabled" else "adaptive"
+            if extra_body:
+                kwargs["extra_body"] = extra_body
         kwargs.pop("stream_options", None)
 
         if stream:
@@ -441,31 +491,44 @@ class _ProviderOpenAIStream:
         self._extra_kwargs = extra_kwargs
         self._queue: asyncio.Queue[Any] | None = None
         self._task: asyncio.Task[None] | None = None
+        self._closed = False
         self._emitted_content = False
         self._emitted_reasoning = False
 
     def __aiter__(self) -> "_ProviderOpenAIStream":
-        if self._queue is None:
+        if self._queue is None and not self._closed:
             self._queue = asyncio.Queue()
             self._task = asyncio.create_task(self._run())
         return self
 
     async def __anext__(self) -> Any:
+        if self._closed:
+            raise StopAsyncIteration
         if self._queue is None:
             self.__aiter__()
         assert self._queue is not None
         item = await self._queue.get()
-        if item is None:
+        if self._closed or item is None:
+            self._closed = True
+            # Keep the terminal marker available to other pending readers.
+            self._queue.put_nowait(None)
             raise StopAsyncIteration
         if isinstance(item, Exception):
+            self._closed = True
+            self._queue.put_nowait(None)
             raise item
         return item
 
     async def close(self) -> None:
+        already_closed = self._closed
+        self._closed = True
+        if self._queue is not None:
+            # Cancellation before _run starts cannot execute its finally block.
+            self._queue.put_nowait(None)
         if self._task and not self._task.done():
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
+            if not already_closed:
+                self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
 
     def _raise_for_error_response(self, response: Any) -> None:
         """Turn an error-shaped response back into the exception it describes.

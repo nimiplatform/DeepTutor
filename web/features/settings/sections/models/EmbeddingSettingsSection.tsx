@@ -1,18 +1,15 @@
 "use client";
-
 import { useTranslation } from "react-i18next";
-
 import { NimiModelSettings } from "@/components/settings/NimiModelSettings";
 import { SettingsPageHeader } from "@/components/settings/shared";
-
 export default function EmbeddingSettingsPage() {
   const { t } = useTranslation();
   return (
     <div>
       <SettingsPageHeader
-        title={t("Embedding")}
+        title={t("Embedding models")}
         description={t(
-          "Configure embedding model profiles. Used by retrieval and knowledge-base ingestion.",
+          "Manage embedding models for retrieval and knowledge bases.",
         )}
       />
       <NimiModelSettings capability="text.embed" />

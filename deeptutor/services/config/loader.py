@@ -246,6 +246,7 @@ def get_agent_params(module_name: str) -> dict:
         "brainstorm": ("tools", "brainstorm"),
         "vision_solver": ("plugins", "vision_solver"),
         "math_animator": ("plugins", "math_animator"),
+        "video_lesson": ("plugins", "video_lesson"),
         "llm_probe": ("diagnostics", "llm_probe"),
     }
     path = get_runtime_settings_dir(PROJECT_ROOT) / "agents.yaml"
@@ -291,6 +292,7 @@ DEFAULT_CHAT_PARAMS: dict[str, Any] = {
     "max_rounds": 8,
     "exploring": {"max_tokens": 1600},
     "responding": {"max_tokens": 8000},
+    "reasoning_budget_recovery": {"strategy": "prompt", "max_tokens": 0},
 }
 
 # A capability that makes several different LLM calls cannot be described by
@@ -325,7 +327,7 @@ DEFAULT_RESEARCH_PARAMS: dict[str, Any] = {
     "outline": {"max_tokens": 2000},
     "report_outline": {"max_tokens": 2000},
     "report_intro": {"max_tokens": 3000},
-    "report_section": {"max_tokens": 6000},
+    "report_section": {"max_tokens": 12000},
     "report_conclusion": {"max_tokens": 3000},
 }
 

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
+from contextvars import copy_context
 from dataclasses import replace
 import json
 import logging
 from pathlib import Path
+import threading
 import time
 import traceback
 from typing import Any, Callable, Dict, List, Optional
@@ -22,15 +23,35 @@ from deeptutor.services.rag.index_versioning import (
     write_version_meta,
 )
 from deeptutor.services.rag.kb_paths import resolve_kb_dir
+from deeptutor.services.rag.visual_assets import VisualAssetStore
 
 from . import storage
 from .config import default_top_k, should_show_progress
 from .document_loader import LlamaIndexDocumentLoader
 from .embedding_adapter import (
+    CustomEmbedding,
+    bind_operation_embedding,
     configure_llamaindex_settings,
+    current_embedding,
+    set_progress_callback,
     verify_embedding_connectivity,
 )
 from .errors import search_error_result
+
+
+def _notify_indexed_files(documents: list[Any], callback: Callable[..., Any] | None) -> None:
+    """Tell the caller which source files actually landed in the index."""
+    if callback is None:
+        return
+    indexed_paths: set[str] = set()
+    for document in documents:
+        metadata = getattr(document, "metadata", None)
+        if isinstance(metadata, dict):
+            path = metadata.get("file_path")
+            if isinstance(path, str) and path:
+                indexed_paths.add(path)
+    callback(sorted(indexed_paths))
+
 
 DEFAULT_KB_BASE_DIR = str(get_runtime_data_root() / "knowledge_bases")
 
@@ -39,6 +60,8 @@ DEFAULT_KB_BASE_DIR = str(get_runtime_data_root() / "knowledge_bases")
 _INDEX_STALL_TIMEOUT_SECONDS = 600.0
 # How often the stall guard checks the progress heartbeat.
 _INDEX_STALL_POLL_SECONDS = 5.0
+_INDEX_WORKERS: dict[str, threading.Event] = {}
+_INDEX_WORKERS_LOCK = threading.Lock()
 
 SignatureProvider = Callable[[], EmbeddingSignature | None]
 
@@ -47,12 +70,48 @@ class IndexingStallError(RuntimeError):
     """Raised when an indexing operation makes no progress for too long."""
 
 
+def _worker_busy_error() -> IndexingStallError:
+    return IndexingStallError(
+        "A previous indexing worker for this knowledge base is still running. "
+        "Wait for it to finish or restart DeepTutor before retrying."
+    )
+
+
+def _ensure_index_worker_available(key: str) -> None:
+    with _INDEX_WORKERS_LOCK:
+        marker = _INDEX_WORKERS.get(key)
+        if marker is not None and not marker.is_set():
+            raise _worker_busy_error()
+
+
+def _claim_index_worker(key: str | None) -> threading.Event | None:
+    if key is None:
+        return None
+    with _INDEX_WORKERS_LOCK:
+        previous = _INDEX_WORKERS.get(key)
+        if previous is not None and not previous.is_set():
+            raise _worker_busy_error()
+        marker = threading.Event()
+        _INDEX_WORKERS[key] = marker
+        return marker
+
+
+def _release_index_worker(key: str | None, marker: threading.Event | None) -> None:
+    if key is None or marker is None:
+        return
+    marker.set()
+    with _INDEX_WORKERS_LOCK:
+        if _INDEX_WORKERS.get(key) is marker:
+            _INDEX_WORKERS.pop(key, None)
+
+
 async def _run_with_stall_guard(
     fn: Callable[[], Any],
     *,
-    embedding_model: Any,
+    embedding_model: Any = None,
     progress_callback: Optional[Callable[..., Any]] = None,
     stall_timeout: Optional[float] = None,
+    worker_key: str | None = None,
 ) -> Any:
     """Run a synchronous indexing step in the executor, failing if it stalls.
 
@@ -66,32 +125,53 @@ async def _run_with_stall_guard(
     for ``stall_timeout`` seconds.
 
     The sync function keeps running in its thread after a stall is raised —
-    Python cannot interrupt arbitrary synchronous code — but the API call
-    fails fast with an actionable message instead of waiting forever.
-
-    Observe the captured embedding adapter used by this operation, rather
-    than the unrelated process-global Settings default. Deliver progress on
-    the caller's loop so WebSocket notifications use their owning loop.
+    Python cannot interrupt arbitrary synchronous code. Its callback becomes
+    silent and a same-KB retry is rejected until that thread actually exits.
     """
     if stall_timeout is None:
         stall_timeout = _INDEX_STALL_TIMEOUT_SECONDS
 
+    worker_marker = _claim_index_worker(worker_key)
+    progress_live = threading.Event()
+    progress_live.set()
     last_progress = {"at": time.monotonic()}
     loop = asyncio.get_running_loop()
-    active = True
+    loop_thread = threading.current_thread()
 
-    async def _deliver_progress(args, kwargs) -> None:
-        if not active:
+    async def _deliver_progress(args: Any, kwargs: Any) -> None:
+        if not progress_live.is_set():
             return
         last_progress["at"] = time.monotonic()
         if progress_callback is not None:
             progress_callback(*args, **kwargs)
 
     def _heartbeat(*args: Any, **kwargs: Any) -> None:
-        if active:
-            # The synchronous adapter runs in the executor. Waiting here also
-            # preserves callback errors and orders progress before completion.
-            asyncio.run_coroutine_threadsafe(_deliver_progress(args, kwargs), loop).result()
+        if not progress_live.is_set():
+            return
+        if threading.current_thread() is loop_thread:
+            last_progress["at"] = time.monotonic()
+            if progress_callback is not None:
+                progress_callback(*args, **kwargs)
+            return
+        asyncio.run_coroutine_threadsafe(_deliver_progress(args, kwargs), loop).result()
+
+    def _work() -> Any:
+        try:
+            return fn()
+        finally:
+            _release_index_worker(worker_key, worker_marker)
+
+    set_progress_callback(_heartbeat)
+    if embedding_model is not None and hasattr(embedding_model, "set_progress_callback"):
+        embedding_model.set_progress_callback(_heartbeat)
+    try:
+        future = loop.run_in_executor(None, copy_context().run, _work)
+    except BaseException:
+        progress_live.clear()
+        if embedding_model is not None and hasattr(embedding_model, "set_progress_callback"):
+            embedding_model.set_progress_callback(None)
+        _release_index_worker(worker_key, worker_marker)
+        raise
 
     def _consume_terminal_exception(fut: "asyncio.Future[Any]") -> None:
         # The stalled thread may finish after we raise; retrieve its exception
@@ -99,10 +179,7 @@ async def _run_with_stall_guard(
         if not fut.cancelled():
             fut.exception()
 
-    future = None
-    embedding_model.set_progress_callback(_heartbeat)
     try:
-        future = loop.run_in_executor(None, contextvars.copy_context().run, fn)
         while True:
             done, _ = await asyncio.wait({future}, timeout=_INDEX_STALL_POLL_SECONDS)
             if done:
@@ -111,18 +188,21 @@ async def _run_with_stall_guard(
             if stalled_for > stall_timeout:
                 raise IndexingStallError(
                     f"Indexing made no progress for {stalled_for:.0f}s while "
-                    "processing documents. Check document parsing, local indexing "
-                    "and the embedding service before retrying."
+                    "embedding documents. Check the embedding endpoint; wait "
+                    "for the worker to finish or restart DeepTutor before retrying."
                 )
     finally:
-        active = False
-        embedding_model.set_progress_callback(None)
-        if future is not None and not future.done():
+        progress_live.clear()
+        if embedding_model is not None and hasattr(embedding_model, "set_progress_callback"):
+            embedding_model.set_progress_callback(None)
+        if not future.done():
             future.add_done_callback(_consume_terminal_exception)
 
 
 class LlamaIndexPipeline:
     """Pipeline that indexes and retrieves KB content via LlamaIndex."""
+
+    supports_document_scope = True
 
     def __init__(
         self,
@@ -135,10 +215,15 @@ class LlamaIndexPipeline:
         self.kb_base_dir = kb_base_dir or DEFAULT_KB_BASE_DIR
         self._signature_provider = signature_provider or signature_from_embedding_config
         self.document_loader = document_loader or LlamaIndexDocumentLoader(self.logger)
-        self._configure_settings()
 
-    def _configure_settings(self) -> None:
-        configure_llamaindex_settings(self.logger)
+    def _configure_settings(self) -> CustomEmbedding | None:
+        return configure_llamaindex_settings(self.logger)
+
+    async def _configure_settings_async(self) -> None:
+        """Build the provider in a worker; publish scoped state in the calling task."""
+        adapter = await asyncio.to_thread(self._configure_settings)
+        if adapter is not None:
+            bind_operation_embedding(adapter)
 
     async def _verify_embedding_connectivity(self) -> None:
         await verify_embedding_connectivity(self.logger)
@@ -162,28 +247,61 @@ class LlamaIndexPipeline:
         from deeptutor.services.embedding import get_embedding_client
         from deeptutor.services.rag.embedding_signature import signature_from_config
 
-        from .embedding_adapter import CustomEmbedding
+        cfg = get_embedding_config()
+        if cfg.binding == "nimi" and not cfg.space_id:
+            space_id, dimension = await get_embedding_client().probe_space()
+            config = replace(cfg, space_id=space_id, dim=dimension)
+            adapter = CustomEmbedding(embedding_config=config)
+            bind_operation_embedding(adapter)
+            return signature_from_config(config), adapter
+        if cfg.binding == "nimi":
+            adapter = CustomEmbedding(embedding_config=cfg)
+            bind_operation_embedding(adapter)
+            return signature_from_config(cfg), adapter
+        return self._current_signature(), current_embedding()
 
-        space_id, dimension = await get_embedding_client().probe_space()
-        config = replace(get_embedding_config(), space_id=space_id, dim=dimension)
-        return signature_from_config(config), CustomEmbedding(embedding_config=config)
+    @staticmethod
+    def _embedding_source_records(run: Any) -> dict[str, storage.EmbeddingSourceRecord]:
+        return {
+            key: storage.EmbeddingSourceRecord(key=key, path=path, source_hash=source_hash)
+            for key, (path, source_hash) in run.source_receipts().items()
+        }
 
     async def initialize(self, kb_name: str, file_paths: List[str], **kwargs) -> bool:
+        from deeptutor.knowledge.indexing_run import current_run
+
         progress_callback = kwargs.get("progress_callback")
         image_progress_callback = kwargs.get("image_progress_callback")
-        self._configure_settings()
+        kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
+        _ensure_index_worker_available(str(kb_dir.resolve()))
+        await self._configure_settings_async()
 
         self.logger.info(
             f"Initializing KB '{kb_name}' with {len(file_paths)} files using LlamaIndex"
         )
 
-        kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
         signature, embedding_model = await self._prepare_embedding()
-        storage_dir = resolve_storage_dir_for_rebuild(kb_dir, signature)
+        run = current_run()
+        source_records = self._embedding_source_records(run) if run is not None else {}
+        storage_dir = storage.resolve_resumable_rebuild_dir(
+            kb_dir,
+            signature,
+            previous_run=run.previous_run if run is not None else None,
+            source_records=source_records,
+        )
+        resumed = storage_dir is not None
+        if storage_dir is None:
+            storage_dir = resolve_storage_dir_for_rebuild(kb_dir, signature, publication_guard=True)
+        if run is not None:
+            run.set_candidate_storage(storage_dir)
 
         try:
+            visual_candidates: list[Any] = []
             documents = await self.document_loader.load(
-                file_paths, image_progress_callback=image_progress_callback
+                file_paths,
+                image_progress_callback=image_progress_callback,
+                kb_dir=kb_dir,
+                visual_candidates=visual_candidates,
             )
             if not documents:
                 self.logger.error("No valid documents found")
@@ -194,20 +312,40 @@ class LlamaIndexPipeline:
                 f"(chunking + embedding)..."
             )
 
+            # #1802: validate and publish pixels before persisting nodes that
+            # reference them. Failed indexing can leave unused immutable assets;
+            # failed asset publication must not leave a partially accepted index.
+            VisualAssetStore(kb_dir).publish(visual_candidates, prune_missing=True)
+
+            def checkpoint_document(path: Path, embedding_reused: bool) -> None:
+                if run is not None:
+                    run.document(
+                        path,
+                        "completed",
+                        embedding_checkpoint=True,
+                        embedding_reused=embedding_reused,
+                    )
+
             await _run_with_stall_guard(
-                lambda: storage.create_index(
+                lambda: storage.create_resumable_index(
                     documents,
                     storage_dir,
+                    source_records=source_records,
+                    signature=signature,
                     show_progress=should_show_progress(),
+                    checkpoint_callback=checkpoint_document if run is not None else None,
                     embedding_model=embedding_model,
                 ),
                 embedding_model=embedding_model,
                 progress_callback=progress_callback,
+                worker_key=str(kb_dir.resolve()),
             )
 
             self.logger.info(f"Index persisted to {storage_dir}")
-            if signature is not None:
-                write_version_meta(kb_dir, signature, storage_dir=storage_dir)
+            if resumed:
+                self.logger.info(f"Resumed interrupted LlamaIndex candidate at {storage_dir}")
+            await self._publish_verified(kb_dir, storage_dir, signature, documents)
+            _notify_indexed_files(documents, kwargs.get("indexed_file_callback"))
 
             self.logger.info(f"KB '{kb_name}' initialized successfully with LlamaIndex")
             return True
@@ -215,7 +353,9 @@ class LlamaIndexPipeline:
         except Exception as exc:
             self.logger.error(f"Failed to initialize KB: {exc}")
             self.logger.error(traceback.format_exc())
-            self._cleanup_failed_version_dir(storage_dir, signature)
+            # A timed-out executor can still be writing to this directory.
+            if not isinstance(exc, IndexingStallError):
+                self._cleanup_failed_version_dir(storage_dir, signature)
             raise
 
     async def search(
@@ -225,7 +365,28 @@ class LlamaIndexPipeline:
         **kwargs,
     ) -> Dict[str, Any]:
         kwargs.pop("mode", None)
-        self._configure_settings()
+        # Numbered exercises require structural lookup: tokenization discards
+        # chapter numbers, while top-k fragments omit tables and continuation.
+        # This uses completed parses only and leaves ordinary semantic queries
+        # on the existing embedding/retrieval path.
+        from .exercise_lookup import lookup_exercises, requested_exercises
+
+        document_keys = kwargs.get("document_keys")
+        if document_keys is not None and not document_keys:
+            return self._nodes_to_result(query, [])
+        exact_request = bool(requested_exercises(query)[0])
+        if exact_request and document_keys is None:
+            kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
+            try:
+                exact = await asyncio.to_thread(
+                    lookup_exercises, query, kb_dir, Path(self.kb_base_dir).parent / "parse_cache"
+                )
+            except Exception:
+                self.logger.exception("Exercise lookup unavailable; using normal retrieval")
+            else:
+                if exact is not None:
+                    return exact
+        await self._configure_settings_async()
         self.logger.info(f"Searching KB '{kb_name}' with query: {query[:50]}...")
 
         kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
@@ -240,7 +401,7 @@ class LlamaIndexPipeline:
             return {
                 "query": query,
                 "answer": (
-                    "This knowledge base has no index for the active embedding "
+                    "This knowledge base has no index for its selected embedding "
                     "model. Re-index it (or switch back to a previously-used "
                     "embedding model) before querying."
                 ),
@@ -249,15 +410,45 @@ class LlamaIndexPipeline:
                 "needs_reindex": True,
             }
 
+        if exact_request and document_keys is not None:
+            try:
+                exact = await asyncio.to_thread(
+                    lookup_exercises,
+                    query,
+                    kb_dir,
+                    Path(self.kb_base_dir).parent / "parse_cache",
+                    document_keys=document_keys,
+                    storage_dir=storage_dir,
+                )
+            except Exception:
+                self.logger.exception(
+                    "Scoped exercise evidence unavailable; using normal retrieval"
+                )
+            else:
+                if exact is not None and exact.get("sources"):
+                    return exact
+
         embedding_mismatch_warning = self._embedding_mismatch_warning(kb_name)
 
         try:
             loop = asyncio.get_running_loop()
             top_k = kwargs.get("top_k") or default_top_k()
+            # Plain-text nodes carry no document_key; the scoped matcher also
+            # needs the raw root to recognise them by location (#2374).
+            scope_kwargs = (
+                {"document_keys": document_keys, "raw_root": kb_dir / "raw"}
+                if document_keys is not None
+                else {}
+            )
             nodes = await loop.run_in_executor(
                 None,
-                contextvars.copy_context().run,
-                lambda: storage.retrieve_nodes(storage_dir, query, top_k=top_k),
+                copy_context().run,
+                lambda: storage.retrieve_nodes(
+                    storage_dir,
+                    query,
+                    top_k=top_k,
+                    **scope_kwargs,
+                ),
             )
 
             result = self._nodes_to_result(
@@ -335,6 +526,32 @@ class LlamaIndexPipeline:
                     "chunk_id": node.node.node_id or str(i),
                     "score": round(node.score, 4) if node.score is not None else "",
                     **({"text": node.node.text} if include_source_content else {}),
+                    **(
+                        {
+                            "document_key": meta["document_key"],
+                            "source_digest": meta.get("source_digest", ""),
+                            "source_schema_version": meta.get("source_schema_version", 0),
+                            "page_index": meta.get("page_index"),
+                            "page_label": meta.get("page_label", ""),
+                            "parser_signature": meta.get("parser_signature", ""),
+                            "page_status": meta.get("page_status", "unlocated"),
+                            "visual_status": meta.get("visual_status", "unknown"),
+                            "evidence_text": node.node.text[:6000],
+                        }
+                        if meta.get("document_key")
+                        else {}
+                    ),
+                    **(
+                        {
+                            "visual_asset_id": meta["visual_asset_id"],
+                            "source_document_id": meta.get("source_document_id", ""),
+                            "bbox": meta.get("bbox"),
+                            "caption": meta.get("caption", ""),
+                            "source_locator": meta.get("source_locator", ""),
+                        }
+                        if meta.get("visual_asset_id")
+                        else {}
+                    ),
                 }
             )
 
@@ -350,22 +567,28 @@ class LlamaIndexPipeline:
     async def add_documents(self, kb_name: str, file_paths: List[str], **kwargs) -> bool:
         progress_callback = kwargs.get("progress_callback")
         image_progress_callback = kwargs.get("image_progress_callback")
-        self._configure_settings()
+        kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
+        _ensure_index_worker_available(str(kb_dir.resolve()))
+        await self._configure_settings_async()
 
         self.logger.info(f"Adding {len(file_paths)} documents to KB '{kb_name}' using LlamaIndex")
 
-        kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)
         signature, embedding_model = await self._prepare_embedding()
         plan = storage.resolve_add_storage_plan(kb_dir, signature)
 
         try:
+            visual_candidates: list[Any] = []
             documents = await self.document_loader.load(
-                file_paths, image_progress_callback=image_progress_callback
+                file_paths,
+                image_progress_callback=image_progress_callback,
+                kb_dir=kb_dir,
+                visual_candidates=visual_candidates,
             )
             if not documents:
                 self.logger.warning("No valid documents to add")
                 return False
 
+            VisualAssetStore(kb_dir).publish(visual_candidates)
             if plan.existing_storage is not None:
                 self.logger.info(f"Loading existing index from {plan.existing_storage}...")
                 num_added = await _run_with_stall_guard(
@@ -377,10 +600,10 @@ class LlamaIndexPipeline:
                     ),
                     embedding_model=embedding_model,
                     progress_callback=progress_callback,
+                    worker_key=str(kb_dir.resolve()),
                 )
                 self.logger.info(f"Added {num_added} documents to existing index")
-                if signature is not None and plan.storage_dir != plan.existing_storage:
-                    write_version_meta(kb_dir, signature, storage_dir=plan.storage_dir)
+
             else:
                 self.logger.info(f"Creating new index with {len(documents)} documents...")
                 plan.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -393,20 +616,52 @@ class LlamaIndexPipeline:
                     ),
                     embedding_model=embedding_model,
                     progress_callback=progress_callback,
+                    worker_key=str(kb_dir.resolve()),
                 )
                 self.logger.info(f"Created new index with {num_added} documents")
-                if signature is not None:
-                    write_version_meta(kb_dir, signature, storage_dir=plan.storage_dir)
 
+            await self._publish_verified(kb_dir, plan.storage_dir, signature, documents)
+            _notify_indexed_files(documents, kwargs.get("indexed_file_callback"))
             self.logger.info(f"Successfully added documents to KB '{kb_name}'")
             return True
 
         except Exception as exc:
             self.logger.error(f"Failed to add documents: {exc}")
             self.logger.error(traceback.format_exc())
-            if plan.existing_storage is None or plan.storage_dir != plan.existing_storage:
+            if not isinstance(exc, IndexingStallError) and (
+                plan.existing_storage is None or plan.storage_dir != plan.existing_storage
+            ):
                 self._cleanup_failed_version_dir(plan.storage_dir, signature)
             raise
+
+    async def _publish_verified(self, kb_dir, storage_dir, signature, documents):
+        from deeptutor.knowledge.indexing_run import current_run
+        from deeptutor.services.file_io import atomic_write_json
+
+        run = current_run()
+        if run:
+            run.phase("verifying")
+        await asyncio.to_thread(storage.verify_persisted_index, storage_dir)
+        if run:
+            await asyncio.to_thread(run.verify_sources)
+        if signature is not None:
+            write_version_meta(kb_dir, signature, storage_dir=storage_dir)
+        else:
+            atomic_write_json(
+                storage_dir / "meta.json",
+                {
+                    "version": storage_dir.name,
+                    "provider": "llamaindex",
+                    "state": "published",
+                    "readiness_verified": True,
+                },
+            )
+        if run:
+            run.data["usable_version"] = storage_dir.name
+            for document in documents:
+                path = (getattr(document, "metadata", None) or {}).get("file_path")
+                if path:
+                    run.document(Path(path), "completed")
 
     async def delete(self, kb_name: str) -> bool:
         kb_dir = resolve_kb_dir(self.kb_base_dir, kb_name)

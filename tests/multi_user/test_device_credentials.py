@@ -381,6 +381,11 @@ def test_disabled_account_fails_closed(mu_isolated_root, monkeypatch):
 def test_heartbeat_enforces_freshness_daily_limit_and_day_rollover(mu_isolated_root, monkeypatch):
     client, users = _client(mu_isolated_root, monkeypatch)
     learner_id = users["learner"]["id"]
+    from deeptutor.multi_user import device_credentials
+
+    # Keep issuance, login, and quota exhaustion on one UTC day before rollover.
+    started = datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(device_credentials, "utc_now", lambda: started)
     issued = client.post(
         "/api/auth/devices",
         headers=_auth(users["admin_token"]),
@@ -398,15 +403,6 @@ def test_heartbeat_enforces_freshness_daily_limit_and_day_rollover(mu_isolated_r
     assert login.status_code == 200
     token = login.cookies["dt_token"]
 
-    listed = client.get(
-        "/api/auth/devices",
-        headers=_auth(users["admin_token"]),
-    ).json()["devices"]
-    started = datetime.fromisoformat(listed[0]["last_heartbeat_at"])
-
-    from deeptutor.multi_user import device_credentials
-
-    monkeypatch.setattr(device_credentials, "utc_now", lambda: started)
     first = client.post("/api/auth/device/heartbeat", headers=_auth(token))
     assert first.status_code == 200
     assert first.json()["remaining_seconds"] == 300
@@ -510,3 +506,45 @@ def _add_seconds(value: datetime, seconds: int) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value + timedelta(seconds=seconds)
+
+
+def test_device_login_admits_non_admin_learner_accounts_and_still_rejects_admins(
+    mu_isolated_root, monkeypatch
+):
+    from deeptutor.multi_user.identity import save_user
+    from deeptutor.services.auth import hash_password
+
+    client, users = _client(mu_isolated_root, monkeypatch)
+    teacher = save_user("tess", hash_password("teacher-password"), role="teacher", preset="learner")
+    issued = client.post(
+        "/api/auth/devices",
+        headers=_auth(users["admin_token"]),
+        json={
+            "user_id": teacher["id"],
+            "device_name": "Teacher tablet",
+            "expires_in_days": 30,
+            "daily_limit_minutes": 30,
+        },
+    )
+    assert issued.status_code == 201, issued.text
+
+    login = client.post(
+        "/api/auth/device-login",
+        json={"pairing_code": issued.json()["pairing_code"], "pin": issued.json()["pin"]},
+    )
+    assert login.status_code == 200, login.text
+    assert login.json()["username"] == "tess"
+    assert login.json()["role"] == "teacher"
+
+    admin_issue = client.post(
+        "/api/auth/devices",
+        headers=_auth(users["admin_token"]),
+        json={
+            "user_id": users["admin"]["id"],
+            "device_name": "Admin tablet",
+            "expires_in_days": 30,
+            "daily_limit_minutes": 30,
+        },
+    )
+    assert admin_issue.status_code == 400
+    assert "active learner account" in admin_issue.json()["detail"]

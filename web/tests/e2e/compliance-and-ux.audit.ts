@@ -1,4 +1,9 @@
+import { sourceModuleInventory } from "./fixtures/modules";
 import { test, expect } from "@playwright/test";
+
+test.beforeEach(async ({ page }) => {
+  await page.route(url => url.pathname === "/api/modules", route => route.fulfill({ json: sourceModuleInventory }));
+});
 
 // Minimal compliance and UX checks without external deps (axe-core)
 // Focus on semantic landmarks, headings, alt text, link names, and basic error messaging.
@@ -12,17 +17,17 @@ async function expectAnyVisible(
   locators: import("@playwright/test").Locator[],
   message: string,
 ) {
-  for (const loc of locators) {
-    try {
-      if (await loc.first().isVisible()) return;
-    } catch {}
-  }
-  expect(false, message).toBe(true);
+  await expect.poll(async () => {
+    for (const loc of locators) {
+      if (await loc.first().isVisible()) return true;
+    }
+    return false;
+  }, { message }).toBe(true);
 }
 
 test.describe("Compliance :: Accessibility & Semantics", () => {
   test("home page exposes main landmark and H1", async ({ page }) => {
-    await page.goto(`${BASE_URL}/`);
+    await page.goto(`${BASE_URL}/`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("main", { timeout: 5000 });
     const main = page.locator("main");
     await expect(main, "Missing <main> landmark").toBeVisible();
@@ -32,7 +37,7 @@ test.describe("Compliance :: Accessibility & Semantics", () => {
   });
 
   test("images provide alt text", async ({ page }) => {
-    await page.goto(`${BASE_URL}/`);
+    await page.goto(`${BASE_URL}/`, { waitUntil: "domcontentloaded" });
     const missingAltCount = await page.$$eval(
       "img",
       (imgs) =>
@@ -49,7 +54,7 @@ test.describe("Compliance :: Accessibility & Semantics", () => {
   test("links have accessible names (text/aria-label/title)", async ({
     page,
   }) => {
-    await page.goto(`${BASE_URL}/`);
+    await page.goto(`${BASE_URL}/`, { waitUntil: "domcontentloaded" });
     const namelessLinks = await page.$$eval(
       "a",
       (anchors) =>
@@ -75,7 +80,7 @@ test.describe("Compliance :: Accessibility & Semantics", () => {
   });
 
   test("viewport meta present for responsive UX", async ({ page }) => {
-    await page.goto(`${BASE_URL}/`);
+    await page.goto(`${BASE_URL}/`, { waitUntil: "domcontentloaded" });
     const hasViewport = await page.$('meta[name="viewport"]');
     expect(!!hasViewport, "Missing viewport meta tag").toBe(true);
   });
@@ -85,7 +90,7 @@ test.describe("Compliance :: Error Handling & UX Signals", () => {
   test("api error surfaces user-friendly feedback (alert or message)", async ({
     page,
   }) => {
-    await page.route("**/api/notebooks", (route) =>
+    await page.route("**/api/notebooks*", (route) =>
       route.fulfill({
         status: 500,
         headers: { "content-type": "application/json" },
@@ -93,7 +98,7 @@ test.describe("Compliance :: Error Handling & UX Signals", () => {
       }),
     );
 
-    await page.goto(`${BASE_URL}/notebooks`);
+    await page.goto(`${BASE_URL}/notebooks`, { waitUntil: "domcontentloaded" });
 
     await expectAnyVisible(
       [

@@ -10,7 +10,7 @@ export default function ConnectionsSettingsPage() {
   return (
     <div>
       <SettingsPageHeader
-        title={t("Connections")}
+        title={t("Providers")}
         description={t(
           "Text, retrieval, speech, image and video models are managed by Nimi for this app. Configure search credentials in Search settings.",
         )}

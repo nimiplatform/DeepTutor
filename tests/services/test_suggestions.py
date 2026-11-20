@@ -106,27 +106,25 @@ def _write_cache(root: Path, payload: dict) -> None:
 # ── Shaping ──────────────────────────────────────────────────────────────
 
 
-def test_sanitize_accepts_a_plain_array() -> None:
+def test_sanitize_takes_the_first_usable_line() -> None:
+    """One line is shown; a model that offers more still gave a usable one."""
     items = suggestions._sanitize(_THREE, "en")
 
-    assert [item.label for item in items] == [
-        "How agentic RAG differs from naive RAG",
-        "Why the chain rule underlies backprop",
-        "What an eigenvalue actually measures",
+    assert [item.label for item in items] == ["How agentic RAG differs from naive RAG"]
+
+
+def test_sanitize_accepts_a_bare_object() -> None:
+    raw = json.dumps({"label": "When BM25 still beats embeddings", "prompt": "Compare them."})
+
+    assert [item.label for item in suggestions._sanitize(raw, "en")] == [
+        "When BM25 still beats embeddings"
     ]
 
 
 def test_sanitize_accepts_a_fenced_array_with_prose_around_it() -> None:
     raw = f"Sure, here they are:\n```json\n{_THREE}\n```\nHope that helps!"
 
-    assert len(suggestions._sanitize(raw, "en")) == 3
-
-
-def test_sanitize_discards_a_partial_set() -> None:
-    """One lonely line under the composer reads as a rendering bug."""
-    raw = json.dumps([{"label": "a", "prompt": "b"}, {"label": "c", "prompt": "d"}])
-
-    assert suggestions._sanitize(raw, "en") == ()
+    assert len(suggestions._sanitize(raw, "en")) == 1
 
 
 def test_sanitize_bounds_are_per_language() -> None:
@@ -155,7 +153,7 @@ def test_sanitize_bounds_are_per_language() -> None:
         ]
     )
 
-    assert len(suggestions._sanitize(english, "en")) == 3
+    assert len(suggestions._sanitize(english, "en")) == 1
     # The same text under the Chinese bound is correctly judged over-long.
     assert suggestions._sanitize(english, "zh") == ()
 
@@ -170,7 +168,13 @@ def test_sanitize_drops_items_that_ignored_the_brief() -> None:
         ]
     )
 
-    # Three were dropped, so the batch is short and goes entirely.
+    # The three that ignored the brief are passed over for the one that did.
+    assert [i.label for i in suggestions._sanitize(raw, "en")] == ["good"]
+
+
+def test_sanitize_is_empty_when_nothing_is_usable() -> None:
+    raw = json.dumps([{"label": "x" * 200, "prompt": "fine"}, {"label": "missing prompt"}])
+
     assert suggestions._sanitize(raw, "en") == ()
 
 
@@ -184,7 +188,7 @@ def test_sanitize_dedupes_repeated_labels() -> None:
         ]
     )
 
-    assert [i.label for i in suggestions._sanitize(raw, "en")] == ["Same", "Other", "Third"]
+    assert [i.label for i in suggestions._sanitize(raw, "en")] == ["Same"]
 
 
 def test_sanitize_strips_quotes_and_collapses_whitespace() -> None:
@@ -201,8 +205,8 @@ def test_sanitize_strips_quotes_and_collapses_whitespace() -> None:
     assert items[0].prompt == "a ragged question"
 
 
-def test_sanitize_rejects_non_arrays() -> None:
-    assert suggestions._sanitize('{"label": "x", "prompt": "y"}', "en") == ()
+def test_sanitize_rejects_what_is_not_a_suggestion() -> None:
+    assert suggestions._sanitize('"just a string"', "en") == ()
     assert suggestions._sanitize("no json here at all", "en") == ()
 
 
@@ -424,7 +428,7 @@ async def test_expired_cache_is_still_served_while_it_regenerates(
 
     await asyncio.gather(*suggestions._inflight.values())
     after = await suggestions.get_suggestions()
-    assert len(after["suggestions"]) == 3
+    assert len(after["suggestions"]) == 1
 
 
 @pytest.mark.asyncio
@@ -553,7 +557,7 @@ async def test_l3_alone_is_enough_material(monkeypatch: pytest.MonkeyPatch, no_m
 
     result = await suggestions.refresh_suggestions()
 
-    assert len(result.suggestions) == 3
+    assert len(result.suggestions) == 1
     assert "Rerankers" in calls[0]
 
 
@@ -634,7 +638,7 @@ async def test_a_failed_generation_is_not_cached_over_the_material(
     calls = _stub_llm(monkeypatch, _THREE)
     await suggestions._regenerate_if_due()
     assert len(calls) == 1
-    assert len((await suggestions.get_suggestions())["suggestions"]) == 3
+    assert len((await suggestions.get_suggestions())["suggestions"]) == 1
 
 
 @pytest.mark.asyncio
@@ -703,8 +707,141 @@ async def test_two_users_never_see_each_others_suggestions(
 
     await suggestions.refresh_suggestions()
     mine = await suggestions.get_suggestions()
-    assert len(mine["suggestions"]) == 3
+    assert len(mine["suggestions"]) == 1
 
     current["root"] = bob
     theirs = await suggestions.get_suggestions()
     assert theirs["suggestions"] == []
+
+
+@pytest.mark.asyncio
+async def test_material_collection_does_not_block_the_event_loop(monkeypatch):
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def collect(_):
+        entered.set()
+        release.wait(2)
+        return suggestions._Material(profile="", topics=[])
+
+    monkeypatch.setattr(suggestions, "_collect_material", collect)
+    task = asyncio.create_task(suggestions.refresh_suggestions())
+    try:
+        for _ in range(50):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert entered.is_set()
+        assert not task.done()
+    finally:
+        release.set()
+        result = await task
+    assert result.status == "no-material"
+
+
+@pytest.mark.asyncio
+async def test_manual_refresh_joins_background_generation_and_reports_failure(monkeypatch):
+    _stub_material(monkeypatch, [_hit("chat", "Chain rule")])
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+    import deeptutor.services.llm as llm
+
+    async def complete(**kwargs):
+        calls.append(1)
+        entered.set()
+        await release.wait()
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(llm, "complete", complete)
+    await suggestions.get_suggestions()
+    await entered.wait()
+    manual = asyncio.create_task(suggestions.refresh_suggestions())
+    await asyncio.sleep(0)
+    release.set()
+    assert (await manual).status == "error"
+    after = await suggestions.get_suggestions()
+    assert after["status"] == "error"
+    assert after["stale"] is False
+    assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_total_generation_deadline_includes_material_collection(monkeypatch):
+    def collect(_):
+        time.sleep(0.05)
+        return suggestions._Material(profile="", topics=[])
+
+    monkeypatch.setattr(suggestions, "_collect_material", collect)
+    monkeypatch.setattr(suggestions, "_REFRESH_TIMEOUT", 0.005)
+    result = await suggestions.refresh_suggestions()
+    assert result.status == "error"
+    assert suggestions._load() is None
+    await asyncio.sleep(0.06)
+
+
+@pytest.mark.asyncio
+async def test_short_starters_request_does_not_spend_its_budget_on_hidden_reasoning(monkeypatch):
+    _stub_material(monkeypatch, [_hit("chat", "Chain rule")])
+    import deeptutor.services.llm as llm
+
+    seen = []
+
+    async def complete(**kwargs):
+        seen.append(kwargs)
+        return _THREE if kwargs.get("reasoning_effort") == "none" else ""
+
+    monkeypatch.setattr(llm, "complete", complete)
+    result = await suggestions.refresh_suggestions()
+    assert result.status == "ready"
+    assert len(result.suggestions) == 1
+    assert seen[0]["reasoning_effort"] == "none"
+
+
+@pytest.mark.asyncio
+async def test_each_refresh_steers_clear_of_what_was_just_offered(monkeypatch) -> None:
+    """Asking for another must give another: the next generation is told what the
+    learner has already seen, and the cache keeps that history bounded."""
+    _stub_material(monkeypatch, [_hit("chat", "Chain rule")])
+    replies = iter(
+        [
+            json.dumps([{"label": "Why the chain rule underlies backprop", "prompt": "a"}]),
+            json.dumps([{"label": "Where vanishing gradients come from", "prompt": "b"}]),
+        ]
+    )
+    prompts: list[str] = []
+    import deeptutor.services.llm as llm
+
+    async def complete(prompt: str, **_) -> str:
+        prompts.append(prompt)
+        return next(replies)
+
+    monkeypatch.setattr(llm, "complete", complete)
+    first = await suggestions.refresh_suggestions()
+    second = await suggestions.refresh_suggestions()
+
+    assert "Already suggested" not in prompts[0]
+    assert "Why the chain rule underlies backprop" in prompts[1].split("Already suggested")[1]
+    assert [i.label for i in second.suggestions] == ["Where vanishing gradients come from"]
+    assert second.shown == ("Why the chain rule underlies backprop",)
+    assert suggestions._load().recent_labels() == (
+        "Where vanishing gradients come from",
+        "Why the chain rule underlies backprop",
+    )
+    assert first.shown == ()
+
+
+def test_offered_history_is_bounded() -> None:
+    value = suggestions.SuggestionSet(
+        suggestions=(suggestions.Suggestion("new", "p"),),
+        language="en",
+        generated_at=0.0,
+        fingerprint="",
+        shown=tuple(f"old {n}" for n in range(20)),
+    )
+
+    labels = value.recent_labels()
+    assert len(labels) == suggestions._SHOWN_LIMIT
+    assert labels[0] == "new"

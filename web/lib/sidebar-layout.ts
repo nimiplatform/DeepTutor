@@ -101,15 +101,20 @@ function weaveMissing(
 export function resolveNavLayout(
   defaults: readonly string[],
   layout?: SidebarNavLayout | null,
+  defaultCollapsed: readonly string[] = [],
 ): ResolvedNavLayout {
   const known = new Set(defaults);
   const order = weaveMissing(pruneIds(layout?.order ?? [], known), defaults);
 
-  const folded = new Set(pruneIds(layout?.collapsed ?? [], known));
+  const folded = new Set(
+    pruneIds(layout?.collapsed ?? defaultCollapsed, known),
+  );
   const visible = order.filter((href) => !folded.has(href));
   const collapsed = order.filter((href) => folded.has(href));
   const customized =
-    collapsed.length > 0 ||
+    defaults.some(
+      (href) => folded.has(href) !== defaultCollapsed.includes(href),
+    ) ||
     order.length !== defaults.length ||
     order.some((href, index) => href !== defaults[index]);
 
@@ -256,11 +261,17 @@ function writeJson(key: string, value: unknown) {
   }
 }
 
-export function readNavLayout(): SidebarNavLayout {
-  const stored = readJson<Partial<SidebarNavLayout>>(
+export function readNavLayout(): SidebarNavLayout | null {
+  const stored = readJson<Partial<SidebarNavLayout> | null>(
     NAV_LAYOUT_STORAGE_KEY,
-    DEFAULT_NAV_LAYOUT,
+    null,
   );
+  if (
+    !stored ||
+    !Array.isArray(stored.order) ||
+    !Array.isArray(stored.collapsed)
+  )
+    return null;
   return {
     order: Array.isArray(stored?.order) ? stored.order.filter(isString) : [],
     collapsed: Array.isArray(stored?.collapsed)
@@ -282,7 +293,7 @@ export function writeSessionOrder(order: readonly string[]) {
   writeJson(SESSION_ORDER_STORAGE_KEY, order);
 }
 
-/** Headings the learner folded shut. Ids are a chat/course/topic/collection
+/** Headings the learner folded shut. Ids are a chat/topic/collection
  *  id, which never collide, so one list covers every kind of heading. */
 export function readCollapsedGroups(): string[] {
   const stored = readJson<unknown>(COLLAPSED_GROUPS_STORAGE_KEY, []);

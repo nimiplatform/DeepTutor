@@ -22,7 +22,7 @@ from .book_permission import (
     public_permission_dict,
 )
 from .learner_profile import normalize_profile
-from .models import AccountPreset, Role
+from .models import VALID_ROLES, AccountPreset, Role, normalize_role
 from .paths import PROJECT_ROOT, SYSTEM_ROOT, migrate_legacy_multi_user_tree
 
 logger = logging.getLogger(__name__)
@@ -63,15 +63,14 @@ def _canonical_record(
             "created_at": utc_now(),
             "disabled": False,
             "avatar": "",
+            "must_change_password": False,
         }
     if not isinstance(value, dict):
         return None
     hashed = str(value.get("hash") or value.get("password_hash") or "")
     if not hashed:
         return None
-    role = str(value.get("role") or default_role)
-    if role not in {"admin", "user"}:
-        role = default_role
+    role = normalize_role(str(value.get("role") or default_role), default_role)
     preset = str(value.get("preset") or "standard")
     if preset not in {"standard", "learner", "custom"}:
         preset = "standard"
@@ -83,6 +82,7 @@ def _canonical_record(
         "disabled": bool(value.get("disabled", False)),
         "avatar": str(value.get("avatar") or ""),
         "preset": preset,
+        "must_change_password": bool(value.get("must_change_password", False)),
     }
     if "book_permission" in value:
         record["book_permission"] = canonical_book_permission(value.get("book_permission"))
@@ -112,8 +112,8 @@ def _migrate_legacy_users() -> dict[str, dict[str, Any]] | None:
     users: dict[str, dict[str, Any]] = {}
     for username, value in legacy.items():
         role: Role = "admin" if not users else "user"
-        if isinstance(value, dict) and str(value.get("role") or "") in {"admin", "user"}:
-            role = str(value.get("role"))  # type: ignore[assignment]
+        if isinstance(value, dict):
+            role = normalize_role(str(value.get("role") or ""), role)  # type: ignore[assignment]
         record = _canonical_record(username, value, default_role=role)
         if record is not None:
             users[str(username)] = record
@@ -194,8 +194,8 @@ def load_users(  # nosec B107 - empty defaults mean "no env fallback supplied".
     changed = False
     for index, (username, value) in enumerate(users.items()):
         role: Role = "admin" if index == 0 else "user"
-        if isinstance(value, dict) and str(value.get("role") or "") in {"admin", "user"}:
-            role = str(value.get("role"))  # type: ignore[assignment]
+        if isinstance(value, dict):
+            role = normalize_role(str(value.get("role") or ""), role)  # type: ignore[assignment]
         record = _canonical_record(str(username), value, default_role=role)
         if record is None:
             changed = True
@@ -276,6 +276,7 @@ def list_user_info(  # nosec B107 - empty defaults mean "no env fallback supplie
             "disabled": bool(record.get("disabled", False)),
             "avatar": str(record.get("avatar") or ""),
             "preset": str(record.get("preset") or "standard"),
+            "must_change_password": bool(record.get("must_change_password", False)),
             "book_permission": public_permission_dict(
                 normalize_book_permission(record.get("book_permission"))
             ),
@@ -310,7 +311,7 @@ def set_learner_profile(username: str, profile: dict[str, Any] | None) -> dict[s
         record = users.get(username)
         if (
             record is None
-            or str(record.get("role") or "user") != "user"
+            or str(record.get("role") or "user") == "admin"
             or str(record.get("preset") or "standard") != "learner"
         ):
             return None
@@ -402,6 +403,24 @@ def set_password(username: str, hashed_password: str) -> dict[str, Any] | None:
         return deepcopy(record)
 
 
+def set_must_change_password(username: str, required: bool) -> bool:
+    """Flag an account as still using an administrator-assigned password.
+
+    Set when an admin provisions the account, cleared once the owner proves
+    they know the password and picks a new one.
+    """
+    if not USERS_FILE.exists():
+        return False
+    with _USERS_WRITE_LOCK:
+        users = load_users()
+        record = users.get(username)
+        if record is None:
+            return False
+        record["must_change_password"] = bool(required)
+        _write_users(users)
+        return True
+
+
 def set_avatar(username: str, avatar: str) -> bool:
     """Update the avatar marker for an existing user. Returns True on success."""
     if not USERS_FILE.exists():
@@ -461,8 +480,8 @@ def delete_avatar_file(user_id: str) -> None:
 
 
 def set_role(username: str, role: Role) -> bool:
-    if role not in {"admin", "user"}:
-        raise ValueError("role must be 'admin' or 'user'")
+    if role not in VALID_ROLES:
+        raise ValueError(f"role must be one of {sorted(VALID_ROLES)}")
     if not USERS_FILE.exists():
         return False
     users = load_users()
@@ -473,7 +492,9 @@ def set_role(username: str, role: Role) -> bool:
     return True
 
 
-def set_preset(username: str, preset: AccountPreset) -> bool:
+def set_preset(
+    username: str, preset: AccountPreset, *, expected_user_id: str | None = None
+) -> bool:
     """Update an account's configuration preset without changing its role."""
     if preset not in {"standard", "learner", "custom"}:
         raise ValueError("preset must be 'standard', 'learner', or 'custom'")
@@ -482,6 +503,11 @@ def set_preset(username: str, preset: AccountPreset) -> bool:
     with _USERS_WRITE_LOCK:
         users = load_users()
         if username not in users:
+            return False
+        if (
+            expected_user_id is not None
+            and str(users[username].get("id") or "") != expected_user_id
+        ):
             return False
         users[username]["preset"] = preset
         _write_users(users)

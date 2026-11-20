@@ -105,12 +105,20 @@ def _load_book_materials(source_id: str, label: str, budget: int) -> list[TopicM
     the reason — because "this chapter exists but has not been written" is
     something the tutor must be able to say instead of inventing its contents.
     """
-    from deeptutor.book.context import build_book_context
-    from deeptutor.book.storage import get_book_storage
+    from deeptutor.modules.catalog import require_module
 
-    storage = get_book_storage()
-    book = storage.load_book(source_id)
-    spine = storage.load_spine(source_id)
+    require_module("books")
+    from deeptutor.book.context import build_book_context
+    from deeptutor.multi_user.book_access import resolve_book
+
+    resolved = resolve_book(source_id)
+    if resolved is None:
+        book = None
+        storage = None
+    else:
+        storage = resolved.engine.storage
+        book = resolved.engine.load_book(source_id)
+    spine = storage.load_spine(source_id) if storage is not None else None
     if book is None or spine is None or not spine.chapters:
         return [
             TopicMaterial(
@@ -199,6 +207,9 @@ def _load_book_materials(source_id: str, label: str, budget: int) -> list[TopicM
 
 def _load_notebook_material(source_id: str, label: str, budget: int) -> TopicMaterial:
     """A notebook stays one material: its records are already record-sized."""
+    from deeptutor.modules.catalog import require_module
+
+    require_module("notebook")
     from deeptutor.services.notebook import get_notebook_manager
 
     records = get_notebook_manager().get_records_by_references(
@@ -345,6 +356,9 @@ def _load_question_bank_material(source_id: str, label: str, budget: int) -> Top
 
 def _load_cowriter_material(source_id: str, label: str, budget: int) -> TopicMaterial:
     """One Co-Writer draft, read as the learner's own writing on the subject."""
+    from deeptutor.modules.catalog import require_module
+
+    require_module("co-writer")
     from deeptutor.co_writer.storage import get_co_writer_storage
 
     document = get_co_writer_storage().load_document(source_id)
@@ -471,27 +485,48 @@ def build_topic_materials(sources: Iterable[Any]) -> TopicMaterials:
             )
             continue
         try:
-            if kind == "book":
-                loaded = _load_book_materials(source_id, label, budget)
-            elif kind == "notebook":
-                loaded = [_load_notebook_material(source_id, label, budget)]
-            elif kind == "chat":
-                loaded = [_load_chat_material(source_id, label, budget)]
-            elif kind == "question_bank":
-                loaded = [_load_question_bank_material(source_id, label, budget)]
-            elif kind == "cowriter":
-                loaded = [_load_cowriter_material(source_id, label, budget)]
-            elif kind == "partner_group":
-                loaded = [_load_partner_group_material(source_id, label, budget)]
-            else:
+            from contextlib import nullcontext
+
+            from deeptutor.services.workspace.context import workspace_context
+
+            metadata = getattr(source, "metadata", None) or {}
+            origin = metadata.get("content_workspace_id")
+            # Explicit origin is account-validated by workspace_context. Legacy
+            # sources without one continue to resolve in the topic's store.
+            with workspace_context(origin) if origin is not None else nullcontext():
+                if kind == "book":
+                    loaded = _load_book_materials(source_id, label, budget)
+                elif kind == "notebook":
+                    loaded = [_load_notebook_material(source_id, label, budget)]
+                elif kind == "chat":
+                    loaded = [_load_chat_material(source_id, label, budget)]
+                elif kind == "question_bank":
+                    loaded = [_load_question_bank_material(source_id, label, budget)]
+                elif kind == "cowriter":
+                    loaded = [_load_cowriter_material(source_id, label, budget)]
+                elif kind == "partner_group":
+                    loaded = [_load_partner_group_material(source_id, label, budget)]
+                else:
+                    loaded = [
+                        TopicMaterial(
+                            sid="",
+                            kind=kind or "unknown",
+                            name=label,
+                            available=False,
+                            note="this material type cannot be read during tutoring",
+                        )
+                    ]
+            if origin is not None:
+                import hashlib
+
+                prefix = hashlib.sha256(str(origin).encode()).hexdigest()[:12]
+                from dataclasses import replace
+
                 loaded = [
-                    TopicMaterial(
-                        sid="",
-                        kind=kind or "unknown",
-                        name=label,
-                        available=False,
-                        note="this material type cannot be read during tutoring",
-                    )
+                    replace(material, sid=f"ws-{prefix}-{material.sid}")
+                    if material.sid
+                    else material
+                    for material in loaded
                 ]
         except Exception:
             logger.exception("Failed to load topic material kind=%s id=%s", kind, source_id)

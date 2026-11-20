@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -13,7 +14,7 @@ from typing import Awaitable, Callable
 from deeptutor.services.path_service import get_path_service
 
 from .models import RenderedArtifact, RenderResult
-from .utils import slugify_filename, trim_error_message
+from .utils import build_repair_error_message, slugify_filename, trim_error_message
 
 YON_IMAGE_PATTERN = re.compile(
     r"###\s*YON_IMAGE_(\d+)_START\s*###\s*(.*?)\s*###\s*YON_IMAGE_\1_END\s*###",
@@ -171,6 +172,7 @@ class ManimRenderService:
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=os.name != "nt",
         )
 
         _SENTINEL = None
@@ -191,25 +193,40 @@ class ManimRenderService:
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
         streams_open = 2
-        while streams_open > 0:
-            item = await queue.get()
-            if item is _SENTINEL:
-                streams_open -= 1
-                continue
-            prefix, line = item
-            (stdout_lines if prefix == "stdout" else stderr_lines).append(line)
-            await self._emit_progress(f"[{prefix}] {line}", raw=True)
+        try:
+            async with asyncio.timeout(300):
+                while streams_open > 0:
+                    item = await queue.get()
+                    if item is _SENTINEL:
+                        streams_open -= 1
+                        continue
+                    prefix, line = item
+                    lines = stdout_lines if prefix == "stdout" else stderr_lines
+                    lines.append(line[:4000])
+                    if len(lines) > 2000:
+                        del lines[:1000]
+                    await self._emit_progress(f"[{prefix}] {line[:4000]}", raw=True)
+                return_code = await asyncio.to_thread(process.wait)
+        except BaseException:
+            from deeptutor.runtime.process import kill_process_tree
 
-        return_code = process.wait()
+            await asyncio.to_thread(kill_process_tree, process.pid)
+            await asyncio.to_thread(process.wait)
+            raise
         await self._emit_progress(f"Manim process finished with exit code {return_code}.", raw=True)
         if return_code != 0:
-            raise ManimRenderError(
-                trim_error_message(
-                    "\n".join(
-                        part for part in ["\n".join(stdout_lines), "\n".join(stderr_lines)] if part
-                    )
+            detail = trim_error_message(
+                "\n".join(
+                    part for part in ["\n".join(stdout_lines), "\n".join(stderr_lines)] if part
                 )
             )
+            try:
+                generated_code = code_path.read_text(encoding="utf-8")
+            except OSError:
+                # The renderer's stderr is still the cause if the source file
+                # disappeared while Manim was running.
+                generated_code = ""
+            raise ManimRenderError(build_repair_error_message(detail, code=generated_code))
 
     async def _emit_progress(self, message: str, raw: bool = False) -> None:
         if self.progress_callback is None:

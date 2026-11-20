@@ -1,12 +1,13 @@
 "use client";
 
+import { readingCollectionRoute, readingSessionRoute } from "@/lib/learning-routes";
+
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useReading } from "@/context/ReadingContext";
 import { useChatStateAdapter } from "@/features/chat/ChatStateAdapter";
-import { courseSessionConfiguration } from "@/lib/course-session-scope";
 import {
   addBookmark,
   deleteBookmark,
@@ -22,12 +23,10 @@ import { setReadingWorkspace } from "@/lib/reading-turn-state";
 import { READING_WORKSPACE_MODE } from "@/lib/workspace-mode";
 import {
   activateReadingMaterial,
-  deleteReadingConversation,
   generateMasteryPathFromReading,
   getReadingWorkspace,
   listReadingConversations,
   organizeReadingNotes,
-  renameReadingConversation,
   removeReadingWorkspaceMaterial,
   updateReadingWorkspace,
   type OrganizedReadingNotes,
@@ -52,7 +51,6 @@ const NO_BOOKMARKS: ReadingBookmark[] = [];
 export function useReadingWorkspace(
   workspaceId: string,
   sessionIdParam: string | null,
-  courseId = "",
 ) {
   const router = useRouter();
   const { t } = useTranslation();
@@ -63,7 +61,6 @@ export function useReadingWorkspace(
     configureSession,
     loadSession,
     newSession,
-    cancelStreamingTurn,
   } = useChatStateAdapter();
 
   const [workspace, setWorkspace] = useState<ReadingWorkspace | null>(null);
@@ -76,15 +73,24 @@ export function useReadingWorkspace(
   const [organizedNotes, setOrganizedNotes] =
     useState<OrganizedReadingNotes | null>(null);
   const sessionBootRef = useRef("");
+  // The conversation that was open when this collection started a new one; it
+  // belongs to wherever the learner came from, never to this collection.
+  const inheritedSessionRef = useRef<string | null>(null);
   const transcriptRequestRef = useRef(0);
+
+  const refreshConversations = useCallback(async () => {
+    const result = await listReadingConversations(workspaceId);
+    setConversations(result);
+    return result;
+  }, [workspaceId]);
 
   const refresh = useCallback(async () => {
     const result = await getReadingWorkspace(workspaceId);
-    const sessionRows = await listReadingConversations(workspaceId);
+    const sessionRows = await refreshConversations();
     setWorkspace(result.workspace);
     setConversations(sessionRows);
     return { workspace: result.workspace, sessions: sessionRows };
-  }, [workspaceId]);
+  }, [workspaceId, refreshConversations]);
 
   useEffect(() => {
     let cancelled = false;
@@ -172,7 +178,7 @@ export function useReadingWorkspace(
 
   useEffect(() => {
     if (!workspace || loading) return;
-    const bootKey = `${workspaceId}:${sessionIdParam ?? "new"}:${courseId.trim()}`;
+    const bootKey = `${workspaceId}:${sessionIdParam ?? "new"}`;
     if (sessionBootRef.current === bootKey) return;
     sessionBootRef.current = bootKey;
 
@@ -195,15 +201,12 @@ export function useReadingWorkspace(
         // the backend attaches the session to this workspace when the first
         // turn runs (see `turn_runtime`), so opening a collection and walking
         // away no longer litters it with empty conversations.
-        const scopedSessionConfiguration = courseSessionConfiguration(
-          sessionConfiguration,
-          courseId,
-        );
         if (sessionIdParam) {
           await loadSession(sessionIdParam);
-          configureSession(scopedSessionConfiguration, sessionIdParam);
+          configureSession(sessionConfiguration, sessionIdParam);
         } else {
-          newSession({ ...scopedSessionConfiguration, capability: null });
+          inheritedSessionRef.current = state.sessionId;
+          newSession({ ...sessionConfiguration, capability: null });
         }
       } catch (caught) {
         setError(
@@ -215,7 +218,6 @@ export function useReadingWorkspace(
     })();
   }, [
     configureSession,
-    courseId,
     loadSession,
     loading,
     newSession,
@@ -415,7 +417,7 @@ export function useReadingWorkspace(
   const newConversation = useCallback(() => {
     if (!workspace) return;
     newSession({ ...sessionConfiguration, capability: null });
-    router.push(`/reading/${workspace.workspace_id}`);
+    router.push(readingCollectionRoute(workspace.workspace_id));
   }, [
     newSession,
     router,
@@ -442,57 +444,25 @@ export function useReadingWorkspace(
   // named. So the address bar is corrected in place and `usePathname` — which
   // does follow the native API — keeps `sessionIdParam` honest for refreshes,
   // links and the back button.
+  //
+  // Only once this collection has started its own draft. Until the boot above
+  // runs, `state.sessionId` is still whatever conversation was open before the
+  // learner came here (a /chat thread, say); naming it in the URL made the boot
+  // take it for this collection's conversation and keep it, so the reader's
+  // questions went to that unrelated thread without the page or selection.
   useEffect(() => {
     if (!state.sessionId || sessionIdParam) return;
+    if (sessionBootRef.current !== `${workspaceId}:new`) return;
+    if (state.sessionId === inheritedSessionRef.current) return;
     window.history.replaceState(
       null,
       "",
-      `/reading/${encodeURIComponent(workspaceId)}/sessions/${encodeURIComponent(state.sessionId)}`,
+      readingSessionRoute(workspaceId, state.sessionId),
     );
     void listReadingConversations(workspaceId)
       .then(setConversations)
       .catch(() => {});
   }, [sessionIdParam, state.sessionId, workspaceId]);
-
-  const renameConversation = useCallback(
-    async (sessionId: string, title: string) => {
-      await renameReadingConversation(workspaceId, sessionId, title);
-      setConversations(await listReadingConversations(workspaceId));
-    },
-    [workspaceId],
-  );
-
-  // Mirrors /chat's delete: drop the row, and if it was the conversation on
-  // screen, fall back to a fresh draft rather than leaving the reader looking
-  // at a transcript that no longer exists.
-  const deleteConversation = useCallback(
-    async (sessionId: string) => {
-      await deleteReadingConversation(workspaceId, sessionId);
-      setConversations(await listReadingConversations(workspaceId));
-      if (sessionId === sessionIdParam) {
-        cancelStreamingTurn();
-        newSession({ ...sessionConfiguration, capability: null });
-        router.push(`/reading/${workspaceId}`);
-      }
-    },
-    [
-      cancelStreamingTurn,
-      newSession,
-      router,
-      sessionConfiguration,
-      sessionIdParam,
-      workspaceId,
-    ],
-  );
-
-  const openConversation = useCallback(
-    async (sessionId: string) => {
-      router.push(`/reading/${workspaceId}/sessions/${sessionId}`);
-      await loadSession(sessionId);
-      configureSession(sessionConfiguration, sessionId);
-    },
-    [configureSession, loadSession, router, sessionConfiguration, workspaceId],
-  );
 
   const organizeNotes = useCallback(async () => {
     if (!workspace) return;
@@ -553,6 +523,7 @@ export function useReadingWorkspace(
     loading,
     error,
     notice,
+    refreshConversations,
     setNotice,
     material,
     annotations,
@@ -571,9 +542,6 @@ export function useReadingWorkspace(
     switchMaterial,
     removeMaterial,
     newConversation,
-    openConversation,
-    renameConversation,
-    deleteConversation,
     organizeNotes,
     buildMasteryPath,
     renameWorkspace,

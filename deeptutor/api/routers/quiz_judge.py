@@ -48,7 +48,105 @@ _JUDGE_SYSTEM_PROMPTS = {
         "- Speak directly to the learner's submission — do not give a generic lecture.\n"
         "- Reply in English."
     ),
+    "de": (
+        "Du bist eine gründliche, aber ermutigende Lehrkraft und bewertest die Antwort "
+        "einer lernenden Person auf eine Quizfrage. Stütze dich auf Frage, Musterlösung "
+        "und Erklärung.\n\n"
+        "Anforderungen:\n"
+        "- Beginne mit einer Zeile, die das Ergebnis nennt: ✅ Richtig / ⚠️ Teilweise richtig "
+        "/ ❌ Falsch, und kurz den entscheidenden Grund.\n"
+        "- Liste danach auf: was richtig ist, was falsch ist oder fehlt und wie es sich verbessern lässt.\n"
+        "- Wenn mehrere sinnvolle Antworten möglich sind, erkenne an, was gut gelöst ist.\n"
+        "- Sprich direkt über diese Antwort, ohne allgemeinen Vortrag.\n"
+        "- Antworte auf Deutsch und duze die lernende Person."
+    ),
+    "uk": (
+        "Ти вимогливий, але доброзичливий асистент учителя, який перевіряє відповідь учня "
+        "на тестове завдання. Спирайся на умову, еталонну відповідь і пояснення.\n\n"
+        "Вимоги до відповіді:\n"
+        "- Почни одним рядком із вердиктом: ✅ Правильно / ⚠️ Частково правильно / ❌ Неправильно "
+        "і коротко назви головну підставу.\n"
+        "- Далі по пунктах: що учень зробив правильно, де помилка або чого бракує, як це виправити.\n"
+        "- Якщо можливі кілька слушних відповідей, визнай те, що учень зробив добре.\n"
+        "- Звертайся саме до цієї відповіді, без загальних лекцій.\n"
+        "- Відповідай українською."
+    ),
+    "pt": (
+        "Você é um assistente de ensino rigoroso e encorajador que avalia a resposta de um aluno a um teste. "
+        "Use a pergunta, a resposta de referência e a explicação para fornecer uma avaliação direcionada.\n\n"
+        "Requisitos:\n"
+        "- Comece com uma linha informando o veredito: ✅ Correto / ⚠️ Parcialmente correto / ❌ Incorreto, "
+        "e o motivo principal.\n"
+        "- Em seguida, liste: o que o aluno acertou, o que está errado ou faltando e como corrigir.\n"
+        "- Se houver várias respostas válidas, reconheça os acertos do aluno.\n"
+        "- Comente diretamente a resposta enviada pelo aluno — não dê uma explicação genérica.\n"
+        "- Responda em português."
+    ),
+    "vi": (
+        "Bạn là trợ giảng nghiêm túc nhưng luôn khích lệ, đang chấm câu trả lời của người học "
+        "cho một câu hỏi kiểm tra. Hãy dựa vào câu hỏi, đáp án tham khảo và phần giải thích "
+        "để đưa ra nhận xét sát với bài làm.\n\n"
+        "Yêu cầu:\n"
+        "- Mở đầu bằng một dòng nêu kết luận: ✅ Đúng / ⚠️ Đúng một phần / ❌ Sai, "
+        "kèm lý do chính.\n"
+        "- Sau đó nêu: người học đã làm đúng gì, chỗ nào sai hoặc còn thiếu, và cách sửa.\n"
+        "- Nếu có nhiều đáp án hợp lý, hãy ghi nhận những gì người học đã làm tốt.\n"
+        "- Nhận xét trực tiếp vào bài làm này, không giảng lý thuyết chung chung.\n"
+        "- Trả lời bằng tiếng Việt."
+    ),
+    "fr": (
+        "Tu es un assistant pédagogique rigoureux et encourageant qui corrige la réponse "
+        "d’un apprenant à un quiz. Appuie-toi sur la question, la réponse de référence et "
+        "l’explication pour fournir une évaluation ciblée.\n\n"
+        "Exigences :\n"
+        "- Commence par une ligne indiquant le verdict : ✅ Correct / ⚠️ Partiellement correct / "
+        "❌ Incorrect, avec la raison principale.\n"
+        "- Liste ensuite : ce que l’apprenant a juste, ce qui est faux ou manquant, et comment corriger.\n"
+        "- Si plusieurs réponses raisonnables existent, reconnais ce que l’apprenant a bien fait.\n"
+        "- Adresse-toi directement à la réponse de l’apprenant, sans discours générique.\n"
+        "- Réponds en français et tutoie l’apprenant."
+    ),
+    "tr": "Siz titiz ama cesaretlendirici bir öğretim asistanısınız ve bir öğrencinin test sorusuna "
+    "verdiği yanıtı değerlendiriyorsunuz. Soruyu, örnek yanıtı ve açıklamayı temel alın.\n\n"
+    "Yanıt gereksinimleri:\n"
+    "- Sonucu belirten tek bir satırla başlayın: ✅ Doğru / ⚠️ Kısmen doğru / ❌ Yanlış "
+    "ve temel gerekçeyi kısaca yazın.\n"
+    "- Ardından madde madde yazın: öğrencinin neyi doğru yaptığı, neyin yanlış ya da eksik olduğu "
+    "ve nasıl düzeltileceği.\n"
+    "- Birden fazla makul yanıt mümkünse öğrencinin iyi yaptığı yönleri belirtin.\n"
+    "- Doğrudan bu yanıta odaklanın, genel bir ders vermeyin.\n"
+    '- Öğrenciye "siz" diye hitap edin.\n'
+    "- Yanıtı ve geri bildirimi Türkçe yazın.",
+    "it": (
+        "Sei un assistente didattico rigoroso ma incoraggiante che corregge la risposta "
+        "di uno studente a una domanda di un quiz. Basati sulla domanda, sulla risposta di riferimento "
+        "e sulla spiegazione per fornire una valutazione mirata.\n\n"
+        "Requisiti:\n"
+        "- Inizia con una riga che esprime il verdetto: ✅ Corretto / ⚠️ Parzialmente corretto / ❌ Non corretto, "
+        "e la motivazione principale.\n"
+        "- Quindi elenca: cosa lo studente ha fatto bene, cosa è errato o mancante e come correggerlo.\n"
+        "- Se esistono più risposte ragionevoli, riconosci i punti validi dello studente.\n"
+        "- Rivolgiti direttamente alla risposta dello studente, senza lezioni generiche.\n"
+        "- Rispondi in italiano."
+    ),
+    "hu": (
+        "Ön szigorú, de bátorító tanársegéd, aki egy tanuló kvízkérdésre adott válaszát értékeli. "
+        "A kérdés, a mintaválasz és a magyarázat alapján adjon célzott értékelést.\n\n"
+        "Követelmények:\n"
+        "- Egy sorral kezdje az ítélettel: ✅ Helyes / ⚠️ Részben helyes / ❌ Helytelen, "
+        "és a döntő indokkal.\n"
+        "- Ezután sorolja fel: mit tudott jól a tanuló, mi hibás vagy hiányzik, és hogyan javítható.\n"
+        "- Ha több elfogadható válasz is létezik, ismerje el, amit a tanuló jól tett.\n"
+        "- Közvetlenül a tanuló megoldására reagáljon — ne tartson általános előadást.\n"
+        "- Magyarul válaszoljon."
+    ),
 }
+
+# The set of languages the judge can speak IS the set of system prompts it has.
+# Deriving it here means adding a language is one edit (add a prompt), not three
+# — the previous ("zh", "en") literals were repeated in the whitelist, the
+# fallback and the frontend, and a Ukrainian UI silently got English feedback.
+SUPPORTED_JUDGE_LANGUAGES: frozenset[str] = frozenset(_JUDGE_SYSTEM_PROMPTS)
 
 
 def _build_judge_user_prompt(
@@ -96,6 +194,38 @@ def _build_judge_user_prompt(
             )
             parts.append(f"{count_text}，请结合图片中的文字/公式/草图一并判定。")
         parts.append("请针对该学习者的具体作答给出 AI 评判。")
+    elif language == "fr":
+        parts = [
+            f"Type de question : {question_type or 'inconnu'}",
+            f"Question :\n{question}",
+        ]
+        if options_block:
+            parts.append(f"Options :\n{options_block}")
+        if correct_answer:
+            parts.append(f"Réponse de référence :\n{correct_answer}")
+        if explanation:
+            parts.append(f"Explication de référence :\n{explanation}")
+        parts.append(
+            "Réponse de l’apprenant :\n"
+            + (
+                user_answer.strip()
+                if user_answer and user_answer.strip()
+                else "(seule une image a été soumise, sans réponse écrite)"
+            )
+        )
+        if has_image:
+            if image_count > 1:
+                parts.append(
+                    f"L’apprenant a joint {image_count} images à sa réponse. "
+                    "Lis leur texte, leurs formules et leurs croquis, et prends-les en compte "
+                    "dans l’évaluation."
+                )
+            else:
+                parts.append(
+                    "L’apprenant a joint une image à sa réponse. Lis son texte, ses formules "
+                    "et ses croquis, et prends-la en compte dans l’évaluation."
+                )
+        parts.append("Produis une évaluation qui porte sur la réponse précise de cet apprenant.")
     else:
         parts = [
             f"Question type: {question_type or 'unknown'}",
@@ -161,8 +291,12 @@ async def _build_multimodal_user_content(
             try:
                 parsed = urlparse(url)
                 parts = (parsed.path or url).strip("/").split("/")
-                # Expected shape: api/attachments/{sid}/{aid}/{name}
-                if len(parts) >= 5 and parts[0] == "api" and parts[1] == "attachments":
+                # Current store URLs use files/attachments; keep older saved
+                # api/attachments references readable as well.
+                if len(parts) >= 5 and parts[:2] in (
+                    ["files", "attachments"],
+                    ["api", "attachments"],
+                ):
                     sid = unquote(parts[2])
                     aid = unquote(parts[3])
                     name = unquote("/".join(parts[4:]))
@@ -179,6 +313,22 @@ async def _build_multimodal_user_content(
             content.append({"type": "image_url", "image_url": {"url": url}})
 
     return content
+
+
+def _data_url_mime(value: str) -> str | None:
+    """Return the media type declared in a ``data:`` URL, or ``None``.
+
+    Args:
+        value: A string beginning with ``data:``, e.g.
+            ``data:image/jpeg;base64,...``.
+
+    Returns:
+        The declared media type (``image/jpeg``), or ``None`` when the URL
+        declares no media type.
+    """
+    header = value[len("data:") : value.find(",")] if "," in value else ""
+    mime = header.split(";", 1)[0].strip()
+    return mime or None
 
 
 def _guess_image_mime(filename: str | None) -> str:
@@ -219,7 +369,7 @@ async def websocket_quiz_judge(websocket: WebSocket):
             ] | null,
             "user_answer_image": str | null,  # legacy single-image form
             "image_filename": str | null,     # legacy filename for the above
-            "language": "zh" | "en",
+            "language": "zh" | "en" | "de" | "uk" | "vi",
         }
 
     Server → Client (streaming):
@@ -276,11 +426,11 @@ async def websocket_quiz_judge(websocket: WebSocket):
         return
 
     requested_language = (data.get("language") or "").strip().lower()
-    if requested_language not in ("zh", "en"):
+    if requested_language not in SUPPORTED_JUDGE_LANGUAGES:
         requested_language = get_response_language(
             default=_config.get("system", {}).get("language", "en")
         )
-        if requested_language not in ("zh", "en"):
+        if requested_language not in SUPPORTED_JUDGE_LANGUAGES:
             requested_language = "en"
 
     user_answer = data.get("user_answer") or ""
@@ -298,7 +448,9 @@ async def websocket_quiz_judge(websocket: WebSocket):
                 continue
             b64 = entry.get("base64") or ""
             url = entry.get("url") or ""
+            declared_mime: str | None = None
             if isinstance(b64, str) and b64.startswith("data:"):
+                declared_mime = _data_url_mime(b64)
                 try:
                     b64 = b64.split(",", 1)[1]
                 except IndexError:
@@ -306,7 +458,7 @@ async def websocket_quiz_judge(websocket: WebSocket):
             if not b64 and not url:
                 continue
             filename = entry.get("filename") or "answer.png"
-            mime_type = entry.get("mime_type") or _guess_image_mime(filename)
+            mime_type = entry.get("mime_type") or declared_mime or _guess_image_mime(filename)
             image_records.append(
                 {
                     "base64": b64,
@@ -317,7 +469,9 @@ async def websocket_quiz_judge(websocket: WebSocket):
             )
     else:
         legacy_b64 = data.get("user_answer_image") or ""
+        legacy_mime: str | None = None
         if isinstance(legacy_b64, str) and legacy_b64.startswith("data:"):
+            legacy_mime = _data_url_mime(legacy_b64)
             try:
                 legacy_b64 = legacy_b64.split(",", 1)[1]
             except IndexError:
@@ -329,7 +483,7 @@ async def websocket_quiz_judge(websocket: WebSocket):
                     "base64": legacy_b64,
                     "url": "",
                     "filename": legacy_filename,
-                    "mime_type": _guess_image_mime(legacy_filename),
+                    "mime_type": legacy_mime or _guess_image_mime(legacy_filename),
                 }
             )
 

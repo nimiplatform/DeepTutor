@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -36,7 +37,153 @@ def _msg(content: str = "hello", channel: str = "telegram") -> InboundMessage:
     return InboundMessage(channel=channel, sender_id="42", chat_id="42", content=content)
 
 
+def _muted_progress_config() -> PartnerConfig:
+    """A partner whose telegram channel carries no live progress messages."""
+    return PartnerConfig(name="Ada", channels={"telegram": {"sendProgress": False}})
+
+
 class TestTurnExecution:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("language", ["pt", "pt-BR", "pt_PT", "Português"])
+    async def test_feishu_turn_announces_thinking_in_portuguese(
+        self, partners_root, fake_orchestrator, language
+    ):
+        fake_orchestrator.script = finish("Pronto")
+        runner = _runner(partners_root, PartnerConfig(name="Ada", language=language))
+
+        await runner.process_message(_msg(channel="feishu"))
+
+        notice = await runner.bus.outbound.get()
+        assert notice.content == "🤔 Pensando…"
+        assert notice.metadata["_thinking_notice"] is True
+
+    @pytest.mark.asyncio
+    async def test_feishu_turn_announces_thinking_before_any_output(
+        self, partners_root, fake_orchestrator
+    ):
+        """Reasoning never reaches a channel, so the reader gets a placeholder."""
+        fake_orchestrator.script = finish("done")
+        runner = _runner(partners_root, PartnerConfig(name="Ada", language="zh"))
+
+        await runner.process_message(_msg(channel="feishu"))
+
+        notice = await runner.bus.outbound.get()
+        assert notice.content == "🤔 正在思考…"
+        assert notice.metadata["_thinking_notice"] is True
+        assert notice.metadata["_progress"] is True
+
+    @pytest.mark.asyncio
+    async def test_feishu_thinking_notice_uses_the_partner_language(
+        self, partners_root, fake_orchestrator
+    ):
+        fake_orchestrator.script = finish("done")
+        runner = _runner(partners_root, PartnerConfig(name="Ada", language="fr"))
+
+        await runner.process_message(_msg(channel="feishu"))
+
+        notice = await runner.bus.outbound.get()
+        assert notice.content == "🤔 Réflexion…"
+
+    def test_auto_reply_language_follows_the_account_response_language(
+        self, partners_root, monkeypatch
+    ):
+        from deeptutor.services.settings import interface_settings
+
+        monkeypatch.setattr(
+            interface_settings,
+            "get_response_language",
+            lambda default="en": "fr",
+        )
+        runner = _runner(partners_root, PartnerConfig(name="Ada"))
+
+        assert runner._language() == "fr"
+
+    def test_explicit_reply_language_wins_over_the_account_default(
+        self, partners_root, monkeypatch
+    ):
+        from deeptutor.services.settings import interface_settings
+
+        monkeypatch.setattr(
+            interface_settings,
+            "get_response_language",
+            lambda default="en": "fr",
+        )
+        runner = _runner(partners_root, PartnerConfig(name="Ada", language="uk"))
+
+        assert runner._language() == "uk"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("language", ["tr", "tr-TR", "tr_TR", "turkish", "Türkçe", ""])
+    async def test_turkish_thinking_notice_follows_explicit_or_account_language(
+        self, partners_root, monkeypatch, language
+    ):
+        from deeptutor.services.settings import interface_settings
+
+        monkeypatch.setattr(
+            interface_settings, "get_response_language", lambda default="en": "tr_TR"
+        )
+        runner = _runner(partners_root, PartnerConfig(name="Ada", language=language))
+        assert runner._language() == "tr"
+        await runner._publish_thinking_notice(_msg(channel="feishu"))
+        notice = await runner.bus.outbound.get()
+        assert notice.content == "🤔 Düşünüyorum…"
+        assert notice.metadata["_thinking_notice"] is True
+
+    @pytest.mark.asyncio
+    async def test_web_turn_never_announces_thinking(self, partners_root, fake_orchestrator):
+        fake_orchestrator.script = finish("done")
+        runner = _runner(partners_root, PartnerConfig(name="Ada", language="zh"))
+
+        await runner.process_message(_msg(channel="web"))
+
+        assert runner.bus.outbound.empty()
+
+    @pytest.mark.asyncio
+    async def test_muted_progress_suppresses_the_thinking_notice(
+        self, partners_root, fake_orchestrator
+    ):
+        fake_orchestrator.script = finish("done")
+        config = PartnerConfig(name="Ada", channels={"feishu": {"sendProgress": False}})
+        runner = _runner(partners_root, config)
+
+        await runner.process_message(_msg(channel="feishu"))
+
+        assert runner.bus.outbound.empty()
+
+    @pytest.mark.asyncio
+    async def test_model_history_and_request_header_survive_partner_turns(
+        self, partners_root, fake_orchestrator, monkeypatch
+    ):
+        from tests.services.session.test_model_history import turn_record
+
+        record = turn_record()
+        record["route"] = {"provider": "openai", "model": "test-model"}
+        original = fake_orchestrator.handle
+
+        async def handle(instance, context):
+            context.runtime.model_turn = record
+            async for item in original(instance, context):
+                yield item
+
+        monkeypatch.setattr(fake_orchestrator, "handle", handle)
+        fake_orchestrator.script = finish("Displayed answer")
+        runner = _runner(partners_root)
+        await runner.process_message(_msg("Question"))
+        await runner.process_message(_msg("Follow up"))
+
+        restored = fake_orchestrator.seen_contexts[-1].runtime
+        assert restored.model_history == record["messages"]
+        assert restored.previous_model_turn == record
+        public_rows = _shared_store().messages("telegram:42")
+        assert all("model_turn" not in row.get("metadata", {}) for row in public_rows)
+        custom = runner._build_context(
+            _msg(),
+            store=_shared_store(),
+            options=PartnerTurnOptions(conversation_history=[]),
+        )
+        assert custom.runtime.model_history is None
+        assert custom.runtime.previous_model_turn is None
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("channel", ["weixin", "telegram"])
     async def test_all_im_channels_mirror_user_trace_and_answer_to_web_activity(
@@ -96,6 +243,49 @@ class TestTurnExecution:
         assert history == [
             {"role": "user", "content": "what is 2+2?"},
             {"role": "assistant", "content": "The answer is 4."},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_persists_presented_workspace_item_as_generated_attachment(
+        self, partners_root, fake_orchestrator
+    ):
+        workspace_item = {
+            "workspace_id": "ws_test",
+            "workspace_item_id": "wsi_test",
+            "relative_path": "outputs/chat/turn/report.md",
+            "filename": "report.md",
+            "url": "/files/workspace-items/ws_test/wsi_test",
+            "mime_type": "text/markdown",
+            "size_bytes": 42,
+            "generated": True,
+        }
+        fake_orchestrator.script = [
+            event(
+                StreamEventType.TOOL_RESULT,
+                metadata={"tool_metadata": {"workspace_items": [workspace_item]}},
+            ),
+            *finish("[Download](outputs/chat/turn/report.md)"),
+        ]
+
+        await _runner(partners_root).process_message(_msg())
+
+        assistant = _shared_store().messages("telegram:42")[1]
+        assert assistant["attachments"] == [
+            {
+                "type": "document",
+                "filename": "report.md",
+                "mime_type": "text/markdown",
+                "url": "/files/workspace-items/ws_test/wsi_test",
+                "size_bytes": 42,
+                "generated": True,
+                "origin": "workspace",
+                "workspace_id": "ws_test",
+                "workspace_item_id": "wsi_test",
+                "relative_path": "outputs/chat/turn/report.md",
+                "sha256": "",
+                "title": "",
+                "caption": "",
+            }
         ]
 
     @pytest.mark.asyncio
@@ -177,11 +367,35 @@ class TestTurnExecution:
         assert progress.metadata["_tool_hint"] is False
 
     @pytest.mark.asyncio
-    async def test_answer_visible_narration_stays_in_reply(self, partners_root, fake_orchestrator):
+    async def test_commentary_reaches_a_progress_channel_live_not_twice(
+        self, partners_root, fake_orchestrator
+    ):
+        """Commentary is the reader's either way — once, by the fastest route.
+
+        A channel that carries progress shows each round as it lands, so the
+        closing reply must not repeat it.
+        """
         fake_orchestrator.script = answer_visible_narration(
             "c1", "Great job on that answer."
         ) + finish("Choose the next topic.")
         runner = _runner(partners_root)
+
+        final = await runner.process_message(_msg())
+
+        progress = await runner.bus.outbound.get()
+        assert progress.content == "Great job on that answer."
+        assert progress.metadata["_progress"] is True
+        assert final == "Choose the next topic."
+
+    @pytest.mark.asyncio
+    async def test_commentary_rides_the_reply_when_no_channel_carries_it(
+        self, partners_root, fake_orchestrator
+    ):
+        """With progress muted, the reply is the only route left — so it carries it."""
+        fake_orchestrator.script = answer_visible_narration(
+            "c1", "Great job on that answer."
+        ) + finish("Choose the next topic.")
+        runner = _runner(partners_root, _muted_progress_config())
 
         final = await runner.process_message(_msg())
 
@@ -208,7 +422,7 @@ class TestTurnExecution:
                 metadata={"response": "Part one. Part two."},
             ),
         ]
-        runner = _runner(partners_root)
+        runner = _runner(partners_root, _muted_progress_config())
 
         final = await runner.process_message(_msg())
 
@@ -424,10 +638,12 @@ class TestTurnExecution:
         attempted: list[Any] = []
 
         def _activate(selection):
+            from types import SimpleNamespace
+
             attempted.append(selection)
             if selection == primary:
                 raise LLMConfigError("primary profile is gone")
-            return (None, None)
+            return (SimpleNamespace(binding="openai", model="test-model"), None)
 
         monkeypatch.setattr(selection_runtime, "activate_llm_selection", _activate)
         fake_orchestrator.script = finish("backup answer")
@@ -459,6 +675,146 @@ class TestTurnExecution:
         assert out.channel == "telegram"
         assert out.chat_id == "42"
         assert out.content == "reply text"
+
+
+class TestOutboundThreadRouting:
+    """#1461: Telegram forum-topic replies must echo the inbound thread id.
+
+    ``TelegramChannel.send()`` already routes on ``metadata["message_thread_id"]``
+    (falling back to a ``message_id`` reply-cache lookup); the runner must copy
+    both keys from the inbound message onto every outbound message it publishes
+    for that turn, not just the final reply.
+    """
+
+    @pytest.mark.asyncio
+    async def test_final_reply_echoes_inbound_thread_and_message_id(
+        self, partners_root, fake_orchestrator
+    ):
+        fake_orchestrator.script = finish("reply text")
+        runner = _runner(partners_root)
+        msg = InboundMessage(
+            channel="telegram",
+            sender_id="42",
+            chat_id="42",
+            content="hi from a topic",
+            metadata={"message_thread_id": 55, "message_id": 999},
+        )
+
+        await runner._handle_inbound(msg)
+        out = await runner.bus.outbound.get()
+        assert out.metadata["message_thread_id"] == 55
+        assert out.metadata["message_id"] == 999
+
+    @pytest.mark.asyncio
+    async def test_progress_hint_echoes_inbound_thread_id(self, partners_root, fake_orchestrator):
+        fake_orchestrator.script = narration_round("c1", "exploring…") + finish("done")
+        runner = _runner(partners_root)
+        msg = InboundMessage(
+            channel="telegram",
+            sender_id="42",
+            chat_id="42",
+            content="hi",
+            metadata={"message_thread_id": 55, "message_id": 999},
+        )
+
+        await runner.process_message(msg)
+        progress = await runner.bus.outbound.get()
+        assert progress.metadata["_progress"] is True
+        assert progress.metadata["message_thread_id"] == 55
+        assert progress.metadata["message_id"] == 999
+
+    @pytest.mark.asyncio
+    async def test_tool_hint_echoes_inbound_thread_id(self, partners_root, fake_orchestrator):
+        fake_orchestrator.script = [
+            event(
+                StreamEventType.TOOL_CALL,
+                content="rag",
+                metadata={"args": {"query": "hello"}},
+            ),
+            *finish("done"),
+        ]
+        runner = _runner(partners_root)
+        msg = InboundMessage(
+            channel="telegram",
+            sender_id="42",
+            chat_id="42",
+            content="hi",
+            metadata={"message_thread_id": 55, "message_id": 999},
+        )
+
+        await runner.process_message(msg)
+        hint = await runner.bus.outbound.get()
+        assert hint.metadata["_tool_hint"] is True
+        assert hint.metadata["message_thread_id"] == 55
+        assert hint.metadata["message_id"] == 999
+
+    @pytest.mark.asyncio
+    async def test_stream_delta_and_end_echo_inbound_thread_id(
+        self, partners_root, fake_orchestrator
+    ):
+        fake_orchestrator.script = narration_round("c1", "streamed text") + finish("done")
+        runner = _runner(partners_root)
+        msg = InboundMessage(
+            channel="telegram",
+            sender_id="42",
+            chat_id="42",
+            content="hi",
+            metadata={"message_thread_id": 55, "message_id": 999, "_wants_stream": True},
+        )
+
+        await runner.process_message(msg)
+        published = []
+        while not runner.bus.outbound.empty():
+            published.append(await runner.bus.outbound.get())
+
+        streamed = [
+            out
+            for out in published
+            if out.metadata.get("_stream_delta") or out.metadata.get("_stream_end")
+        ]
+        assert streamed, "expected at least one streamed delta/end message"
+        for out in streamed:
+            assert out.metadata["message_thread_id"] == 55
+            assert out.metadata["message_id"] == 999
+
+    @pytest.mark.asyncio
+    async def test_only_answer_stream_end_marks_confirmable_final_delivery(
+        self, partners_root, fake_orchestrator
+    ):
+        fake_orchestrator.script = narration_round("intro", "Checking") + finish("Answer")
+        runner = _runner(partners_root)
+        msg = InboundMessage(
+            channel="feishu",
+            sender_id="ou_user",
+            chat_id="oc_group",
+            content="Question",
+            metadata={"message_id": "om_user", "_wants_stream": True},
+        )
+        delivery_meta: dict[str, Any] = {}
+
+        assert await runner.process_message(msg, delivery_meta=delivery_meta) == "Answer"
+        ends = []
+        while not runner.bus.outbound.empty():
+            outbound = await runner.bus.outbound.get()
+            if outbound.metadata.get("_stream_end"):
+                ends.append(outbound)
+
+        assert len(ends) == 2
+        assert ends[0].metadata.get("_stream_final") is None
+        assert ends[1].metadata["_stream_final"] is True
+        assert ends[1].metadata["message_id"] == "om_user"
+        assert delivery_meta["_streamed"] is True
+        assert delivery_meta["_stream_id"] == ends[1].metadata["_stream_id"]
+
+    @pytest.mark.asyncio
+    async def test_missing_thread_metadata_is_not_injected(self, partners_root, fake_orchestrator):
+        fake_orchestrator.script = finish("reply text")
+        runner = _runner(partners_root)
+
+        await runner._handle_inbound(_msg())
+        out = await runner.bus.outbound.get()
+        assert "message_thread_id" not in out.metadata
+        assert "message_id" not in out.metadata
 
 
 class TestContextAssembly:
@@ -587,15 +943,16 @@ class TestContextAssembly:
         } in context.conversation_history
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("content", ["what is in this image?", ""])
     async def test_image_media_becomes_context_attachment_and_session_record(
-        self, partners_root, fake_orchestrator
+        self, partners_root, fake_orchestrator, content
     ):
         image_path = partners_root / "image.png"
         image_path.parent.mkdir(parents=True, exist_ok=True)
         image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
         fake_orchestrator.script = finish("saw it")
         runner = _runner(partners_root)
-        msg = _msg("what is in this image?")
+        msg = _msg(content)
         msg.media = [str(image_path)]
 
         await runner.process_message(msg)
@@ -605,6 +962,7 @@ class TestContextAssembly:
         assert context.attachments[0].type == "image"
         assert context.attachments[0].filename == "image.png"
         records = _shared_store().messages("telegram:42")
+        assert [record["role"] for record in records] == ["user", "assistant"]
         assert records[0]["attachments"][0]["type"] == "image"
         assert records[0]["attachments"][0]["filename"] == "image.png"
 
@@ -775,6 +1133,104 @@ class TestSessionStoreOps:
         assert [m["content"] for m in store.messages("web-b")] == ["q1", "a1"]
         # Events ride along so the branched copy rehydrates its trace too.
         assert store.messages("web-b")[1].get("events")
+
+    def test_image_only_history_replays_the_stored_model_turn(self, partners_root):
+        store = _shared_store()
+        image = [{"type": "image_url", "image_url": {"url": "https://example.test/photo.png"}}]
+        turn = {
+            "version": 1,
+            "messages": [
+                {"role": "user", "content": image},
+                {"role": "assistant", "content": "saw it"},
+            ],
+        }
+        store.append(
+            "web-image",
+            "user",
+            "",
+            attachments=[
+                {
+                    "type": "image",
+                    "filename": "photo.png",
+                    "path": "/tmp/photo.png",
+                }
+            ],
+        )
+        store.append("web-image", "assistant", "saw it", metadata={"model_turn": turn})
+
+        assert [row["role"] for row in store.messages("web-image")] == ["user", "assistant"]
+        assert store.messages("web-image")[1]["metadata"] == {}
+        summary = store.list_sessions()[0]
+        assert (summary["message_count"], summary["title"], summary["last_message"]) == (
+            2,
+            "",
+            "saw it",
+        )
+        assert store.conversation_history("web-image") == [
+            {"role": "assistant", "content": "saw it"}
+        ]
+        assert store.model_history("web-image") == turn["messages"]
+
+    def test_image_only_records_do_not_consume_text_history_budget(self, partners_root):
+        store = _shared_store()
+        store.append("text-budget", "user", "before")
+        store.append(
+            "text-budget",
+            "user",
+            "",
+            attachments=[
+                {
+                    "type": "image",
+                    "filename": "photo.png",
+                }
+            ],
+        )
+        store.append("text-budget", "assistant", "saw it")
+
+        assert store.conversation_history("text-budget", max_messages=2) == [
+            {"role": "user", "content": "before"},
+            {"role": "assistant", "content": "saw it"},
+        ]
+
+    @pytest.mark.parametrize("attachments", ["photo.png", ["photo.png"], [{}], [{"type": "image"}]])
+    def test_malformed_attachments_do_not_admit_empty_records(self, partners_root, attachments):
+        store = _shared_store()
+        store._path("bad").write_text(
+            json.dumps(
+                {
+                    "role": "user",
+                    "content": "",
+                    "attachments": attachments,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        assert store.messages("bad") == []
+        assert store.messages_page("bad")["total"] == 0
+        assert store.model_history("bad") == []
+
+    @pytest.mark.parametrize("existing_content", ["target text", ""])
+    def test_branch_rejects_existing_destination_without_changing_sessions(
+        self, partners_root, existing_content
+    ):
+        store = _shared_store()
+        store.append("web-a", "user", "source text")
+        if existing_content:
+            store.append("web-b", "user", existing_content)
+        else:
+            store._path("web-b").touch()
+        store.set_archived("web-b", True)
+        paths = [store._path("web-a"), store._path("web-b"), store._index_path]
+        before = [path.read_bytes() for path in paths]
+
+        with pytest.raises(FileExistsError):
+            store.branch("web-a", "web-b")
+
+        assert [path.read_bytes() for path in paths] == before
+        assert store.is_archived("web-a") is False
+        assert store.is_archived("web-b") is True
 
     def test_delete_removes_file_and_index(self, partners_root):
         store = _shared_store()
@@ -981,6 +1437,85 @@ class TestLiveTurn:
             await mgr.stop_partner("ada")
 
     @pytest.mark.asyncio
+    async def test_second_browser_cannot_replace_an_active_web_turn(
+        self, partners_root, fake_orchestrator, monkeypatch
+    ):
+        from deeptutor.services.partners.manager import PartnerManager, PartnerTurnBusyError
+
+        mgr = PartnerManager()
+        mgr.save_config("ada", PartnerConfig(name="Ada"), auto_start=True)
+        await mgr.start_partner("ada")
+        release = asyncio.Event()
+        seen: list[str] = []
+
+        async def reply(_partner_id, content, **_kwargs):
+            seen.append(content)
+            await release.wait()
+            return f"answer to {content}"
+
+        monkeypatch.setattr(mgr, "send_message", reply)
+        try:
+            first = mgr.start_web_turn("ada", "web-shared", "first browser")
+            await asyncio.sleep(0)
+            with pytest.raises(PartnerTurnBusyError, match="already replying"):
+                mgr.start_web_turn("ada", "web-shared", "second browser")
+            assert mgr.subscribe_web_turn("ada", "web-shared") is first
+            assert mgr.web_session_is_busy("ada", "web-shared") is True
+            # A different worker's manager has no in-memory LiveTurn, but the
+            # file lease still rejects mutation of the same actor-scoped key.
+            other_manager = PartnerManager()
+            assert other_manager.subscribe_web_turn("ada", "web-shared") is None
+            assert other_manager.web_session_is_busy("ada", "web-shared") is True
+            assert seen == ["first browser"]
+
+            release.set()
+            await asyncio.wait_for(first.task, timeout=1)
+            assert first.done
+            assert mgr.web_session_is_busy("ada", "web-shared") is False
+            second = mgr.start_web_turn("ada", "web-shared", "second browser")
+            await asyncio.wait_for(second.task, timeout=1)
+            assert seen == ["first browser", "second browser"]
+        finally:
+            release.set()
+            await mgr.stop_partner("ada")
+
+    @pytest.mark.asyncio
+    async def test_stale_browser_send_does_not_append_to_old_shared_session(
+        self, partners_root, fake_orchestrator, monkeypatch
+    ):
+        from deeptutor.services.partners.manager import (
+            PartnerManager,
+            PartnerStaleSessionError,
+        )
+        from deeptutor.services.partners.web_continuity import set_web_continuity
+
+        mgr = PartnerManager()
+        mgr.save_config("ada", PartnerConfig(name="Ada"), auto_start=True)
+        await mgr.start_partner("ada")
+        set_web_continuity("ada", "account-a", enabled=True, session_key="web-current")
+        seen: list[str] = []
+
+        async def reply(_partner_id, content, **_kwargs):
+            seen.append(content)
+            return "reply"
+
+        monkeypatch.setattr(mgr, "send_message", reply)
+        try:
+            with pytest.raises(PartnerStaleSessionError) as stale:
+                mgr.start_web_turn(
+                    "ada", "web-old", "question from stale browser", account_id="account-a"
+                )
+            assert stale.value.active_session_key == "web-current"
+            assert seen == []
+            turn = mgr.start_web_turn(
+                "ada", "web-current", "question on current thread", account_id="account-a"
+            )
+            await asyncio.wait_for(turn.task, timeout=1)
+            assert seen == ["question on current thread"]
+        finally:
+            await mgr.stop_partner("ada")
+
+    @pytest.mark.asyncio
     async def test_manager_captures_authenticated_actor_for_private_history(
         self, partners_root, fake_orchestrator
     ):
@@ -1083,3 +1618,56 @@ class TestPartnerCommands:
 
         assert "Started a new conversation" in reply
         assert len(fake_orchestrator.seen_contexts) == 1
+
+
+def test_a_finished_activity_keeps_its_question_and_answer_not_every_delta() -> None:
+    from deeptutor.services.partners.manager import PartnerActivityFeed
+
+    feed = PartnerActivityFeed()
+    live = feed.subscribe("ada")
+    frames = [
+        {"type": "user_echo", "content": "hi", "activity_id": "a1"},
+        *(
+            {"type": "stream_event", "event": {"content": str(i)}, "activity_id": "a1"}
+            for i in range(50)
+        ),
+        {"type": "content", "content": "hello", "activity_id": "a1"},
+        {"type": "done", "activity_id": "a1"},
+    ]
+    for frame in frames:
+        feed.publish("ada", frame)
+
+    # Whoever was watching saw it all.
+    assert live.qsize() == len(frames)
+    # A late subscriber gets the gap, not the replay of every delta.
+    late = feed.subscribe("ada")
+    replayed = [late.get_nowait()["type"] for _ in range(late.qsize())]
+    assert replayed == ["user_echo", "content", "done"]
+
+
+def test_a_finished_web_turn_is_not_kept() -> None:
+    import asyncio
+
+    from deeptutor.services.partners.manager import LiveTurn, PartnerManager
+
+    async def run() -> None:
+        manager = object.__new__(PartnerManager)
+        instance = type("Instance", (), {"live_turns": {}})()
+        manager._partners = {"ada": instance}
+
+        async def send_message(*_args, on_event=None, **_kwargs):
+            await on_event(type("E", (), {"to_dict": lambda self: {"type": "content"}})())
+            return "done"
+
+        manager.send_message = send_message
+        turn = LiveTurn(user_content="hi")
+        instance.live_turns["s1"] = turn
+        queue = turn.subscribe()
+        await manager._drive_web_turn("ada", "s1", "hi", [], turn)
+        assert "s1" not in instance.live_turns
+        assert turn.events == []
+        # The subscriber still received the whole turn.
+        kinds = [queue.get_nowait()["type"] for _ in range(queue.qsize())]
+        assert kinds == ["stream_event", "content", "done"]
+
+    asyncio.run(run())

@@ -18,7 +18,11 @@ from deeptutor.services.llm import (
 from deeptutor.services.llm import (
     complete as llm_complete,
 )
+from deeptutor.services.llm import (
+    stream as llm_stream,
+)
 from deeptutor.services.llm.structured_retry import json_payload_is_usable
+from deeptutor.services.llm.types import StreamOutcome
 from deeptutor.services.prompt.language import append_language_directive
 from deeptutor.utils.json_parser import parse_json_response
 
@@ -32,6 +36,7 @@ async def llm_text(
     response_format: dict[str, Any] | None = None,
     language: str | None = None,
     reasoning_effort: str | None = None,
+    outcome: StreamOutcome | None = None,
 ) -> str:
     """Run an LLM completion for a Book block / agent.
 
@@ -41,6 +46,9 @@ async def llm_text(
     drifting between languages when prompts contain English token names,
     JSON keys, or non-matching source material.
     """
+    from deeptutor.book.generation_context import with_workspace_instructions
+
+    system_prompt = with_workspace_instructions(system_prompt)
     if language:
         system_prompt = append_language_directive(system_prompt, language)
 
@@ -75,16 +83,21 @@ async def llm_text(
         )
         if measured["used_tokens"] > budget:
             raise AppContextBudgetExceeded(used=measured["used_tokens"], budget=budget)
-    response = await llm_complete(
-        prompt=user_prompt,
-        system_prompt=system_prompt,
-        model=model,
-        api_key=config.api_key,
-        base_url=config.base_url,
-        api_version=getattr(config, "api_version", None),
-        binding=binding,
+    call_kwargs = {
+        "prompt": user_prompt,
+        "system_prompt": system_prompt,
+        "model": model,
+        "api_key": config.api_key,
+        "base_url": config.base_url,
+        "api_version": getattr(config, "api_version", None),
+        "binding": binding,
         **kwargs,
-    )
+    }
+    if outcome is None:
+        response = await llm_complete(**call_kwargs)
+    else:
+        chunks = [chunk async for chunk in llm_stream(**call_kwargs, outcome=outcome)]
+        response = "".join(chunks)
     return clean_thinking_tags(response, binding, model).strip()
 
 
@@ -163,6 +176,7 @@ async def llm_json(
     """
 
     async def _once(reasoning_effort: str | None) -> dict[str, Any]:
+        outcome = StreamOutcome()
         raw = await llm_text(
             user_prompt=user_prompt,
             system_prompt=system_prompt,
@@ -171,7 +185,10 @@ async def llm_json(
             temperature=temperature,
             language=language,
             reasoning_effort=reasoning_effort,
+            outcome=outcome,
         )
+        if outcome.truncated:
+            return {}
         # First pass: strip thinking preamble (Qwen outputs thinking text
         # even with json_object format), then let parse_json_response handle
         # what remains via its json-repair fallback.

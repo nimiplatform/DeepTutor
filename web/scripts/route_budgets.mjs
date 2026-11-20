@@ -10,22 +10,25 @@ const NEXT_OUTPUT_DIR = path.join(WEB_ROOT, ".next");
 const BUILD_MANIFEST_PATH = path.join(NEXT_OUTPUT_DIR, "build-manifest.json");
 const NEXT_BIN = createRequire(import.meta.url).resolve("next/dist/bin/next");
 
+// Preview redesign baseline (2026-10-26, raw production JS): chat 1072KB,
+// notebook home 450KB, reading 1342KB, mastery 1063KB. These measurements
+// are identical on preview before the Edge TTS change; retain ~2–4% headroom.
 const ROUTE_TARGETS = [
-  { route: "/", requestPath: "/", budgetKb: 300 },
-  { route: "/chat/[sessionId]", requestPath: "/chat/perf-budget", budgetKb: 1_020 },
+  { route: "/chat", requestPath: "/chat", budgetKb: 1_100 },
+  { route: "/chat/[sessionId]", requestPath: "/chat/perf-budget", budgetKb: 1_100 },
   { route: "/settings", requestPath: "/settings", budgetKb: 840 },
   { route: "/knowledge-bases", requestPath: "/knowledge-bases", budgetKb: 550 },
-  { route: "/co-writer", requestPath: "/co-writer", budgetKb: 320 },
+  { route: "/co-writer", requestPath: "/co-writer", budgetKb: 470 },
   { route: "/co-writer/[docId]", requestPath: "/co-writer/perf-budget", budgetKb: 515 },
   {
-    route: "/reading/[workspaceId]/sessions/[sessionId]",
-    requestPath: "/reading/perf-budget/sessions/perf-session",
-    budgetKb: 1_120,
+    route: "/learning/reading/[workspaceId]/sessions/[sessionId]",
+    requestPath: "/learning/reading/perf-budget/sessions/perf-session",
+    budgetKb: 1_370,
   },
   {
-    route: "/mastery/[pathId]/sessions/[sessionId]",
-    requestPath: "/mastery/perf-budget/sessions/perf-session",
-    budgetKb: 980,
+    route: "/learning/mastery/[pathId]/sessions/[sessionId]",
+    requestPath: "/learning/mastery/perf-budget/sessions/perf-session",
+    budgetKb: 1_090,
   },
 ];
 
@@ -108,11 +111,24 @@ function scriptChunks(html, baseUrl) {
 }
 
 async function loadRouteChunks(baseUrl, requestPath) {
-  const response = await fetch(`${baseUrl}${requestPath}`);
+  const response = await fetch(`${baseUrl}${requestPath}`, { redirect: "manual" });
   if (!response.ok) {
     throw new Error(`${requestPath} returned HTTP ${response.status} during route measurement`);
   }
   return scriptChunks(await response.text(), baseUrl);
+}
+
+async function assertRootRedirect(baseUrl) {
+  const response = await fetch(`${baseUrl}/`, { redirect: "manual" });
+  const location = response.headers.get("location");
+  const destination = location ? new URL(location, baseUrl) : null;
+  if (
+    ![307, 308].includes(response.status) ||
+    destination?.origin !== baseUrl ||
+    destination.pathname !== "/chat"
+  ) {
+    throw new Error(`/ must redirect to /chat, got HTTP ${response.status} to ${location || "(none)"}`);
+  }
 }
 
 function intersection(sets) {
@@ -162,6 +178,7 @@ async function main() {
   const server = await startBuildServer();
 
   try {
+    await assertRootRedirect(server.baseUrl);
     const rows = [];
     for (const target of ROUTE_TARGETS) {
       rows.push({ ...target, chunks: await loadRouteChunks(server.baseUrl, target.requestPath) });

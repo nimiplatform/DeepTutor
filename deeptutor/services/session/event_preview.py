@@ -48,17 +48,26 @@ def _carries_card(event: dict[str, Any]) -> bool:
     )
 
 
+def _carries_learner_words(event: dict[str, Any]) -> bool:
+    """A message the learner sent mid-turn, which the turn then read.
+
+    It is part of the conversation, not of the working-out: dropping it leaves
+    a reloaded answer responding to something nobody can see was said.
+    """
+    return _metadata(event).get("trace_kind") == "user_input"
+
+
 def _is_semantic(event: dict[str, Any]) -> bool:
     event_type = str(event.get("type") or "")
     if event_type in _SEMANTIC_EVENT_TYPES:
         return True
-    return _carries_card(event)
+    return _carries_card(event) or _carries_learner_words(event)
 
 
 def _is_critical(event: dict[str, Any]) -> bool:
     if str(event.get("type") or "") in _TERMINAL_EVENT_TYPES | {"result"}:
         return True
-    return _carries_card(event)
+    return _carries_card(event) or _carries_learner_words(event)
 
 
 def _truncate_legacy_payloads(event: dict[str, Any]) -> dict[str, Any]:
@@ -106,15 +115,24 @@ def compact_trace_preview(
         if len(selected_indices) >= max_events:
             break
         selected_indices.add(index)
-    selected = [event for index, event in semantic if index in selected_indices]
-    result: list[dict[str, Any]] = []
+    selected = [(index, event) for index, event in semantic if index in selected_indices]
+    # The byte budget is spent in rank order, not in time order: the rows a
+    # settled message cannot render without first, then the others from the
+    # tail back. Spending it in time order let a turn's early tool results —
+    # a quiz that fetched two web pages — use it all up, and the result that
+    # carries the quiz itself was the row left out.
+    ranked = sorted(
+        selected,
+        key=lambda row: (row[0] not in critical, -row[0]),
+    )
+    kept: dict[int, dict[str, Any]] = {}
     used_bytes = 0
-    for event in selected:
+    for index, event in ranked:
         bounded = _truncate_legacy_payloads(event)
         size = len(json.dumps(bounded, ensure_ascii=False, default=str).encode("utf-8"))
-        if result and used_bytes + size > max_bytes:
+        if kept and used_bytes + size > max_bytes:
             continue
-        if not result and size > max_bytes:
+        if not kept and size > max_bytes:
             bounded = {
                 "type": bounded.get("type", ""),
                 "turn_id": bounded.get("turn_id"),
@@ -124,8 +142,9 @@ def compact_trace_preview(
                 "_truncated": True,
             }
             size = len(json.dumps(bounded, ensure_ascii=False, default=str).encode("utf-8"))
-        result.append(bounded)
+        kept[index] = bounded
         used_bytes += size
+    result = [kept[index] for index in sorted(kept)]
 
     omitted = len(events) != len(result) or len(selected) != len(result)
     terminal = next(

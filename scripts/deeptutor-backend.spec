@@ -1,13 +1,20 @@
 # The backend is an App-owned process. Optional AI/engine dependencies are
 # installed only when selected; the frozen entry uses the same Python services.
 from pathlib import Path
+import site
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 root = Path(SPECPATH).parent
+dist_infos = [
+    (str(info), info.name)
+    for site_dir in site.getsitepackages()
+    if Path(site_dir).is_dir()
+    for info in Path(site_dir).glob("*.dist-info")
+]
 analysis = Analysis(
     [str(root / "deeptutor/nimi/worker.py")],
     pathex=[str(root)],
-    datas=collect_data_files("deeptutor"),
+    datas=collect_data_files("deeptutor") + dist_infos,
     # tiktoken discovers encoding constructors through a namespace package.
     # Static import analysis misses these plugins, breaking packaged KB indexing.
     hiddenimports=(collect_submodules("deeptutor") + collect_submodules("uvicorn")

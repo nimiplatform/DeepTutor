@@ -175,7 +175,7 @@ def web_search(
         spec = search_provider_spec(provider_name)
         if spec is not None and not spec.soft_fallback:
             raise ValueError(
-                f"{provider_name} requires {missing} (profile.{missing} in Settings > Catalog)."
+                f"{provider_name} requires {missing} (profile.{missing} in Settings > Search)."
             )
         _logger.warning(
             f"{provider_name} missing {missing}, falling back to {SEARCH_FALLBACK_PROVIDER}."
@@ -190,6 +190,10 @@ def web_search(
     provider_kwargs.setdefault("max_results", resolved.max_results)
     if resolved.proxy and "proxy" not in provider_kwargs:
         provider_kwargs["proxy"] = resolved.proxy
+    # Providers without an engine concept just ignore the kwarg; an explicit
+    # request-level value keeps winning over the profile's.
+    if resolved.search_engine:
+        provider_kwargs.setdefault("search_engine", resolved.search_engine)
 
     # A rate-limited or unreachable engine costs the query its first choice, not
     # the whole turn: fall through the user's other configured search profiles
@@ -243,6 +247,7 @@ def web_search(
             use_llm=use_llm,
             custom_template=consolidation_custom_template,
             llm_config=llm_config,
+            max_results=provider_kwargs["max_results"],
         )
         response = consolidator.consolidate(response)
 
@@ -265,8 +270,9 @@ def get_current_config() -> dict[str, Any]:
     resolved = resolve_search_runtime_config()
     source_filtering = dict(_get_source_filter_settings())
     # Never surface the bearer token to Settings / CLI — only whether Moderation
-    # is wired (key present + use_moderation).
+    # is wired (key present + use_moderation). Same for the Web Risk API key.
     source_filtering["moderation_configured"] = bool(source_filtering.pop("moderation_api_key", ""))
+    source_filtering["web_risk_configured"] = bool(source_filtering.pop("web_risk_api_key", ""))
     return {
         "enabled": config.get("enabled", True),
         "provider": resolved.provider,
@@ -277,6 +283,7 @@ def get_current_config() -> dict[str, Any]:
         "base_url": resolved.base_url,
         "max_results": resolved.max_results,
         "proxy": resolved.proxy,
+        "search_engine": resolved.search_engine,
         "providers": get_providers_info(),
         "supported_providers": sorted(SUPPORTED_SEARCH_PROVIDERS),
         "deprecated_providers": sorted(DEPRECATED_SEARCH_PROVIDERS),

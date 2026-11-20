@@ -1,9 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 const webRoot = process.cwd();
 const require = createRequire(path.join(webRoot, "package.json"));
@@ -25,6 +34,10 @@ test("the build publishes PDF.js decoder assets for standalone deployments", () 
   >;
   assert.equal(scripts.predev, "node ./scripts/copy-pdfjs-assets.mjs");
   assert.equal(scripts["predev:turbo"], "node ./scripts/copy-pdfjs-assets.mjs");
+
+  const source = read("scripts", "copy-pdfjs-assets.mjs");
+  assert.match(source, /ASSET_DIRS = \["wasm", "cmaps"\]/);
+  assert.match(source, /cpSync\(sourceDir, targetDir, \{ recursive: true \}\)/);
 
   const result = spawnSync(
     process.execPath,
@@ -48,13 +61,44 @@ test("the build publishes PDF.js decoder assets for standalone deployments", () 
       `published decoder must match the installed dependency: ${name}`,
     );
   }
+  // Predefined CMaps back cMapUrl: without them PDF.js drops CID fonts, which
+  // is most CJK documents' text. One Adobe-GB1 file is enough of a smoke test.
+  for (const name of [
+    "Adobe-GB1-UCS2.bcmap",
+    "Adobe-Japan1-UCS2.bcmap",
+    "Adobe-Korea1-UCS2.bcmap",
+  ]) {
+    assert.ok(
+      existsSync(path.join(webRoot, "public", "pdfjs", "cmaps", name)),
+      name,
+    );
+  }
 });
 
-test("the reader gives PDF.js an absolute same-origin decoder URL", () => {
+test("the reader gives PDF.js absolute same-origin decoder and CMap URLs", () => {
   const loader = read("lib", "pdfjs-loader.ts");
   const reader = read("components", "reading", "PdfDocumentView.tsx");
   assert.match(loader, /new URL\(PDFJS_WASM_PATH, window\.location\.origin\)/);
+  assert.match(loader, /new URL\(PDFJS_CMAP_PATH, window\.location\.origin\)/);
   assert.match(reader, /wasmUrl:\s*pdfjsWasmUrl\(\)/);
+  assert.match(reader, /cMapUrl:\s*pdfjsCMapUrl\(\)/);
+  assert.match(reader, /cMapPacked:\s*true/);
+});
+
+test("the reader loads the legacy PDF.js library and polyfilled worker", () => {
+  const loader = read("lib", "pdfjs-loader.ts");
+  const worker = read(
+    "node_modules",
+    "pdfjs-dist",
+    "legacy",
+    "build",
+    "pdf.worker.mjs",
+  );
+  assert.doesNotMatch(loader, /import\("pdfjs-dist"\)/);
+  assert.doesNotMatch(loader, /"pdfjs-dist\/build\//);
+  assert.match(loader, /import\("pdfjs-dist\/legacy\/build\/pdf\.mjs"\)/);
+  assert.match(loader, /"pdfjs-dist\/legacy\/build\/pdf\.worker\.min\.mjs"/);
+  assert.match(worker, /getOrInsertComputed: function getOrInsertComputed\(/);
 });
 
 test("the build wrapper restores every generated checked-in input", () => {
@@ -96,6 +140,54 @@ test("the build wrapper restores every generated checked-in input", () => {
     /finally\s*{\s*if \(buildTsconfigPath\) rmSync/,
     "generated inputs must be restored even when the build fails",
   );
+});
+
+test("a standalone build carries client chunks and public assets with a custom dist directory", () => {
+  const fixture = mkdtempSync(path.join(tmpdir(), "deeptutor-standalone-"));
+  const distDir = ".next-standalone-repro";
+  const distRoot = path.join(fixture, distDir);
+  const standalone = path.join(distRoot, "standalone");
+  try {
+    mkdirSync(path.join(distRoot, "static", "chunks"), { recursive: true });
+    mkdirSync(path.join(fixture, "public", "images"), { recursive: true });
+    mkdirSync(standalone, { recursive: true });
+    writeFileSync(path.join(standalone, "server.js"), "// server");
+    writeFileSync(path.join(distRoot, "static", "chunks", "app.js"), "// client");
+    writeFileSync(path.join(fixture, "public", "images", "logo.svg"), "<svg />");
+
+    const moduleUrl = pathToFileURL(
+      path.join(webRoot, "scripts", "build.mjs"),
+    ).href;
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { packageStandaloneAssets } from ${JSON.stringify(moduleUrl)};
+packageStandaloneAssets(process.argv[1], process.argv[2]);`,
+        fixture,
+        distDir,
+      ],
+      { cwd: webRoot, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      readFileSync(
+        path.join(standalone, distDir, "static", "chunks", "app.js"),
+        "utf8",
+      ),
+      "// client",
+    );
+    assert.equal(
+      readFileSync(
+        path.join(standalone, "public", "images", "logo.svg"),
+        "utf8",
+      ),
+      "<svg />",
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
 
 test("the standalone bundle follows the Nimi workspace root", () => {

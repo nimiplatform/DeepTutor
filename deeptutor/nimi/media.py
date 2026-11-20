@@ -63,6 +63,11 @@ async def ready_capabilities() -> set[str]:
     return {row["capabilityContract"] for row in value["selections"] if row["state"] == "ready"}
 
 
+async def preset_voice_ids() -> list[str]:
+    value = await get_transport().request("media.voices", {})
+    return [str(v) for v in value.get("voices") or [] if v]
+
+
 async def read_artifact(job_id: str, artifact: dict[str, Any]) -> tuple[bytes, str]:
     expected = int(artifact["sizeBytes"])
     if expected <= 0:

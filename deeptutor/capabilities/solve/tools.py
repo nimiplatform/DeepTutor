@@ -9,7 +9,8 @@ the loop, using the shared built-in tools (rag / exec / geogebra / …).
 The active session id is injected server-side by the pipeline as
 ``_solve_session_id``; the model never supplies it. ``solve_finish_step`` emits
 a ``_context_checkpoint`` so the loop retains the just-finished step's
-summary with its tool result and preserves the model's continuation state.
+summary with its tool result, preserves the model's continuation state, and
+carries the current plan as the checkpoint's ``state``.
 """
 
 from __future__ import annotations
@@ -117,6 +118,23 @@ class SolvePlanTool(BaseTool):
             )
         analysis = str(kwargs.get("analysis") or "").strip()
         session = get_session(session_id)
+        if session.steps:
+            # A second solve_plan would wipe progress and skip the replan budget.
+            return ToolResult(
+                content=json.dumps(
+                    {
+                        "status": "plan_exists",
+                        "plan": session.progress_text(),
+                        "instruction": (
+                            "A plan is already set. Continue it; call solve_replan "
+                            "only if the approach has genuinely failed."
+                        ),
+                    },
+                    ensure_ascii=False,
+                ),
+                success=False,
+                metadata={"solve_plan": {"status": "plan_exists"}},
+            )
         session.set_plan(analysis, steps)
         first = session.next_step()
         return _json_result(
@@ -192,12 +210,14 @@ class SolveFinishStepTool(BaseTool):
                 else "Work the next step, then call solve_finish_step again."
             ),
         }
-        # The summary accompanies this result; prior model state stays intact.
+        # The summary and latest plan state accompany this result; prior model state stays intact.
         checkpoint = f"[{step.id}] {step.goal} — done. {summary}".strip()
         return _json_result(
             payload,
             meta_key="solve_finish_step",
-            extra_meta={"_context_checkpoint": {"summary": checkpoint}},
+            extra_meta={
+                "_context_checkpoint": {"summary": checkpoint, "state": session.progress_text()}
+            },
         )
 
 

@@ -1,8 +1,5 @@
 import type { StreamEvent } from "@/features/chat/model/protocol";
-import {
-  collectNarrationCallIds,
-  shouldAppendEventContent,
-} from "@/lib/stream";
+import { shouldAppendEventContent } from "@/lib/stream";
 
 export const MAX_PREVIEW_EVENTS = 200;
 export const MAX_PREVIEW_BYTES = 128 * 1024;
@@ -46,9 +43,14 @@ function carriesCard(event: StreamEvent): boolean {
   );
 }
 
+/** What the learner sent mid-turn: conversation, not working-out. */
+function carriesLearnerWords(event: StreamEvent): boolean {
+  return metadata(event).trace_kind === "user_input";
+}
+
 function isSemantic(event: StreamEvent): boolean {
   if (SEMANTIC_TYPES.has(String(event.type ?? ""))) return true;
-  return carriesCard(event);
+  return carriesCard(event) || carriesLearnerWords(event);
 }
 
 function isCritical(event: StreamEvent): boolean {
@@ -58,7 +60,7 @@ function isCritical(event: StreamEvent): boolean {
   ) {
     return true;
   }
-  return carriesCard(event);
+  return carriesCard(event) || carriesLearnerWords(event);
 }
 
 function boundLegacyPayload(event: StreamEvent): StreamEvent {
@@ -171,17 +173,15 @@ export function compactTracePreview(
 export function settleMessageTrace(
   events: StreamEvent[],
   turnId: string | null,
+  bounds?: MessageTraceMetadata,
 ): { events: StreamEvent[]; trace: MessageTraceMetadata } {
-  const narration = collectNarrationCallIds(events);
   let answerLength = 0;
   let lastSeq = 0;
   const stamped = events.map((event) => {
     lastSeq = Math.max(lastSeq, event.seq ?? 0);
     const meta = metadata(event);
     if (shouldAppendEventContent(event)) {
-      const callId = typeof meta.call_id === "string" ? meta.call_id : "";
-      if (!callId || !narration.has(callId))
-        answerLength += event.content.length;
+      answerLength += event.content.length;
       return event;
     }
     if (
@@ -197,9 +197,14 @@ export function settleMessageTrace(
     return event;
   });
   const preview = compactTracePreview(stamped);
-  const stamps = events
-    .map((event) => event.timestamp)
-    .filter((value): value is number => typeof value === "number");
+  const stamps = [
+    bounds?.started_at,
+    bounds?.ended_at,
+    ...events.map((event) => event.timestamp),
+  ].filter(
+    (value): value is number =>
+      typeof value === "number" && Number.isFinite(value),
+  );
   return {
     events: preview.events,
     trace: {
@@ -215,6 +220,37 @@ export function settleMessageTrace(
         : {}),
     },
   };
+}
+
+/**
+ * What settling a turn means for one message in the session.
+ *
+ * The compaction is deferred by one turn. The turn that just finished is the
+ * one a reader is most likely to open, and trading its events for a preview
+ * means the rows they were watching a second ago have to come back from the
+ * server — the reasoning disappears from the trace, the fetch lands, and the
+ * block jumps. Keeping the newest turn whole costs one turn's events; the turn
+ * before it is compacted instead, which is what bounds the memory.
+ */
+export type TraceSettleAction = "keep" | "compact" | "skip";
+
+export function traceSettleAction(
+  message: {
+    id?: number;
+    role: string;
+    events?: StreamEvent[];
+    trace?: MessageTraceMetadata;
+  },
+  settledMessageId: number,
+): TraceSettleAction {
+  if (message.role !== "assistant") return "skip";
+  if (message.id === settledMessageId) return "keep";
+  // An older turn is due for compaction only while it is still holding every
+  // event it streamed. ``total`` counts the full stream, so a message whose
+  // list is shorter has already been previewed — or was loaded as one.
+  const total = message.trace?.total ?? 0;
+  if (!message.trace?.turn_id || !total) return "skip";
+  return (message.events?.length ?? 0) >= total ? "compact" : "skip";
 }
 
 export interface TraceSnapshot {

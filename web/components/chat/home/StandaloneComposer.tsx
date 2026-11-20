@@ -17,14 +17,20 @@
  * should go.
  */
 
+import { ResourceReuseContext, useResourceReusePolicy } from "./ResourceReuse";
+import { retainedKnowledgeBases } from "@/lib/resource-reuse";
+import { knowledgeBaseRef } from "@/lib/knowledge-helpers";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { MessageSquare } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useCapabilityLabel } from "@/features/ui-layout/tokens";
 
 import ChatComposer from "@/components/chat/home/ChatComposer";
 import type { ContextBudget } from "@/components/chat/home/ContextBudgetChip";
+import type { ResourceSelection } from "@/features/chat/ChatStateAdapter";
 import type { CapabilityDef } from "@/features/capabilities/presentation";
+import type { ComposerResourceCatalog } from "@/hooks/useComposerResources";
 import type { SelectedHistorySession } from "@/components/chat/HistorySessionPicker";
 import type { SelectedQuestionEntry } from "@/components/chat/QuestionBankPicker";
 import { useAttachmentLimits } from "@/lib/attachment-limits";
@@ -40,8 +46,10 @@ import {
 import {
   fileToPendingAttachment,
   selectAttachmentFiles,
+  toOutgoingAttachment,
   type PendingAttachment,
 } from "@/features/chat/controllers/pending-attachments";
+import { isQuoteAttachment } from "@/lib/quote-attachments";
 import {
   listKnowledgeBases,
   type KnowledgeBaseSummary,
@@ -157,6 +165,8 @@ interface StandaloneComposerProps {
   inputPlaceholder?: string;
   /** A line Tab accepts while the composer is empty. See ComposerInput. */
   inputPlaceholderCompletion?: string;
+  /** Context shown inside the box above the text. See ChatComposer. */
+  inputHeader?: React.ReactNode;
   /**
    * Capability chip contents. Defaults to a locked "Chat" entry — pass a
    * one-entry list to relabel it, or several to make the chip a picker.
@@ -184,16 +194,40 @@ interface StandaloneComposerProps {
    */
   personaSelection?: string;
   onPersonaSelectionChange?: (persona: string) => void;
+  /**
+   * Which of the workspace's skills and MCP servers this conversation narrows
+   * itself to, and what there is to narrow. Session-level like the persona
+   * above: pass the trio and the "+" menu grows the Skills and MCP entries,
+   * omit it and the conversation keeps inheriting its workspace untouched.
+   * `ChatComposer` needs both halves — it hides an entry whose catalog is
+   * empty — which is why a surface that passed neither showed no picker at all
+   * while the chat page showed one for the same account (#1534).
+   */
+  resourceCatalog?: ComposerResourceCatalog;
+  resourceSelection?: ResourceSelection;
+  onResourceSelectionChange?: (selection: ResourceSelection) => void;
   /** Hide the My Agents reference entry. */
   agentsAvailable?: boolean;
   /** Receives a function that drops text into the textarea (ask_user chips). */
   prefillInputRef?: React.MutableRefObject<((text: string) => void) | null>;
+  /** Attachments handed in from outside (a quoted selection), added once per
+   *  ``id`` — the composer then owns them like any it picked itself. */
+  seedAttachments?: { id: number; attachments: PendingAttachment[] } | null;
   /**
    * How full the model's context window was at the end of the last measured
    * turn. Omitted, the chip does not render — which is also what happens on a
    * transcript no backend has measured.
    */
   contextBudget?: ContextBudget | null;
+  /** At the foot of a narrow pane — see ``ChatComposer``'s ``docked``. */
+  docked?: boolean;
+  /** A surface's own control at the far end of the tray (who answers). */
+  trayEnd?: React.ReactNode;
+  /**
+   * Offer the partner controls (ask a partner, convene a group, consult an
+   * agent). Off where who answers is already the surface's own choice.
+   */
+  partnerControls?: boolean;
 }
 
 function StandaloneComposerImpl({
@@ -204,6 +238,7 @@ function StandaloneComposerImpl({
   awaitingUserReply = false,
   inputPlaceholder,
   inputPlaceholderCompletion,
+  inputHeader,
   capabilities,
   activeCapValue,
   onSelectCapability,
@@ -214,9 +249,16 @@ function StandaloneComposerImpl({
   onLLMSelectionChange,
   personaSelection,
   onPersonaSelectionChange,
+  resourceCatalog,
+  resourceSelection,
+  onResourceSelectionChange,
   agentsAvailable = false,
   prefillInputRef,
+  seedAttachments = null,
   contextBudget = null,
+  docked = false,
+  trayEnd,
+  partnerControls = true,
 }: StandaloneComposerProps) {
   const { t } = useTranslation();
 
@@ -230,6 +272,15 @@ function StandaloneComposerImpl({
 
   // ── Composer local state ──────────────────────────────────────
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const focusInputRef = useRef<(() => void) | null>(null);
+  const [seededId, setSeededId] = useState<number | null>(null);
+  if (seedAttachments && seedAttachments.id !== seededId) {
+    setSeededId(seedAttachments.id);
+    setAttachments((prev) => [...prev, ...seedAttachments.attachments]);
+  }
+  useEffect(() => {
+    if (seededId !== null) focusInputRef.current?.();
+  }, [seededId]);
   const attachmentLimits = useAttachmentLimits();
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const attachmentErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(
@@ -237,6 +288,7 @@ function StandaloneComposerImpl({
   );
   const [dragging, setDragging] = useState(false);
   const [capMenuOpen, setCapMenuOpen] = useState(false);
+  const resourceReuse = useResourceReusePolicy("standalone");
   const [spaceMenuOpen, setSpaceMenuOpen] = useState(false);
   const [quizConfig, setQuizConfig] = useState<DeepQuestionFormConfig>({
     ...DEFAULT_QUIZ_CONFIG,
@@ -320,7 +372,7 @@ function StandaloneComposerImpl({
     () =>
       new Set(
         knowledgeBases
-          .filter((kb) => kb.metadata?.type === "subagent")
+          .filter((kb) => kb.metadata?.type === "subagent" && kb.metadata?.agent_kind !== "partner")
           .map((kb) => kb.name),
       ),
     [knowledgeBases],
@@ -332,7 +384,7 @@ function StandaloneComposerImpl({
   const agentOptions = useMemo(
     () =>
       knowledgeBases
-        .filter((kb) => kb.metadata?.type === "subagent")
+        .filter((kb) => kb.metadata?.type === "subagent" && kb.metadata?.agent_kind !== "partner")
         .map((kb) => ({
           name: kb.name,
           kind: kb.metadata?.agent_kind as string | undefined,
@@ -523,7 +575,7 @@ function StandaloneComposerImpl({
   const handleToggleKB = useCallback(
     (name: string) => {
       const providerOf = (kbName: string) => {
-        const kb = knowledgeBases.find((item) => item.name === kbName);
+        const kb = knowledgeBases.find((item) => knowledgeBaseRef(item) === kbName);
         return (
           (kb?.metadata?.rag_provider as string | undefined) ||
           (kb?.statistics?.rag_provider as string | undefined) ||
@@ -566,10 +618,22 @@ function StandaloneComposerImpl({
     },
     [agentNameSet, applyKnowledgeBases, selectedKnowledgeBases],
   );
+  const handleSelectPartnerGroup = useCallback((id: string | null) => {
+    setSelectedPartnerGroup(id);
+    if (id) { setSelectedPartner(null); handleSelectAgent(null); }
+  }, [handleSelectAgent]);
+  const handleSelectPartner = useCallback((id: string | null) => {
+    setSelectedPartner(id);
+    if (id) { setSelectedPartnerGroup(null); handleSelectAgent(null); }
+  }, [handleSelectAgent]);
+
   // Seeded from the configured default; the chip's stepper overrides it for
   // the next turn. Null until the setting loads, which is also what "no agent
   // selected" looks like — neither case has a budget to send.
   const [subagentBudget, setSubagentBudget] = useState<number | null>(null);
+  const [selectedPartner, setSelectedPartner] = useState<string | null>(null);
+  const [selectedPartnerGroup, setSelectedPartnerGroup] = useState<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     void getSubagentSettings()
@@ -636,14 +700,15 @@ function StandaloneComposerImpl({
     [notebookReferencesPayload, selectedNotebookRecords],
   );
 
+  const capabilityLabel = useCapabilityLabel();
   const resolvedCapabilities = useMemo(() => {
     const list = capabilities?.length ? capabilities : [CHAT_ONLY_CAPABILITY];
     return list.map((capability) => ({
       ...capability,
-      label: t(capability.label),
+      label: capabilityLabel(capability),
       description: t(capability.description),
     }));
-  }, [capabilities, t]);
+  }, [capabilities, capabilityLabel, t]);
   const activeCap =
     resolvedCapabilities.find(
       (capability) => capability.value === activeCapValue,
@@ -686,12 +751,7 @@ function StandaloneComposerImpl({
       if (!content.trim() && !hasReferences) return;
 
       let config: Record<string, unknown> | undefined;
-      let outgoingAttachments = attachments.map((attachment) => ({
-        type: attachment.type,
-        filename: attachment.filename,
-        base64: attachment.base64,
-        mime_type: attachment.mimeType,
-      }));
+      let outgoingAttachments = attachments.map(toOutgoingAttachment);
       if (isQuizMode) {
         config = buildQuizWSConfig(quizConfig);
         if (quizConfig.mode === "mimic" && quizPdf) {
@@ -713,6 +773,10 @@ function StandaloneComposerImpl({
         config = buildResearchWSConfig(researchConfig);
       }
 
+      if (selectedPartner) config = { ...(config ?? {}), consult_partner_id: selectedPartner };
+      if (selectedPartnerGroup) config = { ...(config ?? {}), partner_discussion_group_id: selectedPartnerGroup };
+      config = { ...(config ?? {}), _resource_reuse: resourceReuse.policy,
+        _persistent_knowledge_bases: retainedKnowledgeBases(selectedKnowledgeBases, agentNameSet, resourceReuse.policy) };
       onSubmit({
         content,
         config,
@@ -730,15 +794,29 @@ function StandaloneComposerImpl({
 
       // One-shot references are consumed by the send; the knowledge-base
       // scope is sticky and deliberately survives it.
-      setAttachments([]);
-      setSelectedBookReferences([]);
-      setSelectedNotebookRecords([]);
-      setSelectedHistorySessions([]);
-      setSelectedQuestionEntries([]);
-      setSelectedPersona(null);
-      setSelectedMemoryFiles([]);
+      if (!resourceReuse.policy.partner) setSelectedPartner(null);
+      if (!resourceReuse.policy.partner_group) setSelectedPartnerGroup(null);
+      // A quote belongs to the message it was sent with, whatever the policy.
+      setAttachments((prev) =>
+        resourceReuse.policy.attachments ? prev.filter((a) => !isQuoteAttachment(a)) : [],
+      );
+      if (!resourceReuse.policy.books) setSelectedBookReferences([]);
+      if (!resourceReuse.policy.notebooks) setSelectedNotebookRecords([]);
+      if (!resourceReuse.policy.chat_history) setSelectedHistorySessions([]);
+      if (!resourceReuse.policy.question_bank) setSelectedQuestionEntries([]);
+      if (!resourceReuse.policy.persona) setSelectedPersona(null);
+      applyKnowledgeBases(retainedKnowledgeBases(selectedKnowledgeBases, agentNameSet, resourceReuse.policy));
+      if (!resourceReuse.policy.memory) setSelectedMemoryFiles([]);
+      if (onResourceSelectionChange) {
+        const current = resourceSelection ?? { skills: [], mcp: [] };
+        onResourceSelectionChange({
+          skills: resourceReuse.policy.skills ? current.skills : [],
+          mcp: resourceReuse.policy.mcp ? current.mcp : [],
+        });
+      }
     },
     [
+      resourceReuse, applyKnowledgeBases, agentNameSet, onResourceSelectionChange, resourceSelection,
       attachments,
       awaitingUserReply,
       isStreaming,
@@ -761,6 +839,8 @@ function StandaloneComposerImpl({
       selectedPersona,
       selectedQuestionEntries,
       subagentBudget,
+      selectedPartnerGroup,
+      selectedPartner,
       visualizeConfig,
     ],
   );
@@ -825,7 +905,7 @@ function StandaloneComposerImpl({
   ) : null;
 
   return (
-    <>
+    <ResourceReuseContext.Provider value={resourceReuse}>
       {capabilityConfigSection}
       <ChatComposer
         composerRef={composerRef}
@@ -844,12 +924,19 @@ function StandaloneComposerImpl({
         activeCap={activeCap}
         knowledgeBases={kbOptions}
         connectedAgents={agentOptions}
-        selectedAgent={selectedAgent}
-        onSelectAgent={handleSelectAgent}
+        selectedAgent={selectedPartnerGroup || selectedPartner ? null : selectedAgent}
+        onSelectAgent={partnerControls ? (name) => { if (name) { setSelectedPartnerGroup(null); setSelectedPartner(null); } handleSelectAgent(name); } : undefined}
+        selectedPartnerGroup={selectedPartnerGroup}
+        onSelectPartnerGroup={partnerControls ? handleSelectPartnerGroup : undefined}
+        selectedPartner={selectedPartner}
+        onSelectPartner={partnerControls ? handleSelectPartner : undefined}
         subagentBudget={subagentBudget}
         onSubagentBudgetChange={setSubagentBudget}
         personaSelection={personaSelection}
         onPersonaSelectionChange={onPersonaSelectionChange}
+        resourceCatalog={resourceCatalog}
+        resourceSelection={resourceSelection}
+        onResourceSelectionChange={onResourceSelectionChange}
         personaSelectorOpen={personaSelectorOpen}
         onPersonaSelectorOpenChange={setPersonaSelectorOpen}
         llmOptions={llmOptions}
@@ -902,15 +989,22 @@ function StandaloneComposerImpl({
         onAddFiles={handleAddFiles}
         onSelectCapability={selectCapability}
         showCapabilityChip={showCapabilityChip}
+        docked={docked}
+        trayEnd={trayEnd}
         onCancelStreaming={onCancelStreaming}
         prefillInputRef={prefillInputRef}
+        focusInputRef={focusInputRef}
         inputPlaceholder={inputPlaceholder}
         inputPlaceholderCompletion={inputPlaceholderCompletion}
+        inputHeader={inputHeader}
       />
 
       <NotebookRecordPicker
         open={showNotebookPicker}
-        onClose={() => setShowNotebookPicker(false)}
+        onClose={() => {
+          setShowNotebookPicker(false);
+          setSpaceMenuOpen(true);
+        }}
         onApply={(records: SelectedRecord[]) => {
           setSelectedNotebookRecords(records);
           setShowNotebookPicker(false);
@@ -919,7 +1013,10 @@ function StandaloneComposerImpl({
       <BookReferencePicker
         open={showBookPicker}
         initialReferences={selectedBookReferences}
-        onClose={() => setShowBookPicker(false)}
+        onClose={() => {
+          setShowBookPicker(false);
+          setSpaceMenuOpen(true);
+        }}
         onApply={(refs: SelectedBookReference[]) => {
           setSelectedBookReferences(refs);
           setShowBookPicker(false);
@@ -927,7 +1024,10 @@ function StandaloneComposerImpl({
       />
       <HistorySessionPicker
         open={showHistoryPicker}
-        onClose={() => setShowHistoryPicker(false)}
+        onClose={() => {
+          setShowHistoryPicker(false);
+          setSpaceMenuOpen(true);
+        }}
         onApply={(sessions: SelectedHistorySession[]) => {
           setSelectedHistorySessions(sessions);
           setShowHistoryPicker(false);
@@ -935,7 +1035,11 @@ function StandaloneComposerImpl({
       />
       <QuestionBankPicker
         open={showQuestionBankPicker}
-        onClose={() => setShowQuestionBankPicker(false)}
+        initialSelected={selectedQuestionEntries}
+        onClose={() => {
+          setShowQuestionBankPicker(false);
+          setSpaceMenuOpen(true);
+        }}
         onApply={(entries: SelectedQuestionEntry[]) => {
           setSelectedQuestionEntries(entries);
           setShowQuestionBankPicker(false);
@@ -944,7 +1048,10 @@ function StandaloneComposerImpl({
       <PersonaPicker
         open={showPersonaPicker}
         initialPersona={selectedPersona}
-        onClose={() => setShowPersonaPicker(false)}
+        onClose={() => {
+          setShowPersonaPicker(false);
+          setSpaceMenuOpen(true);
+        }}
         onApply={(persona: string | null) => {
           setSelectedPersona(persona);
           setShowPersonaPicker(false);
@@ -953,13 +1060,16 @@ function StandaloneComposerImpl({
       <MemoryPicker
         open={showMemoryPicker}
         initialFiles={selectedMemoryFiles}
-        onClose={() => setShowMemoryPicker(false)}
+        onClose={() => {
+          setShowMemoryPicker(false);
+          setSpaceMenuOpen(true);
+        }}
         onApply={(files: SpaceMemoryFile[]) => {
           setSelectedMemoryFiles(files);
           setShowMemoryPicker(false);
         }}
       />
-    </>
+    </ResourceReuseContext.Provider>
   );
 }
 

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowUpRight, Loader2 } from "lucide-react";
+import ChatResponseTimeoutSection from "@/components/settings/ChatResponseTimeoutSection";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -11,11 +12,12 @@ import {
   SettingsPageHeader,
   inputClass,
 } from "@/components/settings/shared";
+import { Toggle } from "@/components/settings/Toggle";
 import { useSettings } from "@/features/settings/store/SettingsStore";
 import { apiFetch, apiUrl } from "@/lib/api";
 import { EXTENSION_ENDPOINTS } from "@/lib/settings-extensions";
 
-type StarterSettings = { trace_count: number };
+type StarterSettings = { trace_count: number; ask_hint_enabled: boolean };
 
 type StarterSettingsPayload = {
   settings: StarterSettings;
@@ -41,8 +43,7 @@ export default function StarterSettingsPage() {
           apiUrl(EXTENSION_ENDPOINTS["chat-starters"]),
         );
         const data = (await response.json().catch(() => ({}))) as
-          | StarterSettingsPayload
-          | { detail?: string };
+          StarterSettingsPayload | { detail?: string };
         if (!response.ok) {
           throw new Error(
             "detail" in data && data.detail
@@ -55,11 +56,11 @@ export default function StarterSettingsPage() {
         setPayload(next);
         // An edit left behind earlier in this session (or parked in a saved
         // draft) wins over the server value — leaving the page is not a way
-        // to discard changes.
+        // to discard changes. Spread over the server value because a draft
+        // parked before a field existed does not carry it.
         const pending = pendingExtensionPayload("chat-starters") as
-          | StarterSettings
-          | undefined;
-        setDraft(pending ? { ...pending } : { ...next.settings });
+          Partial<StarterSettings> | undefined;
+        setDraft({ ...next.settings, ...pending });
       } catch (err) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : String(err));
@@ -76,7 +77,10 @@ export default function StarterSettingsPage() {
   const dirty = useMemo(
     () =>
       Boolean(
-        payload && draft && payload.settings.trace_count !== draft.trace_count,
+        payload &&
+          draft &&
+          (payload.settings.trace_count !== draft.trace_count ||
+            payload.settings.ask_hint_enabled !== draft.ask_hint_enabled),
       ),
     [draft, payload],
   );
@@ -98,8 +102,7 @@ export default function StarterSettingsPage() {
         },
       );
       const data = (await response.json().catch(() => ({}))) as
-        | StarterSettingsPayload
-        | { detail?: string };
+        StarterSettingsPayload | { detail?: string };
       if (!response.ok) {
         throw new Error(
           "detail" in data && data.detail
@@ -112,6 +115,7 @@ export default function StarterSettingsPage() {
       setDraft({ ...next.settings });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      throw err;
     }
   }, [t]);
 
@@ -125,11 +129,13 @@ export default function StarterSettingsPage() {
   return (
     <div>
       <SettingsPageHeader
-        title={t("Starting points")}
+        title={t("Conversation")}
         description={t(
-          "The three lines under the composer on an empty home screen, generated from your long-term memory and what you have been working on lately.",
+          "Manage home suggestions and how long DeepTutor waits for replies.",
         )}
       />
+
+      <ChatResponseTimeoutSection />
 
       {loading && (
         <div className="flex items-center gap-2 text-[13px] text-[var(--muted-foreground)]">
@@ -146,7 +152,7 @@ export default function StarterSettingsPage() {
 
       {!loading && payload && draft && (
         <SettingSection
-          title={t("Material")}
+          title={t("Starting points")}
           description={t(
             "Your consolidated memory is always included. This controls how much raw recent activity goes with it — conversations, practice questions, searches, documents, in one list ordered by time.",
           )}
@@ -176,11 +182,32 @@ export default function StarterSettingsPage() {
         </SettingSection>
       )}
 
+      {!loading && payload && draft && (
+        <SettingSection title={t("Composer")}>
+          <SettingRow
+            title={t("Suggest my next message")}
+            description={t(
+              "After each reply, the input box shows a guess at what you might type next; Tab accepts it. Turn this off when practicing in chat — the likeliest next message to a question is its answer.",
+            )}
+            control={
+              <Toggle
+                checked={draft.ask_hint_enabled}
+                onChange={(next) =>
+                  setDraft((current) =>
+                    current ? { ...current, ask_hint_enabled: next } : current,
+                  )
+                }
+              />
+            }
+          />
+        </SettingSection>
+      )}
+
       {!loading && payload && (
         <p className="mt-5 text-[11.5px] leading-relaxed text-[var(--muted-foreground)]">
           {t("These lines are written by the active model unless you pin one.")}{" "}
           <Link
-            href="/settings#task-models"
+            href="/settings/task-models"
             className="inline-flex items-center gap-1 text-[var(--foreground)] underline-offset-2 hover:underline"
           >
             {t("Task models")}

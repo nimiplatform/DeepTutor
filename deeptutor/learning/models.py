@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from enum import Enum
+import re
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 _KNOWLEDGE_TYPE_LEGACY: dict[str, str] = {
     "记忆型": "memory",
@@ -84,6 +85,14 @@ class KnowledgePoint(BaseModel):
     name: str
     type: KnowledgeType
     module_id: str
+    # Required objectives, not a presentation order. Empty on legacy paths.
+    prerequisite_ids: list[str] = Field(default_factory=list)
+    # Selected non-goal sources that justify this objective. They are curriculum
+    # provenance, not proof of factual correctness or retrieval permission.
+    topic_source_ids: list[str] = Field(default_factory=list)
+    required_visual_tasks: list[
+        Literal["identification", "relationship", "table_graph", "comparison"]
+    ] = Field(default_factory=list)
 
 
 class LearningModule(BaseModel):
@@ -118,11 +127,24 @@ class QuizAttempt(BaseModel):
     knowledge_point_id: str
     module_id: str = ""
     is_correct: bool
+    result: Literal["correct", "partial", "incorrect"] | None = None
     user_answer: Any = None
     error_type: ErrorType | None = None
     self_attribution: str = ""
     mastery_estimate: float = 0.0
     timestamp: float = Field(default_factory=time.time)
+    # Invalid questions / wrong answer keys are kept for audit, but voided
+    # attempts are excluded from mastery, errors, and spaced repetition.
+    voided: bool = False
+    void_reason: str = ""
+    independent: bool = True
+    visual_context: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _legacy_result(self):
+        if self.result is None:
+            self.result = "correct" if self.is_correct else "incorrect"
+        return self
 
 
 class RetryAttempt(BaseModel):
@@ -148,6 +170,36 @@ class ErrorRecord(BaseModel):
     created_at: float = Field(default_factory=time.time)
 
 
+class LearningEvidence(BaseModel):
+    """One durable review/assessment event that can recompute retention state.
+
+    Quality is a normalized 0..1 review strength inferred from the outcome
+    (not a learner self-rating). Trusted linked assessments may originate in
+    another learning surface.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    evidence_id: str = ""
+    question_id: str = ""
+    knowledge_point_id: str
+    timestamp: float = Field(default_factory=time.time)
+    source: str = "mastery_path"
+    assessment_type: Literal["quiz", "qualitative", "review"] = "quiz"
+    result: Literal["correct", "incorrect", "partial"] = "incorrect"
+    quality: float | None = None
+    hints_used: int = 0
+    attempt_count: int = 1
+    confidence: float | None = None
+    learner_answer: str = ""
+    feedback: str = ""
+    reference_answer: str = ""
+    response_time: float | None = None
+    session_id: str = ""
+    turn_id: str = ""
+    visual_context: dict[str, Any] = Field(default_factory=dict)
+
+
 class RepetitionState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -155,6 +207,21 @@ class RepetitionState(BaseModel):
     consecutive_correct: int = 0
     consecutive_wrong: int = 0
     next_review_at: float
+    # Retention fields. Absent on state written before adaptive SRS; defaults
+    # keep old JSON loadable. ``stability == 0`` means "never hydrated" —
+    # the scheduler fills it from ``interval_index`` without changing due time.
+    difficulty: float = 0.3
+    stability: float = 0.0
+    retrievability: float = 1.0
+    desired_retention: float = 0.9
+    review_count: int = 0
+    lapse_count: int = 0
+    last_review_at: float | None = None
+    # The review (or initial schedule) that set ``next_review_at``. Practice
+    # inside one session updates ``last_review_at`` but keeps this anchor, so
+    # changing the target cannot silently postpone a previously due review.
+    last_scheduled_at: float | None = None
+    scheduled_after_failure: bool = False
 
 
 class ReviewTask(BaseModel):
@@ -166,6 +233,126 @@ class ReviewTask(BaseModel):
     due_at: float
     priority: int
     state: RepetitionState
+    forgetting_risk: float = 0.0
+    reason: str = ""
+    evidence_source: str = ""
+    evidence_id: str = ""
+
+
+#: One review round's interval is measured in days. Zero is only meaningful as
+#: the first round ("review again today"); later rounds must be positive so a
+#: strategy cannot pin a learner into an endless same-day loop.
+_REVIEW_INTERVAL_MAX_DAYS = 365
+_REVIEW_INTERVAL_MAX_ROUNDS = 16
+_TEMPLATE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-_]{1,63}$")
+
+
+def _validate_review_intervals(value: dict[KnowledgeType, list[int]]) -> dict:
+    missing = [kt.value for kt in KnowledgeType if kt not in value]
+    if missing:
+        raise ValueError(f"intervals must define every knowledge type; missing: {missing}")
+    for kt, rounds in value.items():
+        if not isinstance(rounds, list) or not rounds:
+            raise ValueError(f"intervals[{kt.value}] must be a non-empty list of round intervals")
+        if len(rounds) > _REVIEW_INTERVAL_MAX_ROUNDS:
+            raise ValueError(
+                f"intervals[{kt.value}] exceeds {_REVIEW_INTERVAL_MAX_ROUNDS} review rounds"
+            )
+        for index, days in enumerate(rounds):
+            if isinstance(days, bool) or not isinstance(days, int):
+                raise ValueError(f"intervals[{kt.value}][{index}] must be a whole number of days")
+            if days < 0 or days > _REVIEW_INTERVAL_MAX_DAYS:
+                raise ValueError(
+                    f"intervals[{kt.value}][{index}] must be between 0 and "
+                    f"{_REVIEW_INTERVAL_MAX_DAYS} days"
+                )
+            if days == 0 and index > 0:
+                raise ValueError(
+                    f"intervals[{kt.value}][{index}]: only the first round may repeat same day"
+                )
+            if index and days < rounds[index - 1]:
+                raise ValueError(f"intervals[{kt.value}][{index}]: rounds must not get shorter")
+    return value
+
+
+class ReviewStrategyTemplate(BaseModel):
+    """A named set of per-round review intervals, one sequence per knowledge type.
+
+    Preset templates ship with the product (``builtin=True``) and live in code;
+    custom templates are learner-created and persisted by the learning store.
+    Every round carries its own interval, which is what lets one strategy cram
+    with same-day repeats while another stretches rounds over months.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    template_id: str
+    name: str = Field(..., min_length=1, max_length=120)
+    description: str = Field(default="", max_length=500)
+    builtin: bool = False
+    #: Optional recall target applied when the strategy is bound to a path.
+    #: ``None`` keeps the path's existing ``desired_retention``.
+    desired_retention: float | None = Field(default=None, ge=0.7, le=0.99, allow_inf_nan=False)
+    intervals: dict[KnowledgeType, list[StrictInt]]
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+    @field_validator("template_id")
+    @classmethod
+    def _validate_template_id(cls, value: str) -> str:
+        if not _TEMPLATE_ID_PATTERN.match(value or ""):
+            raise ValueError("template_id must be a lowercase slug (a-z, 0-9, '-', '_')")
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not (value or "").strip():
+            raise ValueError("name must not be blank")
+        return value.strip()
+
+    @field_validator("intervals")
+    @classmethod
+    def _validate_intervals(cls, value: dict[KnowledgeType, list[int]]) -> dict:
+        return _validate_review_intervals(value)
+
+    def as_binding(self, *, bound_at: float | None = None) -> ReviewStrategyBinding:
+        """Snapshot this template onto a path binding.
+
+        The binding carries its own copy of the intervals so scheduling stays
+        reproducible even if the template is later edited or deleted.
+        """
+        return ReviewStrategyBinding(
+            template_id=self.template_id,
+            name=self.name,
+            builtin=self.builtin,
+            desired_retention=self.desired_retention,
+            intervals=self.intervals,
+            bound_at=bound_at if bound_at is not None else time.time(),
+        )
+
+
+class ReviewStrategyBinding(BaseModel):
+    """The strategy a mastery path schedules with: a frozen template snapshot.
+
+    ``None`` on ``LearningProgress`` means the path uses the built-in default
+    sequences, which is also how every aggregate persisted before customizable
+    strategies reads back — no migration needed.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    template_id: str
+    name: str
+    builtin: bool = False
+    desired_retention: float | None = Field(default=None, ge=0.7, le=0.99, allow_inf_nan=False)
+    intervals: dict[KnowledgeType, list[StrictInt]]
+    bound_at: float = Field(default_factory=time.time)
+
+    @field_validator("intervals")
+    @classmethod
+    def _validate_intervals(cls, value: dict[KnowledgeType, list[int]]) -> dict:
+        return _validate_review_intervals(value)
 
 
 class PendingOption(BaseModel):
@@ -212,7 +399,49 @@ class PendingQuestion(BaseModel):
     # later instead of a bare right/wrong.
     explanation: str = ""
     difficulty: str = ""
+    # Server-side provenance snapshot; never projected onto an answer card.
+    source_evidence: dict[str, Any] = Field(default_factory=dict)
+    # Server-owned exposure evidence, independent of visual-task metadata.
+    # Never included in the learner's question/answer-key projection.
+    assistance_used: bool = False
+    # Native registration identity; later teaching must not contaminate an
+    # unrelated question merely because it cites the same physical page.
+    assistance_context: dict[str, str] = Field(default_factory=dict)
     created_at: float = Field(default_factory=time.time)
+    visual_context: dict[str, Any] = Field(default_factory=dict)
+    accepted_answers: list[str] = Field(default_factory=list)
+    # One active interaction can present multiple independent questions. The
+    # parent owns lifecycle only; answer keys and credit remain on its leaves.
+    questions: list[PendingQuestion] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_group(self) -> PendingQuestion:
+        if self.question_type != "group":
+            if self.questions:
+                raise ValueError("Only a group may contain questions")
+            return self
+        if not 2 <= len(self.questions) <= 4:
+            raise ValueError("A question group needs two to four questions")
+        ids = [q.question_id for q in self.questions]
+        if len(set(ids)) != len(ids) or self.question_id in ids or not all(ids):
+            raise ValueError("Group question ids must be distinct and nonempty")
+        question_keys = {(q.knowledge_point_id, q.prompt.strip()) for q in self.questions}
+        if len(question_keys) != len(self.questions):
+            raise ValueError(
+                "A group needs distinct questions, not copies of the same objective prompt"
+            )
+        if any(
+            q.question_type not in {"choice", "short", "open"}
+            or q.questions
+            or not q.expected_answer.strip()
+            or not q.prompt.strip()
+            or not q.knowledge_point_id.strip()
+            for q in self.questions
+        ):
+            raise ValueError("Group leaves need independent, non-nested answer contracts")
+        if self.expected_answer or self.options or self.visual_context:
+            raise ValueError("A group parent cannot carry an answer key or visual task")
+        return self
 
     @field_validator("options", mode="before")
     @classmethod
@@ -265,6 +494,7 @@ class MasteryInteraction(BaseModel):
     session_id: str = ""
     turn_id: str = ""
     user_answer: str = ""
+    answers: dict[str, str] = Field(default_factory=dict)
     result: dict[str, Any] = Field(default_factory=dict)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
@@ -372,6 +602,42 @@ class LearnerMasteryOverride(BaseModel):
     created_at: float = Field(default_factory=time.time)
 
 
+class DeferredObjective(BaseModel):
+    """Learner asked to leave this objective for now without claiming mastery."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    knowledge_point_id: str
+    note: str = ""
+    created_at: float = Field(default_factory=time.time)
+
+
+class TeachingPreference(BaseModel):
+    """An explicit path-local request, independent of other preferences."""
+
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=400)
+    evidence: str = Field(min_length=1, max_length=300)
+    session_id: str = ""
+    turn_id: str = ""
+    updated_at: float = Field(default_factory=time.time)
+
+
+class TeachingObservation(BaseModel):
+    """A teaching attempt or difficulty; never an assessment of mastery."""
+
+    model_config = ConfigDict(extra="forbid")
+    knowledge_point_id: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=400)
+    basis: Literal["learner_report", "tentative"] = "tentative"
+    strategy: str = Field(default="", max_length=300)
+    outcome: Literal["unknown", "helped", "not_helped"] = "unknown"
+    evidence: str = Field(default="", max_length=300)
+    session_id: str = ""
+    turn_id: str = ""
+    updated_at: float = Field(default_factory=time.time)
+
+
 class LearnerProfile(BaseModel):
     """Who is learning this goal — collected once, honoured every turn.
 
@@ -381,7 +647,7 @@ class LearnerProfile(BaseModel):
     These are the things only the learner knows; the tutor can read the
     material's own difficulty for itself.
 
-    Every field is free text on purpose. The useful answer to "how much time do
+    Intake answers are free text on purpose. The useful answer to "how much time do
     you have" is "两周，每天晚上一小时", not an enum the learner has to be
     translated into. Empty means never asked, which is why nothing here is
     required: a goal created before intake existed reads as a profile with
@@ -401,8 +667,12 @@ class LearnerProfile(BaseModel):
     #: How they want it taught — language, worked examples over prose,
     #: intuition before formalism.
     preferences: str = ""
+    #: Explicit sequencing preference. Existing paths keep the diagnostic default.
+    teaching_strategy: Literal["probe_first", "teach_first"] = "probe_first"
     #: Anything else worth carrying that the four fields above do not hold.
     notes: str = ""
+    teaching_preferences: dict[str, TeachingPreference] = Field(default_factory=dict)
+    teaching_observations: dict[str, TeachingObservation] = Field(default_factory=dict)
     updated_at: float = Field(default_factory=time.time)
 
     def is_empty(self) -> bool:
@@ -413,9 +683,55 @@ class LearnerProfile(BaseModel):
                 self.target_level.strip(),
                 self.time_budget.strip(),
                 self.preferences.strip(),
+                self.teaching_strategy != "probe_first",
                 self.notes.strip(),
+                self.teaching_preferences,
             )
         )
+
+
+ReadingExtensionResultType = Literal[
+    "card",
+    "quiz",
+    "feedback",
+    "browser_speech",
+]
+
+
+class ReadingProgressRecord(BaseModel):
+    """One material's Reading progress in an account's learning records."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    material_id: str
+    latest_locator: int = Field(ge=1)
+    latest_percentage: float = Field(ge=0.0, le=1.0)
+    furthest_locator: int = Field(ge=1)
+    furthest_percentage: float = Field(ge=0.0, le=1.0)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class ReadingActivityRecord(BaseModel):
+    """One successful Reading-extension action, without source content."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    activity_id: str
+    material_id: str
+    extension_id: str
+    action: str
+    locator: int = Field(ge=1)
+    result_type: ReadingExtensionResultType
+    created_at: float = Field(default_factory=time.time)
+
+
+class ReadingLearningRecords(BaseModel):
+    """Account-scoped Reading summary for reporting surfaces."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    progress: list[ReadingProgressRecord] = Field(default_factory=list)
+    activities: list[ReadingActivityRecord] = Field(default_factory=list)
 
 
 class LearningProgress(BaseModel):
@@ -442,14 +758,38 @@ class LearningProgress(BaseModel):
     # The quantitative ``mastery_levels`` gate covers MEMORY / PROCEDURE.
     qualitative_mastery: dict[str, bool] = Field(default_factory=dict)
     knowledge_types: dict[str, KnowledgeType] = Field(default_factory=dict)
+    lesson_evidence: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Objective-scoped packets that authorize assessment, kept apart from the
+    # single ``lesson_evidence`` slot so a later focus/teaching preparation
+    # (which overwrites that slot) cannot invalidate an assessment-bound packet.
+    # Only objective-scoped packets are stored here; assessment falls back to
+    # ``lesson_evidence`` when no preserved packet exists.
+    assessment_evidence: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    source_grounded: bool = False
+    # Exact pages authorized for learner display, kept with the native path.
+    # A private retrieval or lesson packet is not a public exposure receipt.
+    source_exposures: list[dict[str, Any]] = Field(default_factory=list)
     quiz_attempts: list[QuizAttempt] = Field(default_factory=list)
     error_records: list[ErrorRecord] = Field(default_factory=list)
+    # Durable review history used to recompute retention. Distinct from
+    # ``quiz_attempts`` (mastery evidence) so the two can evolve separately.
+    learning_evidence: list[LearningEvidence] = Field(default_factory=list)
+    # One target per learning path; older aggregates load at the baseline 0.9.
+    # It is copied into each repetition state when that state is created.
+    desired_retention: float = Field(default=0.9, ge=0.7, le=0.99, allow_inf_nan=False)
+    # Which review interval strategy this path schedules with. ``None`` is the
+    # built-in default template — also how every pre-strategy aggregate reads.
+    review_strategy: ReviewStrategyBinding | None = None
     repetition_states: dict[str, RepetitionState] = Field(default_factory=dict)
     review_queue: list[ReviewTask] = Field(default_factory=list)
     # A learner may explicitly claim prior mastery.  Policy exposes this as a
     # separate provenance (``mastery_source=learner``); assessed mastery and
     # its evidence remain untouched and can take over later.
     learner_mastery_overrides: dict[str, LearnerMasteryOverride] = Field(default_factory=dict)
+    # Temporarily skipped objectives. These never count as mastered; routing
+    # just prefers any other eligible waypoint until only deferred ones remain.
+    deferred_objectives: dict[str, DeferredObjective] = Field(default_factory=dict)
+    explained_objectives: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # A single outstanding question; grading reads its expected answer so the
     # model never has to recall it across turns.
     pending_question: PendingQuestion | None = None
@@ -473,8 +813,11 @@ __all__ = [
     "QuizAttempt",
     "RetryAttempt",
     "ErrorRecord",
+    "LearningEvidence",
     "RepetitionState",
     "ReviewTask",
+    "ReviewStrategyTemplate",
+    "ReviewStrategyBinding",
     "PendingQuestion",
     "InteractionStatus",
     "MasteryInteraction",
@@ -485,5 +828,9 @@ __all__ = [
     "TopicMetadata",
     "MasteryTopic",
     "LearnerMasteryOverride",
+    "DeferredObjective",
+    "ReadingActivityRecord",
+    "ReadingLearningRecords",
+    "ReadingProgressRecord",
     "LearningProgress",
 ]

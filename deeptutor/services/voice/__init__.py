@@ -1,25 +1,52 @@
 """Speech synthesis/transcription through the same Nimi Host as learning."""
 from __future__ import annotations
 from typing import Any
-from deeptutor.services.voice.base import TranscriptCue, VoiceProviderError, strip_markdown_for_speech
+from deeptutor.services.voice.base import (
+    TranscriptCue,
+    VoiceProviderError,
+    strip_markdown_for_speech,
+)
 from deeptutor.services.voice.config import STTConfig, TTSConfig
+
 
 def _no_catalog(catalog):
     if catalog is not None:
         raise ValueError("Configure speech models in Nimi models, not the App provider catalog.")
 
-async def synthesize_speech(text: str, *, catalog: dict[str, Any] | None = None,
-                            voice: str | None = None, response_format: str | None = None,
-                            strip_markdown: bool = True) -> tuple[bytes, str]:
+
+def _math_speak_from_settings() -> bool:
+    """Read the Math Speak UI preference; default on if settings are unavailable."""
+    try:
+        from deeptutor.services.settings.interface_settings import get_ui_settings
+
+        return bool(get_ui_settings().get("voice_math_speak", True))
+    except Exception:
+        return True
+
+
+async def synthesize_speech(
+    text: str,
+    *,
+    catalog: dict[str, Any] | None = None,
+    voice: str | None = None,
+    response_format: str | None = None,
+    strip_markdown: bool = True,
+    math_speak: bool | None = None,
+) -> tuple[bytes, str]:
     from deeptutor.nimi.media import MediaError, job_media
     from deeptutor.services.llm.exceptions import LLMProviderError
+
     _no_catalog(catalog)
-    prepared = strip_markdown_for_speech(text) if strip_markdown else text.strip()
+    speak_math = _math_speak_from_settings() if math_speak is None else math_speak
+    prepared = strip_markdown_for_speech(text, math_speak=speak_math) if strip_markdown else text.strip()
     if not prepared:
         raise VoiceProviderError("Nothing to speak after cleaning the text.")
     try:
-        media = await job_media("speech-synthesize", {"text": prepared, "voice": voice or "",
-            "format": response_format or ""}, "audio/")
+        media = await job_media(
+            "speech-synthesize",
+            {"text": prepared, "voice": voice or "", "format": response_format or ""},
+            "audio/",
+        )
         if len(media) != 1:
             raise MediaError("Nimi returned an unexpected number of speech artifacts.")
         return media[0]

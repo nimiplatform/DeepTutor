@@ -13,11 +13,12 @@ consumes ``input/*.txt`` regardless of which parser produced the text.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Iterable
 
-from deeptutor.services.rag.file_routing import FileTypeRouter
+from deeptutor.utils.file_types import FileTypeRouter
 
 from . import storage
 
@@ -57,7 +58,12 @@ def _extract_parser_text(path: Path, parse_service=None) -> str:  # noqa: ANN001
     return ""
 
 
-async def prepare_input(file_paths: Iterable[str], root_dir: Path) -> int:
+async def prepare_input(
+    file_paths: Iterable[str],
+    root_dir: Path,
+    *,
+    source_for_input: dict[str, str] | None = None,
+) -> int:
     """Write parsed text for each supported file into ``root_dir/input``.
 
     Returns the number of non-empty text documents written. Parser-backed files
@@ -77,8 +83,12 @@ async def prepare_input(file_paths: Iterable[str], root_dir: Path) -> int:
 
     for file_path_str in classification.parser_files:
         path = Path(file_path_str)
-        text = _extract_parser_text(path)
-        written += _write_doc(target_dir, path, text, used)
+        # The parser call is synchronous and can block for a long time
+        # (MinerU cloud polling, local parser subprocess waits), so it runs in
+        # a worker thread — the same offload the LlamaIndex path made in #847 —
+        # keeping the event loop free to advance other coroutines (#2255).
+        text = await asyncio.to_thread(_extract_parser_text, path)
+        written += _write_doc(target_dir, path, text, used, source_for_input)
 
     for file_path_str in classification.text_files:
         path = Path(file_path_str)
@@ -87,7 +97,7 @@ async def prepare_input(file_paths: Iterable[str], root_dir: Path) -> int:
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("GraphRAG ingestion: failed to read text %s: %s", path.name, exc)
             text = ""
-        written += _write_doc(target_dir, path, text, used)
+        written += _write_doc(target_dir, path, text, used, source_for_input)
 
     for file_path_str in classification.image_files:
         from deeptutor.services.parsing import get_parse_service
@@ -96,8 +106,10 @@ async def prepare_input(file_paths: Iterable[str], root_dir: Path) -> int:
         parse_service = get_parse_service()
         supports = getattr(parse_service, "supports", lambda _path: False)
         if supports(path):
-            text = _extract_parser_text(path, parse_service)
-            written += _write_doc(target_dir, path, text, used)
+            # Offloaded for the same reason as the parser_files loop above
+            # (#2255, #847): the shared parser's parse() is synchronous.
+            text = await asyncio.to_thread(_extract_parser_text, path, parse_service)
+            written += _write_doc(target_dir, path, text, used, source_for_input)
         else:
             logger.warning(
                 "GraphRAG ingestion skips image unsupported by the active parser: %s",
@@ -109,12 +121,20 @@ async def prepare_input(file_paths: Iterable[str], root_dir: Path) -> int:
     return written
 
 
-def _write_doc(target_dir: Path, source: Path, text: str, used: set[str]) -> int:
+def _write_doc(
+    target_dir: Path,
+    source: Path,
+    text: str,
+    used: set[str],
+    source_for_input: dict[str, str] | None,
+) -> int:
     if not text.strip():
         logger.warning("GraphRAG ingestion: empty document skipped: %s", source.name)
         return 0
     dest = _unique_txt_path(target_dir, source, used)
     dest.write_text(text, encoding="utf-8")
+    if source_for_input is not None:
+        source_for_input[dest.name] = str(source)
     logger.info("GraphRAG ingestion: wrote %s (%d chars)", dest.name, len(text))
     return 1
 

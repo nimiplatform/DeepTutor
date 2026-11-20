@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-import tomllib
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
 from deeptutor.api.routers import reading_extensions
+from deeptutor.modules.catalog import manifests
 from deeptutor.reading import ReadingStore
 from deeptutor.reading.extensions import ReadingContext, ReadingExtensionRegistry
 from deeptutor.reading.study_guidance import StudyGuidanceExtension
+from deeptutor.services.llm.reasoning_params import RETRY_REASONING_EFFORT
 from deeptutor.services.path_service import PathService
 
 
@@ -57,6 +57,52 @@ async def test_study_guidance_returns_a_bounded_card(monkeypatch):
     assert prompt["selection"] == "verified phrase"
     assert "Before context" in prompt["surrounding_context"]
     assert calls[0]["response_format"] == {"type": "json_object"}
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_study_guidance_retries_an_empty_model_answer_with_lower_reasoning(monkeypatch):
+    calls = []
+
+    async def complete(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return ""
+        return json.dumps(
+            {
+                "focus": "Connect the phrase to its surrounding argument.",
+                "steps": [
+                    "Locate the two claims nearest the selected phrase.",
+                    "Explain how the phrase links those two claims.",
+                    "Rewrite the linked idea in one sentence.",
+                ],
+            }
+        )
+
+    monkeypatch.setattr("deeptutor.reading.study_guidance.complete", complete)
+    result = await StudyGuidanceExtension().run_action("guide", _context())
+
+    assert len(result.payload["steps"]) == 3
+    assert [call["reasoning_effort"] for call in calls] == [
+        None,
+        RETRY_REASONING_EFFORT,
+    ]
+    assert calls[0]["prompt"] == calls[1]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_study_guidance_stops_after_two_empty_model_answers(monkeypatch):
+    calls = []
+
+    async def complete(**kwargs):
+        calls.append(kwargs)
+        return ""
+
+    monkeypatch.setattr("deeptutor.reading.study_guidance.complete", complete)
+    with pytest.raises(ValueError, match="invalid JSON"):
+        await StudyGuidanceExtension().run_action("guide", _context())
+
+    assert len(calls) == 2
 
 
 @pytest.mark.asyncio
@@ -124,8 +170,7 @@ async def test_invalid_or_overlong_model_output_is_rejected(monkeypatch, respons
 
 
 def test_study_guidance_is_registered_as_a_packaged_extension():
-    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-    group = project["project"]["entry-points"]["deeptutor.reading_extensions"]
+    group = manifests()["reading"]["entry_points"]["deeptutor.reading_extensions"]
 
     assert group["guided_learning"] == ("deeptutor.reading.study_guidance:StudyGuidanceExtension")
 

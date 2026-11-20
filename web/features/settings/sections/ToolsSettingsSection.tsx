@@ -1,5 +1,7 @@
 "use client";
 
+import Tooltip from "@/shared/ui/Tooltip";
+import { useStagedSettings } from "@/features/settings/store/useStagedSettings";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, Loader2, Lock, Search, Wrench, X } from "lucide-react";
 import Link from "next/link";
@@ -8,7 +10,6 @@ import { useTranslation } from "react-i18next";
 import { useSettings } from "@/features/settings/store/SettingsStore";
 import { SettingsPageHeader } from "@/components/settings/shared";
 import { apiFetch, apiUrl } from "@/lib/api";
-import { invalidateEnabledOptionalToolsCache } from "@/lib/tools-settings";
 import {
   toolAvailabilityCopy,
   toolEffectiveEnabled,
@@ -37,7 +38,8 @@ type BuiltinTool = {
   name: string;
   description: string;
   parameters: ToolParameter[];
-  hints: { en: ToolHints; zh: ToolHints };
+  // The API types this as a language-keyed map; only ``en`` is guaranteed.
+  hints: Partial<Record<string, ToolHints>> & { en: ToolHints };
   aliases: string[];
   toggleable: boolean;
   enabled: boolean;
@@ -75,13 +77,29 @@ const CAPABILITY_LABELS: Record<string, { zh: string; en: string }> = {
 
 export default function ToolsSettingsPage() {
   const { t } = useTranslation();
-  const { language } = useSettings();
+  const { language, draftRevision } = useSettings();
+  const hintLanguage = language === "zh" ? "zh" : "en";
+  const localizedHints = useCallback((tool: BuiltinTool): ToolHints => {
+    const hints = tool.hints[language] ?? tool.hints[hintLanguage] ?? tool.hints.en;
+    if (language === "en" || language === "zh" || tool.hints[language]) return hints;
+    const translate = (text: string) => text ? t(text, { defaultValue: text }) : text;
+    return { ...hints,
+      short_description: translate(hints.short_description),
+      when_to_use: translate(hints.when_to_use),
+      input_format: translate(hints.input_format),
+      guideline: translate(hints.guideline),
+      note: translate(hints.note),
+      aliases: hints.aliases.map(alias => ({ ...alias, description: translate(alias.description) })),
+    };
+  }, [language, hintLanguage, t]);
   const [tools, setTools] = useState<BuiltinTool[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [enabled, setEnabled] = useState<Set<string>>(new Set());
-  const [pending, setPending] = useState<Set<string>>(new Set());
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [liveTools, setLiveTools] = useState({ enabled_tools: [] as string[] });
+  const [toolDraft, setToolDraft] = useStagedSettings("tools", liveTools, setLiveTools);
+  const enabled = new Set(toolDraft.enabled_tools);
+  const pending = new Set<string>();
+
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -93,7 +111,7 @@ export default function ToolsSettingsPage() {
         const payload = (await res.json()) as ToolsResponse;
         if (!cancelled) {
           setTools(payload.tools);
-          setEnabled(new Set(payload.enabled_optional_tools ?? []));
+          setLiveTools({ enabled_tools: (payload.enabled_optional_tools ?? []).slice().sort() });
         }
       } catch (err) {
         if (!cancelled) {
@@ -104,48 +122,16 @@ export default function ToolsSettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [draftRevision]);
 
-  const persist = useCallback(async (next: Set<string>) => {
-    const body = JSON.stringify({ enabled_tools: Array.from(next) });
-    const res = await apiFetch(apiUrl("/api/settings/enabled-tools"), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body,
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const payload = (await res.json()) as { enabled_optional_tools: string[] };
-    // Bust the cached snapshot any other page in this tab is holding.
-    invalidateEnabledOptionalToolsCache();
-    return new Set(payload.enabled_optional_tools);
-  }, []);
-
-  const handleToggleEnabled = useCallback(
-    async (toolName: string) => {
-      if (pending.has(toolName)) return;
-      const before = enabled;
-      const next = new Set(before);
+  const handleToggleEnabled = (toolName: string) => {
+    setToolDraft((current) => {
+      const next = new Set(current.enabled_tools);
       if (next.has(toolName)) next.delete(toolName);
       else next.add(toolName);
-      setEnabled(next);
-      setPending((prev) => new Set(prev).add(toolName));
-      setSaveError(null);
-      try {
-        const saved = await persist(next);
-        setEnabled(saved);
-      } catch (err) {
-        setEnabled(before);
-        setSaveError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setPending((prev) => {
-          const out = new Set(prev);
-          out.delete(toolName);
-          return out;
-        });
-      }
-    },
-    [enabled, pending, persist],
-  );
+      return { enabled_tools: Array.from(next).sort() };
+    });
+  };
 
   const sections = useMemo<ToolSection[] | null>(() => {
     if (!tools) return null;
@@ -173,36 +159,37 @@ export default function ToolsSettingsPage() {
     if (experience.length) {
       out.push({
         key: "experience",
-        label: zh ? "体验增强" : "Experience Enhancement",
+        label: zh ? "体验增强" : t("Experience Enhancement"),
         hint: zh
           ? "用户可选；按需为 chat agent 开启或关闭。"
-          : "User-toggleable. Switch on or off to shape the chat agent's behavior.",
+          : t("User-toggleable. Switch on or off to shape the chat agent's behavior."),
         tools: experience,
       });
     }
     if (builtin.length) {
       out.push({
         key: "builtin",
-        label: zh ? "内置工具" : "Built-in Tools",
+        label: zh ? "内置工具" : t("Built-in Tools"),
         hint: zh
           ? "Chat agent 在需要时自动挂载，无需手动开关。"
-          : "Mounted automatically by the chat agent when needed. Not user-toggleable.",
+          : t("Mounted automatically by the chat agent when needed. Not user-toggleable."),
         tools: builtin,
       });
     }
     for (const [cap, list] of capabilities) {
-      const label = CAPABILITY_LABELS[cap]?.[zh ? "zh" : "en"] ?? cap;
+      const capLabel = CAPABILITY_LABELS[cap];
+      const label = capLabel ? (zh ? capLabel.zh : t(capLabel.en)) : cap;
       out.push({
         key: `cap:${cap}`,
-        label: zh ? `${label} · 能力工具` : `${label} · Capability Tools`,
+        label: zh ? `${label} · 能力工具` : t("{{label}} · Capability Tools", { label }),
         hint: zh
           ? "该能力的专属工具，仅在此能力运行时挂载。"
-          : "Tools specific to this capability; mounted only when it runs.",
+          : t("Tools specific to this capability; mounted only when it runs."),
         tools: list,
       });
     }
     return out;
-  }, [tools, language]);
+  }, [tools, language, t]);
 
   const filteredSections = useMemo<ToolSection[] | null>(() => {
     if (!sections) return null;
@@ -213,8 +200,9 @@ export default function ToolsSettingsPage() {
       .map((section) => ({
         ...section,
         tools: section.tools.filter((tool) => {
-          const hints = tool.hints[language];
-          const alternateHints = tool.hints[language === "zh" ? "en" : "zh"];
+          const hints = localizedHints(tool);
+          const alternateHints =
+            tool.hints[hintLanguage === "zh" ? "en" : "zh"] ?? tool.hints.en;
           const searchableText = [
             tool.name,
             tool.description,
@@ -248,7 +236,7 @@ export default function ToolsSettingsPage() {
         }),
       }))
       .filter((section) => section.tools.length > 0);
-  }, [language, query, sections]);
+  }, [hintLanguage, localizedHints, query, sections]);
 
   const toggleExpanded = (name: string) => {
     setExpanded((prev) => {
@@ -284,15 +272,18 @@ export default function ToolsSettingsPage() {
             spellCheck={false}
           />
           {query && (
-            <button
-              type="button"
-              onClick={() => setQuery("")}
-              aria-label={t("Clear")}
-              title={t("Clear")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/60 hover:text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]/30"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
+            <span className="absolute right-2 top-1/2 -translate-y-1/2">
+              <Tooltip label={t("Clear")} side="top">
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  aria-label={t("Clear")}
+                  className="rounded-md p-1.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)]/60 hover:text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]/30"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </Tooltip>
+            </span>
           )}
         </div>
       </div>
@@ -303,11 +294,7 @@ export default function ToolsSettingsPage() {
         </div>
       )}
 
-      {saveError && (
-        <div className="mb-4 rounded-xl border border-red-500/40 bg-red-500/5 px-4 py-3 text-[12px] text-red-500">
-          {t("Failed to save")}: {saveError}
-        </div>
-      )}
+
 
       {!tools && !error && (
         <div className="flex items-center gap-2 text-[12px] text-[var(--muted-foreground)]">
@@ -345,16 +332,24 @@ export default function ToolsSettingsPage() {
                 <div className="border-t border-[var(--border)]/60">
                   {list.map((tool, idx) => {
                     const isOpen = expanded.has(tool.name);
-                    const hints = tool.hints[language];
+                    const hints = localizedHints(tool);
                     const isPending = pending.has(tool.name);
                     const isComingSoon = !!tool.coming_soon;
                     const isAvailable = tool.available !== false;
-                    const availability = !isAvailable
+                    const availabilityCopy = !isAvailable
                       ? toolAvailabilityCopy(
                           tool.unavailable_reason,
                           language === "zh" ? "zh" : "en",
                         )
                       : null;
+                    const availability =
+                      availabilityCopy && language !== "zh"
+                        ? {
+                            ...availabilityCopy,
+                            badge: t(availabilityCopy.badge),
+                            detail: t(availabilityCopy.detail),
+                          }
+                        : availabilityCopy;
                     const isEnabled = toolEffectiveEnabled(
                       tool.toggleable ? enabled.has(tool.name) : true,
                       isAvailable,
@@ -403,7 +398,7 @@ export default function ToolsSettingsPage() {
                                   <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border)] bg-[var(--muted)]/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
                                     {language === "zh"
                                       ? "敬请期待"
-                                      : "Coming soon"}
+                                      : t("Coming soon")}
                                   </span>
                                 )}
                                 {availability && !isComingSoon && (
@@ -431,7 +426,7 @@ export default function ToolsSettingsPage() {
                                     >
                                       {language === "zh"
                                         ? "打开设置"
-                                        : "Open settings"}
+                                        : t("Open settings")}
                                     </Link>
                                   )}
                                 </p>
@@ -452,7 +447,7 @@ export default function ToolsSettingsPage() {
                                   /* locked */
                                 }}
                                 label={
-                                  language === "zh" ? "敬请期待" : "Coming soon"
+                                  language === "zh" ? "敬请期待" : t("Coming soon")
                                 }
                               />
                             ) : !isAvailable ? (
@@ -474,15 +469,21 @@ export default function ToolsSettingsPage() {
                                 label={t(isEnabled ? "On" : "Off")}
                               />
                             ) : (
-                              <span
-                                className="inline-flex items-center gap-1 rounded-full bg-[var(--muted)]/40 px-2 py-0.5 text-[10.5px] text-[var(--muted-foreground)]"
-                                title={t(
+                              <Tooltip
+                                label={t(
                                   "Auto-mounted by the agent when needed. Not user-toggleable.",
                                 )}
+                                side="top"
                               >
-                                <Lock className="h-3 w-3" />
-                                {t("Always on")}
-                              </span>
+                                <span
+                                  role="note"
+                                  tabIndex={0}
+                                  className="inline-flex items-center gap-1 rounded-full bg-[var(--muted)]/40 px-2 py-0.5 text-[10.5px] text-[var(--muted-foreground)]"
+                                >
+                                  <Lock className="h-3 w-3" />
+                                  {t("Always on")}
+                                </span>
+                              </Tooltip>
                             )}
                           </div>
                         </div>

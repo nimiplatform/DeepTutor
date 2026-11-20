@@ -43,6 +43,13 @@ export class DeepTutorBusinessMedia {
         .filter(row => CAPABILITIES.includes(row.capabilityContract))
         .map(({ capabilityContract, state, reasons }) => ({ capabilityContract, state, reasons })) };
     }
+    if (operation === 'media.voices') {
+      object(raw, []);
+      const voices = await services.aiConfig.listOptions({ kind: 'preset-voices' });
+      guard();
+      if (voices.kind !== 'preset-voices') throw new Error('Nimi returned an unexpected voice list.');
+      return { voices: voices.options.map(voice => voice.voiceId) };
+    }
     if (operation === 'media.audio.begin') {
       const input = object(raw, ['sizeBytes']);
       if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 1 || input.sizeBytes > MAX_AUDIO_BYTES || this.uploads.size >= 4) throw new Error('Audio upload exceeds the App limit.');

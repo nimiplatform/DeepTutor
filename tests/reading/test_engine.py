@@ -6,6 +6,7 @@ path service, a user workspace, or an LLM.
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 import zipfile
@@ -20,6 +21,7 @@ from deeptutor.reading import (
     Rect,
     TextPositionSelector,
     TextQuoteSelector,
+    content_hash,
     export_material,
     parse_locators,
     render_outline,
@@ -33,8 +35,13 @@ from deeptutor.reading.extract import (
     first_line_label,
     split_into_sections,
 )
-from deeptutor.reading.models import parse_text_selectors
+from deeptutor.reading.models import MAX_TEXT_SELECTOR_CHARS, parse_text_selectors
 from deeptutor.reading.search import normalise, search_units, terms_of
+from deeptutor.utils.document_images import MAX_INLINE_IMAGE_EDGE
+from tests.docx_math_fixture import (
+    EXPECTED_EQUATION_PARAGRAPHS,
+    native_equation_docx_bytes,
+)
 
 pymupdf = pytest.importorskip("pymupdf")
 
@@ -69,16 +76,54 @@ def _write_epub(path: Path) -> Path:
         )
         archive.writestr(
             "OEBPS/nav.xhtml",
-            """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapters/one.xhtml">Part One</a><ol><li><a href="chapters/two.xhtml">Second Chapter</a></li></ol></li></ol></nav></body></html>""",
+            """<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="chapters/one.xhtml">Part One</a><ol><li><a href="chapters/one.xhtml#a1">First Topic</a></li><li><a href="chapters/one.xhtml#a2">Second Topic</a></li><li><a href="chapters/two.xhtml">Second Chapter</a></li></ol></li></ol></nav></body></html>""",
         )
         archive.writestr(
             "OEBPS/chapters/one.xhtml",
-            "<html xmlns='http://www.w3.org/1999/xhtml'><head><title>One</title></head><body><h1>First Chapter</h1><p>Alpha source text.</p><script>ignore me</script></body></html>",
+            "<html xmlns='http://www.w3.org/1999/xhtml'><head><title>One</title></head><body><h1>First Chapter</h1><h2 id='a1'>First Topic</h2><p>Alpha source text.</p><h2 id='a2'>Second Topic</h2><script>ignore me</script></body></html>",
         )
         archive.writestr(
             "OEBPS/chapters/two.xhtml",
             "<html xmlns='http://www.w3.org/1999/xhtml'><body><h1>Second Chapter</h1><p>Beta source text.</p></body></html>",
         )
+    return path
+
+
+def _write_epub2(path: Path) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>""",
+        )
+        archive.writestr(
+            "content.opf",
+            """<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="book"><manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/><item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml"/></manifest><spine toc="ncx"><itemref idref="chapter"/></spine></package>""",
+        )
+        archive.writestr(
+            "toc.ncx",
+            """<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap><navPoint id="chapter"><navLabel><text>Legacy Chapter</text></navLabel><content src="chapter.xhtml"/><navPoint id="section"><navLabel><text>Legacy Section</text></navLabel><content src="chapter.xhtml#legacy-section"/></navPoint></navPoint></navMap></ncx>""",
+        )
+        archive.writestr(
+            "chapter.xhtml",
+            "<html xmlns='http://www.w3.org/1999/xhtml'><body><h1>Legacy Chapter</h1><h2 id='legacy-section'>Legacy Section</h2><p>NCX text.</p></body></html>",
+        )
+    return path
+
+
+def _wrap_epub_for_finder(path: Path) -> Path:
+    """Model the package macOS Finder makes when it compresses an EPUB."""
+    data = path.read_bytes()
+    with zipfile.ZipFile(io.BytesIO(data)) as source:
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as target:
+            for info in source.infolist():
+                target.writestr(f"MyBook/{info.filename}", source.read(info))
+            target.writestr(
+                "__MACOSX/OEBPS/._one.xhtml",
+                b"\x00\x05\x16\x07" + b"\x00" * 60,
+            )
+    path.write_bytes(output.getvalue())
     return path
 
 
@@ -150,7 +195,7 @@ def test_pdf_without_bookmarks_does_not_invent_contents(tmp_path: Path) -> None:
 
 def test_text_file_is_cut_into_sections_on_paragraph_boundaries(tmp_path: Path) -> None:
     paragraph = "Dense prose about attention mechanisms. " * 30  # ~1.2k chars
-    path = tmp_path / "notes.md"
+    path = tmp_path / "notes.txt"
     path.write_text("\n\n".join([paragraph] * 8), encoding="utf-8")
 
     extraction = extract_material(path)
@@ -162,6 +207,71 @@ def test_text_file_is_cut_into_sections_on_paragraph_boundaries(tmp_path: Path) 
     assert all(unit.startswith("Dense prose") for unit in extraction.units)
 
 
+@pytest.mark.parametrize("suffix", [".md", ".markdown"])
+def test_uploaded_markdown_uses_headings_for_stored_outline(
+    store: ReadingStore, tmp_path: Path, suffix: str
+) -> None:
+    prose = "Ordinary prose at a section boundary. " * 95
+    path = tmp_path / f"notes{suffix}"
+    path.write_text(
+        "# Opening\n\nIntroduction.\n\n"
+        "## Long section\n\n" + prose + "\n\n```md\n# Not a heading\n```\n\n"
+        "### Finish\n\nConclusion.",
+        encoding="utf-8",
+    )
+
+    manifest = store.ingest(path)
+    outline = store.outline(manifest.material_id)
+
+    assert manifest.unit == "section"
+    assert [row.title for row in outline] == [
+        "Opening",
+        "Long section",
+        "Long section",
+        "Finish",
+    ]
+    assert [row.level for row in outline] == [1, 2, 2, 3]
+    assert [row.locator for row in outline] == [1, 2, 3, 4]
+    assert all(row.synthesised is False for row in outline)
+    assert all("Ordinary prose" not in row.title for row in outline)
+    assert all(len(store.unit_text(manifest.material_id, row.locator)) <= 4200 for row in outline)
+    assert "# Not a heading" in "\n".join(
+        store.unit_text(manifest.material_id, row.locator) for row in outline
+    )
+
+
+@pytest.mark.parametrize("markdown", ["No headings.\n\nMore prose.", "# Only\n\nMore prose."])
+def test_uploaded_markdown_with_fewer_than_two_headings_keeps_flat_fallback(
+    store: ReadingStore, tmp_path: Path, markdown: str
+) -> None:
+    path = tmp_path / "flat.md"
+    path.write_text(markdown, encoding="utf-8")
+
+    extraction = extract_material(path)
+    manifest = store.ingest(path)
+
+    assert extraction.units == split_into_sections(markdown)
+    assert extraction.outline == ()
+    assert all(row.synthesised is True for row in store.outline(manifest.material_id))
+
+
+@pytest.mark.parametrize(
+    ("name", "content_format"),
+    [("notes.md", "web_markdown"), ("notes.markdown", "web_markdown"), ("notes.txt", "plain_text")],
+)
+def test_uploaded_markdown_renders_as_markdown_and_plain_text_stays_literal(
+    store: ReadingStore, tmp_path: Path, name: str, content_format: str
+) -> None:
+    path = tmp_path / name
+    path.write_text("# Mean\n\nThe mean is $\\bar x$.", encoding="utf-8")
+
+    manifest = store.ingest(path)
+
+    assert manifest.content_format == content_format
+    assert manifest.source_type == "upload"
+    assert store.manifest(manifest.material_id).content_format == content_format
+
+
 def test_epub_preserves_spine_units_source_hrefs_and_nested_outline(tmp_path: Path) -> None:
     extraction = extract_material(_write_epub(tmp_path / "book.epub"))
 
@@ -169,17 +279,64 @@ def test_epub_preserves_spine_units_source_hrefs_and_nested_outline(tmp_path: Pa
     assert extraction.has_raw_view is False
     assert extraction.unit == "chapter"
     assert extraction.units == (
-        "First Chapter\nAlpha source text.",
+        "First Chapter\nFirst Topic\nAlpha source text.\nSecond Topic",
         "Second Chapter\nBeta source text.",
     )
     assert [ref.source_href for ref in extraction.unit_refs] == [
         "OEBPS/chapters/one.xhtml",
         "OEBPS/chapters/two.xhtml",
     ]
-    assert [(row.locator, row.title, row.level) for row in extraction.outline] == [
-        (1, "Part One", 1),
-        (2, "Second Chapter", 2),
+    assert [
+        (
+            row.locator,
+            row.title,
+            row.level,
+            row.source_href,
+            row.source_anchor,
+        )
+        for row in extraction.outline
+    ] == [
+        (1, "Part One", 1, "OEBPS/chapters/one.xhtml", ""),
+        (1, "First Topic", 2, "OEBPS/chapters/one.xhtml", "a1"),
+        (1, "Second Topic", 2, "OEBPS/chapters/one.xhtml", "a2"),
+        (2, "Second Chapter", 2, "OEBPS/chapters/two.xhtml", ""),
     ]
+
+
+def test_epub2_ncx_preserves_heading_anchors(tmp_path: Path) -> None:
+    extraction = extract_material(_write_epub2(tmp_path / "legacy.epub"))
+
+    assert [
+        (row.locator, row.title, row.level, row.source_href, row.source_anchor)
+        for row in extraction.outline
+    ] == [
+        (1, "Legacy Chapter", 1, "chapter.xhtml", ""),
+        (1, "Legacy Section", 2, "chapter.xhtml", "legacy-section"),
+    ]
+
+
+def test_existing_epub_outline_is_upgraded_with_source_anchors(
+    store: ReadingStore, tmp_path: Path
+) -> None:
+    manifest = store.ingest(_write_epub(tmp_path / "book.epub"))
+    outline_path = store.root / manifest.source_hash / "outline.json"
+    legacy_rows = [
+        {
+            "locator": row.locator,
+            "title": row.title,
+            "level": row.level,
+            "synthesised": row.synthesised,
+        }
+        for row in store.outline(manifest.material_id)
+    ]
+    outline_path.write_text(json.dumps(legacy_rows), encoding="utf-8")
+
+    upgraded = store.outline(manifest.material_id)
+
+    assert upgraded[1].source_href == "OEBPS/chapters/one.xhtml"
+    assert upgraded[1].source_anchor == "a1"
+    assert upgraded[2].source_anchor == "a2"
+    assert all("source_anchor" in row for row in json.loads(outline_path.read_text()))
 
 
 def test_pptx_slides_become_units_when_the_extractor_marks_them(tmp_path: Path) -> None:
@@ -200,6 +357,55 @@ def test_pptx_slides_become_units_when_the_extractor_marks_them(tmp_path: Path) 
     assert extraction.unit == "slide"
     assert len(extraction.units) == 2
     assert "First slide body" in extraction.units[0]
+
+
+def _large_noise_jpeg(size: tuple[int, int] = (2000, 1200)) -> bytes:
+    """A noisy JPEG past the inline long-edge bound, well inside byte budgets."""
+    import random
+
+    from PIL import Image as PILImage
+
+    raw = random.Random(9).randbytes(size[0] * size[1] * 3)
+    buf = io.BytesIO()
+    PILImage.frombytes("RGB", size, raw).save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("suffix", ["docx", "pptx"])
+def test_office_reading_media_keeps_source_resolution(tmp_path: Path, suffix: str) -> None:
+    """Reader-pane media is stored whole; the inline transport bound is for chat.
+
+    Both Office ingests used the chat-attachment budget by default, so a bound
+    meant for images that are base64-inlined into one request would have shrunk
+    what the reader pane displays.
+    """
+    from PIL import Image as PILImage
+
+    image = _large_noise_jpeg()
+    path = tmp_path / f"material.{suffix}"
+    if suffix == "docx":
+        from docx import Document as DocxDocument
+
+        doc = DocxDocument()
+        doc.add_paragraph("A picture follows.")
+        doc.add_picture(io.BytesIO(image))
+        doc.save(str(path))
+    else:
+        from pptx import Presentation
+        from pptx.util import Inches
+
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[5])
+        slide.shapes.add_picture(io.BytesIO(image), Inches(1), Inches(1), Inches(4), Inches(3))
+        prs.save(str(path))
+
+    extraction = extract_material(path)
+
+    assert extraction.media, "the embedded picture should become locator media"
+    stored = extraction.media[0].data
+    assert stored == image, "reading media is kept byte-for-byte"
+    with PILImage.open(io.BytesIO(stored)) as whole:
+        assert max(whole.size) > MAX_INLINE_IMAGE_EDGE
 
 
 def test_empty_and_unreadable_sources_raise_reading_error(tmp_path: Path) -> None:
@@ -246,6 +452,20 @@ def test_ingest_writes_units_raw_and_manifest(store: ReadingStore, pdf_path: Pat
     assert raw is not None and raw.read_bytes()[:5] == b"%PDF-"
 
 
+def test_ingest_preserves_native_word_equations(store: ReadingStore, tmp_path: Path) -> None:
+    source = tmp_path / "equations.docx"
+    source.write_bytes(native_equation_docx_bytes())
+
+    manifest = store.ingest(source)
+
+    assert manifest.extractor == "docx"
+    assert manifest.unit_count == 1
+    unit = store.unit_text(manifest.material_id, 1)
+    for paragraph in EXPECTED_EQUATION_PARAGRAPHS:
+        assert paragraph in unit
+    assert "Fraction: 12 + 13." not in unit
+
+
 def test_epub_store_keeps_original_but_legacy_pdf_flag_stays_false(
     store: ReadingStore, tmp_path: Path
 ) -> None:
@@ -256,6 +476,36 @@ def test_epub_store_keeps_original_but_legacy_pdf_flag_stays_false(
     assert manifest.has_raw_view is False
     assert store.raw_path(manifest.material_id) is not None
     assert store.unit_references(manifest.material_id)[1].source_href.endswith("two.xhtml")
+
+
+def test_epub_store_normalizes_finder_packages_for_browser_readers(
+    store: ReadingStore, tmp_path: Path
+) -> None:
+    path = _wrap_epub_for_finder(_write_epub(tmp_path / "book.epub"))
+
+    manifest = store.ingest(path)
+
+    raw = store.raw_path(manifest.material_id)
+    render = store.render_path(manifest.material_id)
+    assert raw is not None and render is not None
+    assert raw.read_bytes() == path.read_bytes()
+    normalized = render.read_bytes()
+    assert manifest.byte_size == len(path.read_bytes())
+    assert manifest.source_hash == content_hash(path.read_bytes())
+    assert store.ingest(path).material_id == manifest.material_id
+    assert [ref.source_href for ref in store.unit_references(manifest.material_id)] == [
+        "OEBPS/chapters/one.xhtml",
+        "OEBPS/chapters/two.xhtml",
+    ]
+    with zipfile.ZipFile(io.BytesIO(normalized)) as archive:
+        infos = archive.infolist()
+        assert archive.read("mimetype") == b"application/epub+zip"
+    assert infos[0].filename == "mimetype"
+    assert infos[0].compress_type == zipfile.ZIP_STORED
+    assert all(
+        "__MACOSX" not in info.filename and not info.filename.startswith("MyBook/")
+        for info in infos
+    )
 
 
 def test_position_round_trip_validates_locator_and_anchor(
@@ -629,6 +879,120 @@ def test_quote_and_position_selectors_must_identify_the_same_text(
                     TextQuoteSelector(exact="Introduction"),
                     TextPositionSelector(start=0, end=7),
                 ),
+            ),
+        )
+
+
+def _markdown_store(store: ReadingStore, unit: str) -> str:
+    store.ingest_units(
+        "abcdef0123456789",
+        filename="notes.md",
+        units=[unit],
+        content_format="web_markdown",
+    )
+    return "abcdef0123456789"
+
+
+def test_markdown_positions_are_measured_against_the_rendered_text(
+    store: ReadingStore,
+) -> None:
+    material_id = _markdown_store(
+        store, "A **bold** claim and $x^2$ growth, then a plain tail word."
+    )
+    # What the browser shows, and what rangeToSelector measures against.
+    rendered = "A bold claim and x² growth, then a plain tail word."
+    start = rendered.index("plain tail")
+
+    saved = store.save_annotation(
+        material_id,
+        Annotation(
+            annotation_id="",
+            locator=1,
+            selectors=(
+                TextQuoteSelector(
+                    exact="plain tail",
+                    prefix="then a ",
+                    suffix=" word",
+                ),
+                TextPositionSelector(start=start, end=start + len("plain tail")),
+            ),
+        ),
+    )
+
+    assert saved.quote == "plain tail"
+    assert [selector.to_dict() for selector in store.annotations(material_id)[0].selectors] == [
+        {
+            "type": "TextQuoteSelector",
+            "exact": "plain tail",
+            "prefix": "then a ",
+            "suffix": " word",
+        },
+        {"type": "TextPositionSelector", "start": start, "end": start + len("plain tail")},
+    ]
+
+
+def test_markdown_quote_crossing_inline_formatting_is_stored_verbatim(
+    store: ReadingStore,
+) -> None:
+    # "Some bold text" is the rendered wording of "Some **bold** text" — it
+    # cannot occur in the raw unit, yet it is exactly what the reader selected.
+    material_id = _markdown_store(store, "Some **bold** text follows.")
+
+    saved = store.save_annotation(
+        material_id,
+        Annotation(
+            annotation_id="",
+            locator=1,
+            selectors=(
+                TextQuoteSelector(exact="Some bold text", suffix=" follows"),
+                TextPositionSelector(start=0, end=len("Some bold text")),
+            ),
+        ),
+    )
+
+    assert saved.quote == "Some bold text"
+    stored_quote = next(
+        selector
+        for selector in store.annotations(material_id)[0].selectors
+        if isinstance(selector, TextQuoteSelector)
+    )
+    assert stored_quote.exact == "Some bold text"
+
+
+def test_markdown_position_selector_without_quote_keeps_the_client_quote(
+    store: ReadingStore,
+) -> None:
+    material_id = _markdown_store(
+        store, "A **bold** claim and $x^2$ growth, then a plain tail word."
+    )
+    rendered = "A bold claim and x² growth, then a plain tail word."
+    start = rendered.index("plain tail")
+
+    saved = store.save_annotation(
+        material_id,
+        Annotation(
+            annotation_id="",
+            locator=1,
+            quote="plain tail",
+            selectors=(TextPositionSelector(start=start, end=start + len("plain tail")),),
+        ),
+    )
+
+    assert saved.quote == "plain tail"
+
+
+def test_markdown_position_selector_span_ceiling_still_applies(
+    store: ReadingStore,
+) -> None:
+    material_id = _markdown_store(store, "A plain unit of markdown text.")
+
+    with pytest.raises(ReadingError, match="too long"):
+        store.save_annotation(
+            material_id,
+            Annotation(
+                annotation_id="",
+                locator=1,
+                selectors=(TextPositionSelector(start=0, end=MAX_TEXT_SELECTOR_CHARS + 1),),
             ),
         )
 
@@ -1039,3 +1403,61 @@ def test_state_written_before_the_split_is_still_read(store: ReadingStore, pdf_p
 
     notes = sorted(row.note for row in store.annotations(manifest.material_id))
     assert notes == ["written after the split", "written by the old reader"]
+
+
+@pytest.mark.parametrize("with_selector", [False, True])
+def test_markdown_annotations_reject_fabricated_quotes(
+    store: ReadingStore, with_selector: bool
+) -> None:
+    material_id = _markdown_store(store, "Some **bold** text follows.")
+    selectors = (TextPositionSelector(start=0, end=22),)
+    if with_selector:
+        selectors = (TextQuoteSelector(exact="quantum flux capacitor"), *selectors)
+    with pytest.raises(ReadingError, match="reading unit"):
+        store.save_annotation(
+            material_id,
+            Annotation(
+                annotation_id="",
+                locator=1,
+                quote="quantum flux capacitor",
+                selectors=selectors,
+            ),
+        )
+    assert store.annotations(material_id) == []
+
+
+def test_markdown_annotation_context_is_checked_against_rendered_source(
+    store: ReadingStore,
+) -> None:
+    material_id = _markdown_store(store, "A **bold** phrase follows.")
+    with pytest.raises(ReadingError, match="reading unit"):
+        store.save_annotation(
+            material_id,
+            Annotation(
+                annotation_id="",
+                locator=1,
+                selectors=(TextQuoteSelector(exact="bold phrase", prefix="Invented "),),
+            ),
+        )
+    saved = store.save_annotation(
+        material_id,
+        Annotation(
+            annotation_id="",
+            locator=1,
+            selectors=(TextQuoteSelector(exact="bold phrase", prefix="A ", suffix=" follows"),),
+        ),
+    )
+    assert saved.quote == "bold phrase"
+
+
+def test_markdown_position_only_requires_a_grounded_quote(store: ReadingStore) -> None:
+    material_id = _markdown_store(store, "Some **bold** text follows.")
+    with pytest.raises(ReadingError, match="require a quote"):
+        store.save_annotation(
+            material_id,
+            Annotation(
+                annotation_id="",
+                locator=1,
+                selectors=(TextPositionSelector(start=0, end=3),),
+            ),
+        )

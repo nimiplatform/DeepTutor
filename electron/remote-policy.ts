@@ -5,11 +5,13 @@ export type BusinessRoute = Readonly<{ id: string; method: BusinessMethod; templ
 const methods = new Set(['get', 'post', 'put', 'patch', 'delete']);
 const domains: Record<string, string> = {
   sessions: 'learning', dashboard: 'learning', capabilities: 'learning', books: 'learning', courses: 'learning',
+  calendar: 'learning', creations: 'learning', 'learning-journal': 'learning', 'task-board': 'learning',
   'mastery-paths': 'learning', 'question-notebook': 'learning', reading: 'learning', 'video-learning': 'learning',
   visualizers: 'learning', space: 'learning', voice: 'learning',
   'knowledge-bases': 'knowledge', documents: 'documents', notebooks: 'documents', imports: 'documents',
+  'file-preview': 'documents', marginnote4: 'documents',
   memory: 'memory', personas: 'preferences', settings: 'preferences', 'agent-config': 'preferences',
-  tools: 'preferences', skills: 'preferences', subagents: 'preferences',
+  tools: 'preferences', skills: 'preferences', subagents: 'preferences', modules: 'preferences', plugins: 'preferences',
   partners: 'partners', 'partner-groups': 'partners', auth: 'accounts', 'multi-user': 'accounts',
 };
 
@@ -20,6 +22,7 @@ function exposed(method: string, route: string): boolean {
   if (!domain || !domains[domain]) return route === '/api/system/status' && method === 'get';
   if (/^\/api\/auth\/(?:device|devices|device-login|openai-codex)(?:\/|$)/.test(route)) return false;
   if (route.includes('/credentials/reset')) return false;
+  if (/^\/api\/(?:modules|plugins)(?:\/|$)/.test(route)) return method === 'get';
   if (/^\/api\/settings\/(?:providers|draft|apply|workspace)(?:\/|$)/.test(route)) return method === 'get';
   if (/^\/api\/knowledge-bases\/(?:connect-|probe-|list-ima|configs)/.test(route)) return method === 'get';
   if (/^\/api\/knowledge-bases\/.*\/(?:link-folder|linked-folders|github-source|web-source)(?:\/|$)/.test(route)) return method === 'get';

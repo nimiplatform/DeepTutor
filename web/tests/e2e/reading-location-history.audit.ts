@@ -1,4 +1,7 @@
+import { sourceModuleInventory } from "./fixtures/modules";
+import { emptyLearningIndex } from "./fixtures/learning-index";
 import { expect, test } from "@playwright/test";
+import { emptyTaskBoard } from "./fixtures/task-board";
 
 const MATERIAL_A = "aaaaaaaaaaaaaaaa";
 const MATERIAL_B = "bbbbbbbbbbbbbbbb";
@@ -104,9 +107,13 @@ test.beforeEach(async ({ page }) => {
   let activeMaterialId = MATERIAL_A;
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === "/api/modules") return route.fulfill({ json: sourceModuleInventory });
     const json = (payload: unknown, status = 200) =>
       route.fulfill({ status, json: payload });
 
+    if (path === "/api/dashboard/learning-index") return json(emptyLearningIndex);
+    if (path === "/api/partners" || path === "/api/partner-groups") return json([]);
+    if (path === "/api/task-board") return json(emptyTaskBoard);
     if (path === "/api/auth/status") {
       return json({ enabled: false, authenticated: true });
     }
@@ -194,13 +201,14 @@ test.beforeEach(async ({ page }) => {
 test("back and forward cross materials, survive reload, and stay session-scoped", async ({
   page,
 }) => {
-  await page.goto(`/reading/${WORKSPACE_ID}/sessions/${SESSION_ONE}`);
+  await page.goto(`/learning/reading/${WORKSPACE_ID}/sessions/${SESSION_ONE}`, { waitUntil: "domcontentloaded" });
   await expect(page.getByText("History A1 text.")).toBeVisible();
 
+  await page.getByRole("button", { name: "Expand contents", exact: true }).click();
   await page.getByRole("button", { name: "History material A second" }).click();
   await expect(page.getByText("History A2 text.")).toBeVisible();
 
-  await page.getByRole("button", { name: "History material B" }).click();
+  await page.locator(".dt-reading-navigator").getByRole("button", { name: "History material B" }).click();
   await expect(page.getByText("History B1 text.")).toBeVisible();
 
   await page.getByRole("button", { name: "Back", exact: true }).click();
@@ -208,11 +216,13 @@ test("back and forward cross materials, survive reload, and stay session-scoped"
   await page.getByRole("button", { name: "Forward", exact: true }).click();
   await expect(page.getByText("History B1 text.")).toBeVisible();
 
-  await page.reload();
+  await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByText("History B1 text.")).toBeVisible();
 
-  await page.goto(`/reading/${WORKSPACE_ID}/sessions/${SESSION_TWO}`);
-  await page.getByRole("button", { name: "History material B" }).click();
+  await page.goto(`/learning/reading/${WORKSPACE_ID}/sessions/${SESSION_TWO}`, { waitUntil: "domcontentloaded" });
+  // A fresh load starts with the contents navigator collapsed (v1.6.10).
+  await page.getByRole("button", { name: "Expand contents", exact: true }).click();
+  await page.locator(".dt-reading-navigator").getByRole("button", { name: "History material B", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Back", exact: true }),
   ).toBeDisabled();
@@ -243,12 +253,15 @@ test("a deleted material remains identifiable and does not block older history",
     },
   );
 
-  await page.goto(`/reading/${WORKSPACE_ID}/sessions/${SESSION_MISSING}`);
+  await page.goto(`/learning/reading/${WORKSPACE_ID}/sessions/${SESSION_MISSING}`, { waitUntil: "domcontentloaded" });
   await expect(
     page
       .getByRole("alert")
       .filter({ hasText: "Material is no longer available" }),
   ).toBeVisible();
+  // History moved behind the reader's "More" menu in the v1.6.10 rework;
+  // it only appears once the reader has recorded history entries.
+  await page.getByRole("button", { name: "More", exact: true }).click();
   await page.getByRole("button", { name: "History", exact: true }).click();
   await expect(page.getByText("Deleted reading material")).toBeVisible();
   await expect(page.getByText("Section 2 · Unavailable")).toBeVisible();
