@@ -78,15 +78,14 @@ export function NimiModelSettings({ capability = "text.generate" }: { capability
 
 export function NimiModelButton() {
   const [open, setOpen] = useState(false);
-  const { i18n } = useTranslation();
-  const chinese = i18n.language.startsWith("zh");
+  const { t } = useTranslation();
   return <>
     <button type="button" onClick={() => setOpen(true)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs">
-      {chinese ? "Nimi 模型" : "Nimi models"}
+      {t("Nimi models")}
     </button>
-    <Modal isOpen={open} onClose={() => setOpen(false)} width="lg" title={chinese ? "学习使用的 AI 模型" : "Models for learning"}>
+    <Modal isOpen={open} onClose={() => setOpen(false)} width="lg" title={t("Models for learning")}>
       <div className="p-5">
-        <p className="mb-4 text-sm text-[var(--muted-foreground)]">{chinese ? "DeepTutor 的学习任务共用这里的模型配置。修改向量模型后，请重新建立资料索引。" : "Learning tasks share this App configuration. Re-index your materials after changing the embedding model."}</p>
+        <p className="mb-4 text-sm text-[var(--muted-foreground)]">{t("Learning tasks share this App configuration. Re-index your materials after changing the embedding model.")}</p>
         {open && <NimiModelSettings />}
       </div>
     </Modal>

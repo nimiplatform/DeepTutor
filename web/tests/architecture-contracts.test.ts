@@ -49,6 +49,7 @@ test("raw fetch is limited to the shared API client and media preview", () => {
   const allow = new Set([
     "shared/api/client.ts",
     "components/chat/preview/FilePreviewDrawer.tsx",
+    "lib/nimi/web-business-transport.ts",
   ]);
   const violations = allSources
     .filter((file) => /\bfetch\(/.test(fs.readFileSync(file, "utf8")))

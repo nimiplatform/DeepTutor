@@ -29,8 +29,10 @@ export type Pdfjs = typeof PdfjsModule;
 export type PdfDocument = Awaited<ReturnType<Pdfjs["getDocument"]>["promise"]>;
 export type PdfPageProxy = Awaited<ReturnType<PdfDocument["getPage"]>>;
 
-const PDFJS_WASM_PATH = "/pdfjs/wasm/";
-const PDFJS_CMAP_PATH = "/pdfjs/cmaps/";
+const PDFJS_WASM_PATH =
+  process.env.NEXT_PUBLIC_PDFJS_WASM_PATH || "/pdfjs/wasm/";
+const PDFJS_CMAP_PATH =
+  process.env.NEXT_PUBLIC_PDFJS_CMAP_PATH || "/pdfjs/cmaps/";
 
 let pending: Promise<Pdfjs> | null = null;
 

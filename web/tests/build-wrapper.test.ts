@@ -87,12 +87,14 @@ test("the reader gives PDF.js absolute same-origin decoder and CMap URLs", () =>
 
 test("the reader loads the legacy PDF.js library and polyfilled worker", () => {
   const loader = read("lib", "pdfjs-loader.ts");
-  const worker = read(
-    "node_modules",
-    "pdfjs-dist",
-    "legacy",
-    "build",
-    "pdf.worker.mjs",
+  const worker = readFileSync(
+    path.join(
+      path.dirname(require.resolve("pdfjs-dist/package.json")),
+      "legacy",
+      "build",
+      "pdf.worker.mjs",
+    ),
+    "utf8",
   );
   assert.doesNotMatch(loader, /import\("pdfjs-dist"\)/);
   assert.doesNotMatch(loader, /"pdfjs-dist\/build\//);

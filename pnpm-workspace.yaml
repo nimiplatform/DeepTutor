@@ -7,7 +7,3 @@ nodeLinker: hoisted
 
 overrides:
   'epubjs>@xmldom/xmldom': ^0.9.12
-  '@nimiplatform/sdk': file:.nimi/local/packages/integration-20261114-android-http-rc.4/nimiplatform-sdk-0.24.0-rc.2.tgz
-  '@nimiplatform/kit': file:.nimi/local/packages/integration-20261114-android-http-rc.4/nimiplatform-kit-0.24.0-rc.4.tgz
-  '@nimiplatform/kit-protected-local-win32-x64': file:.nimi/local/packages/integration-20261114-android-http-rc.4/nimiplatform-kit-protected-local-win32-x64-0.24.0-rc.1.tgz
-  '@nimiplatform/app-tools': file:.nimi/local/packages/integration-20261114-android-http-rc.4/nimiplatform-app-tools-0.16.0-rc.2.tgz

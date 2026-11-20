@@ -304,8 +304,9 @@ dmypy.json
 *.mp3
 *.wav
 *.ogg
-# Developer-only Web TLS paths
+# Developer-only Web TLS paths and static Web build output
 .env.web.local
+dist-web/
 
 # The development callback and public loopback certificate are source inputs.
 !/android/app/src/debug/

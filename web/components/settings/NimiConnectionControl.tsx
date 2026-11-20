@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { Loader2, PlugZap } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import Modal from "@/components/common/Modal";
+import Tooltip from "@/shared/ui/Tooltip";
 import { readNimiModelConfiguration } from "@/lib/nimi-client";
 
 type Result =
@@ -65,17 +66,18 @@ export default function NimiConnectionControl({
 
   return (
     <>
-      <button
-        type="button"
-        aria-label={t("Reconnect Nimi")}
-        title={collapsed ? t("Reconnect Nimi") : undefined}
-        onClick={() => void check()}
-        disabled={checking}
-        className={`flex w-full items-center rounded-lg py-2 text-[12px] text-[var(--muted-foreground)] hover:bg-[var(--muted)]/55 hover:text-[var(--foreground)] disabled:opacity-60 ${collapsed ? "justify-center" : "gap-2.5 px-3"}`}
-      >
-        <PlugZap size={16} aria-hidden />
-        {!collapsed && t("Reconnect Nimi")}
-      </button>
+      <Tooltip label={t("Reconnect Nimi")} suppressed={!collapsed} side="right">
+        <button
+          type="button"
+          aria-label={t("Reconnect Nimi")}
+          onClick={() => void check()}
+          disabled={checking}
+          className={`flex w-full items-center rounded-lg py-2 text-[12px] text-[var(--muted-foreground)] hover:bg-[var(--muted)]/55 hover:text-[var(--foreground)] disabled:opacity-60 ${collapsed ? "justify-center" : "gap-2.5 px-3"}`}
+        >
+          <PlugZap size={16} aria-hidden />
+          {!collapsed && t("Reconnect Nimi")}
+        </button>
+      </Tooltip>
       <Modal
         isOpen={open}
         onClose={close}

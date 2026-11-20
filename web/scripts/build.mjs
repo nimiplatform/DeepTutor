@@ -50,7 +50,16 @@ function prepareBuildTsconfig(snapshots, distDir) {
 export function packageStandaloneAssets(sourceRoot, distDir) {
   const distRoot = path.resolve(sourceRoot, distDir);
   const standaloneRoot = path.join(distRoot, "standalone");
-  const server = path.join(standaloneRoot, "server.js");
+  const nestedStandaloneRoot = path.join(
+    standaloneRoot,
+    path.basename(sourceRoot),
+  );
+  const appStandaloneRoot = existsSync(
+    path.join(nestedStandaloneRoot, "server.js"),
+  )
+    ? nestedStandaloneRoot
+    : standaloneRoot;
+  const server = path.join(appStandaloneRoot, "server.js");
   const staticAssets = path.join(distRoot, "static");
   if (!existsSync(server) || !existsSync(staticAssets)) {
     throw new Error(
@@ -60,13 +69,13 @@ export function packageStandaloneAssets(sourceRoot, distDir) {
 
   // Next omits these runtime assets from standalone output (#1424). Keep the
   // active dist directory name so server.js can resolve its own client chunks.
-  const standaloneStatic = path.join(standaloneRoot, distDir, "static");
+  const standaloneStatic = path.join(appStandaloneRoot, distDir, "static");
   rmSync(standaloneStatic, { recursive: true, force: true });
   cpSync(staticAssets, standaloneStatic, { recursive: true });
 
   const publicAssets = path.join(sourceRoot, "public");
   if (existsSync(publicAssets)) {
-    const standalonePublic = path.join(standaloneRoot, "public");
+    const standalonePublic = path.join(appStandaloneRoot, "public");
     rmSync(standalonePublic, { recursive: true, force: true });
     cpSync(publicAssets, standalonePublic, { recursive: true });
   }

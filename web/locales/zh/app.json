@@ -6701,5 +6701,11 @@
   "mediaTask.status.saved": "已保存",
   "mediaTask.status.canceled": "已取消",
   "mediaTask.status.timeout": "已超时",
-  "mediaTask.status.failed": "失败"
+  "mediaTask.status.failed": "失败",
+  "Choose the Nimi image and video models used by the chat generation tools.": "在 Nimi 中选择聊天生成工具使用的图像和视频模型。",
+  "Read assistant replies aloud and transcribe recordings using models configured in Nimi.": "使用在 Nimi 中配置的模型朗读助手回复并转写录音。",
+  "Updates are managed on your PC.": "更新在您的电脑端统一管理。",
+  "Nimi models": "Nimi 模型",
+  "Models for learning": "学习使用的 AI 模型",
+  "Learning tasks share this App configuration. Re-index your materials after changing the embedding model.": "DeepTutor 的学习任务共用这里的模型配置。修改向量模型后，请重新建立资料索引。"
 }

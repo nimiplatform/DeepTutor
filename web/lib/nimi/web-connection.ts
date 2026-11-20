@@ -27,38 +27,64 @@ export function bindWebWorkspace(connection: MessagePort, declaredRoutes: Busine
   if (port) throw new Error('This workspace is already bound to its original connection');
   port = connection; routes = declaredRoutes;
   let selectedInput: { id: string; input: HTMLInputElement } | undefined;
-  const nativeInput = (event: MouseEvent) => {
+  const handleWorkspaceClick = (event: MouseEvent) => {
     if (ended) return;
-    const input = event.target;
-    if (input instanceof HTMLInputElement && input.type === 'file') {
+    const target = event.target;
+    if (mobile && target instanceof HTMLInputElement && target.type === 'file') {
       event.preventDefault(); event.stopImmediatePropagation();
-      const id=crypto.randomUUID(); selectedInput={id,input};
-      connection.postMessage({type:'pick-files',id,accept:input.accept,multiple:input.multiple});
+      const id = crypto.randomUUID(); selectedInput = { id, input: target };
+      connection.postMessage({ type: 'pick-files', id, accept: target.accept, multiple: target.multiple });
       return;
     }
-    const anchor=input instanceof Element ? input.closest<HTMLAnchorElement>('a[download]') : null;
+    const anchor = target instanceof Element ? target.closest<HTMLAnchorElement>('a[href]') : null;
     if (!anchor) return;
-    const url=new URL(anchor.href,location.origin);
-    if (url.origin!==location.origin && !['blob:','data:'].includes(url.protocol)) return;
-    event.preventDefault(); event.stopImmediatePropagation();
-    void (async()=>{
-      const response=await apiFetch(url);
-      if (!response.ok) throw new Error(`File download failed (HTTP ${response.status}).`);
-      const blob=await response.blob();
-      await webBusinessCall('client.save-file',{blob,name:anchor.download || decodeURIComponent(url.pathname.split('/').pop() || 'deeptutor-file')});
-    })().catch(error=>notify(String(error),{tone:'error'}));
+    let url: URL;
+    try { url = new URL(anchor.href, location.origin); } catch { return; }
+    const hasDownload = anchor.hasAttribute('download');
+    const isBusinessPath = url.origin === location.origin && /^\/(api|files)\//.test(url.pathname) && !/^\/api\/(?:runtime-access\/|auth\/runtime-clients\/)/.test(url.pathname);
+    if (mobile && hasDownload && (url.origin === location.origin || ['blob:', 'data:'].includes(url.protocol))) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      void (async () => {
+        const response = await apiFetch(url);
+        if (!response.ok) throw new Error(`File download failed (HTTP ${response.status}).`);
+        const blob = await response.blob();
+        await webBusinessCall('client.save-file', { blob, name: anchor.download || decodeURIComponent(url.pathname.split('/').pop() || 'deeptutor-file') });
+      })().catch(error => notify(String(error), { tone: 'error' }));
+      return;
+    }
+    if (!mobile && isBusinessPath) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      void (async () => {
+        const response = await apiFetch(url);
+        if (!response.ok) throw new Error(`File download failed (HTTP ${response.status}).`);
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        if (hasDownload) {
+          const temp = document.createElement('a');
+          temp.href = blobUrl;
+          temp.download = anchor.download || decodeURIComponent(url.pathname.split('/').pop() || 'deeptutor-file');
+          document.body.appendChild(temp);
+          temp.click();
+          temp.remove();
+          window.setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+        } else {
+          window.open(blobUrl, anchor.target || '_blank', 'noopener');
+          window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+        }
+      })().catch(error => notify(String(error), { tone: 'error' }));
+    }
   };
   if (mobile) {
-    bindMobileDrafts(mobile.drafts,(key,value)=>{if(!ended)connection.postMessage({type:'draft',key,value});});
-    document.addEventListener('click',nativeInput,true);
+    bindMobileDrafts(mobile.drafts, (key, value) => { if (!ended) connection.postMessage({ type: 'draft', key, value }); });
   }
+  document.addEventListener('click', handleWorkspaceClick, true);
   port.onmessage = (event) => {
     if (event.data?.ended) {
       ended = true;
       for (const pending of waiting.values())
         pending.reject(new Error('DeepTutor PC connection ended'));
       waiting.clear();
-      endMobileDrafts(); document.removeEventListener('click',nativeInput,true); selectedInput=undefined;
+      endMobileDrafts(); document.removeEventListener('click', handleWorkspaceClick, true); selectedInput = undefined;
       port?.close();
       return;
     }

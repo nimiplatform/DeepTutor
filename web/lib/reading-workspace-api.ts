@@ -458,7 +458,7 @@ export async function sendReadingToNotebook(
   notebookIds: string[],
   materialIds: string[] = [],
 ): Promise<Record<string, unknown>> {
-  return json(`/workspaces/${encodeURIComponent(workspaceId)}/notebook`, {
+  return json(`/workspaces/${workspaceId}/notebook`, {
     method: "POST",
     body: JSON.stringify({
       notebook_ids: notebookIds,

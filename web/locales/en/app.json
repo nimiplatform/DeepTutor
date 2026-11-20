@@ -6701,5 +6701,11 @@
   "mediaTask.status.saved": "Saved",
   "mediaTask.status.canceled": "Canceled",
   "mediaTask.status.timeout": "Timed out",
-  "mediaTask.status.failed": "Failed"
+  "mediaTask.status.failed": "Failed",
+  "Choose the Nimi image and video models used by the chat generation tools.": "Choose the Nimi image and video models used by the chat generation tools.",
+  "Read assistant replies aloud and transcribe recordings using models configured in Nimi.": "Read assistant replies aloud and transcribe recordings using models configured in Nimi.",
+  "Updates are managed on your PC.": "Updates are managed on your PC.",
+  "Nimi models": "Nimi models",
+  "Models for learning": "Models for learning",
+  "Learning tasks share this App configuration. Re-index your materials after changing the embedding model.": "Learning tasks share this App configuration. Re-index your materials after changing the embedding model."
 }
