@@ -198,6 +198,7 @@ jobs:
             dist/nimi-app/*.target.json
             dist/nimi-app/*.app-info.json
             dist/nimi-app/*.candidate.json
+            dist/nimi-app/*-storefront-media.zip
           if-no-files-found: error
   release:
     if: github.event_name == 'push' && github.ref_type == 'tag'
@@ -236,7 +237,7 @@ jobs:
               sleep 10
             done
           }
-          assets=(release-assets/*.nimiapp release-assets/*.app-info.json release-assets/*.candidate.json)
+          assets=(release-assets/*.nimiapp release-assets/*.app-info.json release-assets/*.candidate.json release-assets/*-storefront-media.zip)
           test "${#assets[@]}" -gt 0
           expected=$(printf '%s\n' "${assets[@]##*/}" | jq -R -s -c 'split("\n")[:-1] | sort')
           if release_id=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId 2>/dev/null); then

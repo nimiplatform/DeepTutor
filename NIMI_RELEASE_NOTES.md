@@ -1,3 +1,10 @@
+# 1.6.20 — Upstream 1.7.4 sync, Nimi 0.24 cohort & bilingual storefront
+
+- Syncs upstream HKUDS/DeepTutor `v1.7.4` (`341af371b`) into the Nimi fork, bringing the updated workspace layout, Task Board (`/kanban`), Learning Journal, Calendar, Creations, and File Preview while retaining all Nimi AI/media boundaries (`text.generate`, `text.embed`, `audio.synthesize`, `audio.transcribe`, `image.generate`, `video.generate`).
+- Upgrades to the public Nimi 0.24 prerelease cohort (`@nimiplatform/app-tools` `0.16.0-rc.12`, `@nimiplatform/sdk` `0.24.0-rc.10`, `@nimiplatform/kit` `0.24.0-rc.16`, `@nimiplatform/nimi-coding` `0.7.0`, Electron 45) with frozen public npm dependencies.
+- Adds bilingual Nimi storefront presentation (`en` / `zh`) with localized introductions (`NIMI_APP.md`, `NIMI_APP.zh.md`), category (`research-learning`), tags, highlights, and real-UI cover and gallery assets.
+- Prepares the PC workspace provider (`deeptutor.workspace.v3`) for future separately admitted hosted Web access; hosted Web release remains a separate step.
+
 # 1.6.18 — Windows knowledge-index startup
 
 Installed Windows acceptance passed on October 14 using the complete local

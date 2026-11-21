@@ -5,9 +5,97 @@ version: 1.6.20
 profile: standalone
 manifest_role: submitted-input
 metadata:
-  summary: A learning workspace for studying documents, solving problems and writing notes, using Nimi for AI models.
+  summary: A local-first AI learning workspace for studying documents, solving complex problems, taking structured notes, and planning study tasks with Nimi models.
   icon: assets/nimi-app-icon.png
   release_notes: NIMI_RELEASE_NOTES.md
+  author: DeepTutor contributors
+  homepage_url: https://github.com/nimiplatform/DeepTutor
+  support_url: https://github.com/nimiplatform/DeepTutor/issues
+  storefront:
+    category: research-learning
+    default_locale: en
+    locales:
+      en:
+        tags:
+          - Document Q&A
+          - Problem Solving
+          - Knowledge Base
+          - Study Notes
+          - Local-First
+        highlights:
+          - title: Document-Grounded Q&A
+            description: Import PDFs, Markdown, and study docs into local Knowledge Bases and ask questions backed by source citations and inline preview.
+          - title: Step-by-Step Deep Solve
+            description: Break down math, science, and engineering problems with rendered LaTeX equations, structured reasoning, and deep research workflows.
+          - title: Notes, Co-Writer & Task Board
+            description: Save answers into study collections, draft structured reports in Co-Writer, track goals on the Task Board, and export as Markdown.
+          - title: Local Workspace, Nimi Models
+            description: Chats, documents, vector indexes, and notes stay on your PC while Nimi handles sign-in and text, embedding, and media models.
+      zh:
+        display_name: DeepTutor
+        summary: 面向文献研读、难题推演、本地知识库检索与结构化笔记的 AI 学习工作台，由 Nimi 统一接入模型。
+        introduction: NIMI_APP.zh.md
+        tags:
+          - 文献研读
+          - 难题求解
+          - 本地知识库
+          - 结构化笔记
+          - 本地优先
+        highlights:
+          - title: 本地知识库与引用问答
+            description: 导入 PDF、Markdown 等资料构建本地向量索引，围绕原文献开展带引用来源与页内预览的严谨问答。
+          - title: 分步推演与深度解题
+            description: 面向数学、科研与工程难题提供 LaTeX 公式推演、概念拆解、对比总结与多阶段深度研究工作流。
+          - title: 收藏夹、协同写作与任务看板
+            description: 将关键解答沉淀到收藏夹，在笔记本中撰写带公式的实验报告，用任务看板规划进度并导出 Markdown。
+          - title: 数据驻留本机，模型由 Nimi 供给
+            description: 会话、资料、向量索引与笔记全部保存在本机 PC 工作区，由 Nimi 负责账号登录、授权与多模态模型调度。
+    media:
+      cover:
+        path: assets/storefront/cover-en.webp
+        locales:
+          zh: assets/storefront/cover-zh.webp
+      gallery:
+        - id: grounded-qa
+          kind: image
+          path: assets/storefront/grounded-qa-en.webp
+          locales:
+            zh: assets/storefront/grounded-qa-zh.webp
+          caption:
+            en: "Document-grounded Q&A: answer study questions with rendered equations and cited Knowledge Base sections"
+            zh: 知识库引用问答：结合本地索引文献输出带公式与原文出处的严谨解答
+        - id: knowledge-center
+          kind: image
+          path: assets/storefront/knowledge-center-en.webp
+          locales:
+            zh: assets/storefront/knowledge-center-zh.webp
+          caption:
+            en: "Knowledge Center: local LlamaIndex vector indexing with Nimi embeddings and inline Markdown/LaTeX preview"
+            zh: 知识中心：使用 Nimi 向量模型完成本地 LlamaIndex 索引，并支持页内文档与公式预览
+        - id: co-writer
+          kind: image
+          path: assets/storefront/co-writer-en.webp
+          locales:
+            zh: assets/storefront/co-writer-zh.webp
+          caption:
+            en: "Notebook & Co-Writer: compose structured lab reports with display equations, comparison tables, and AI assistance"
+            zh: 笔记本与协同写作：撰写含公式、对比表格的结构化实验报告与学习长文
+        - id: notebooks
+          kind: image
+          path: assets/storefront/notebooks-en.webp
+          locales:
+            zh: assets/storefront/notebooks-zh.webp
+          caption:
+            en: "Saved Study Collections: organize solutions and key takeaways by topic with search, filtering, and Markdown export"
+            zh: 收藏夹与知识沉淀：按主题归档解题记录与对话要点，支持搜索筛选与 Markdown 导出
+        - id: task-board
+          kind: image
+          path: assets/storefront/task-board-en.webp
+          locales:
+            zh: assets/storefront/task-board-zh.webp
+          caption:
+            en: "Study Task Board: organize assignments across To Do, In Progress, and Done linked to workspace conversations"
+            zh: 学习任务看板：在待办、进行中与已完成列中追踪学习进度并关联对话记录
 app_access:
   - runtime.consume
   - integration.provide

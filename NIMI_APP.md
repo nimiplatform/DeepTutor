@@ -1,38 +1,38 @@
 # DeepTutor on Nimi
 
-Study documents, ask grounded questions, organize reading materials and keep learning notes in the DeepTutor workspace. Nimi supplies account sign-in, App authorization and AI model access.
+DeepTutor is a local-first AI learning workspace for studying documents, working through complex derivations, organizing structured notes, and planning study tasks on your PC. Nimi supplies account sign-in, App authorization, and AI model access.
+
+## What you can do
+
+- **Knowledge Center & Grounded Q&A**: Import PDFs, Markdown, and study documents into local Knowledge Bases, index them with Nimi embeddings, and ask grounded questions with source citations and inline document preview.
+- **Deep Solve & Learning Workflows**: Work through math, science, and engineering problems step by step with rendered LaTeX equations, deep research stages, and visual explanations.
+- **Notebooks & Co-Writer**: Save answers and derivations into organized Notebooks, draft structured reports in Co-Writer, track study goals on the Task Board, and export conversations or notes as Markdown.
+- **Optional Multimodal Tools**: Use Nimi-configured read-aloud speech, microphone transcription, and image or video generation inside your learning workspace.
 
 ## Start learning on PC
 
-1. Open DeepTutor from Nimi Home and keep Nimi running.
-2. Open **Nimi models** in chat or **Settings → Models & services**. Select a text model (`text.generate`) for tutoring and writing; Knowledge Center indexing and document retrieval also require a text-embedding model (`text.embed`). Optional read-aloud (`audio.synthesize`), microphone transcription (`audio.transcribe`), image generation (`image.generate`) and video generation (`video.generate`) use their corresponding Nimi selections.
-3. Start a conversation, or import and index study materials in **Knowledge Center** before asking grounded questions with source citations.
-4. Save useful answers or passages to **Notebooks**, study documents in **Reading**, or export conversations and notebooks as Markdown.
+1. Open DeepTutor from **Nimi Home** on Windows (x64) or macOS (Apple Silicon) and keep Nimi running.
+2. Open **Nimi models** in chat or **Settings → Models & services** and configure the models you want to use:
+   - **Text model (`text.generate`)**: required for chat, problem solving, research, and writing.
+   - **Embedding model (`text.embed`)**: required for Knowledge Center document indexing and grounded retrieval.
+   - **Optional media models**: `audio.synthesize` (read-aloud), `audio.transcribe` (microphone input), `image.generate`, and `video.generate`.
+3. Start a conversation directly, or upload and index study materials in **Knowledge Center** before asking grounded questions with citations.
+4. Save key explanations to **Notebooks**, refine longer write-ups in **Co-Writer**, organize follow-up tasks on the **Task Board**, or export as Markdown.
 
-Choose a model that supports the controls required by the current task. A rejected model request is reported directly as an error; DeepTutor does not silently substitute another model. After changing the embedding model, re-index existing knowledge bases before running retrieval queries.
+## PC and model behavior
 
-## Use from a browser
-
-The hosted Web entry at https://deeptutor.nimi.xyz (also reachable from https://nimi.ai/apps/deeptutor once published and admitted) connects to your running PC DeepTutor workspace rather than storing a separate cloud library.
-
-Prerequisites for Web access:
-
-1. Install and run **DeepTutor 1.6.20 or later** on your PC from Nimi Home under the same Nimi account. Earlier Catalog packages (such as 1.6.18) do not provide the `deeptutor.workspace.v3` Integration required by the Web workspace.
-2. Sign in on the official Nimi sign-in page, confirm the browser source in Nimi Home on your PC, and grant the **DeepTutor learning workspace** (`deeptutor.workspace.v3`) operations in **Nimi Home → Integrations**.
-
-Web model pages display the active PC model choices in read-only form; change AI models, web-search credentials, subagent settings and local folders in the PC App. If DeepTutor's own multi-user login is enabled on the PC, that business login still applies inside the workspace. Reloading the Web entry requires signing in again, and reconnecting reads saved PC sessions, citations and notebooks without replaying or resubmitting earlier turns.
+- DeepTutor runs natively on your PC and uses the Local or Cloud models you configure in Nimi.
+- Choose a model that supports the controls required by your current task. Rejected model requests are shown directly as errors; DeepTutor does not silently switch to another model.
+- After changing your embedding model, re-index existing Knowledge Bases before running retrieval queries.
 
 ## Data handling and limitations
 
-- **PC custody**: Conversations, uploaded documents, vector indexes, notebooks, reading workspaces, books, tasks, calendar items and App settings stay on your PC inside `<Nimi data root>/app-hosts/*/apps/*/user-data/workspace/**`. Uninstalling the App package in Nimi removes the managed executable package while leaving that workspace folder untouched until you delete it yourself.
-- **Browser storage**: Exported files downloaded from the browser are saved on the browser device. Unsent browser drafts and imported browser-side preferences stay in that browser, partitioned by the verified workspace identity.
+- **Local PC custody**: Conversations, uploaded documents, vector indexes, notebooks, Co-Writer drafts, reading workspaces, tasks, calendar items, and App settings stay on your PC inside `<Nimi data root>/app-hosts/*/apps/*/user-data/workspace/**`. Uninstalling the App package in Nimi removes only the managed executable package and leaves that workspace folder untouched until you delete it yourself.
+- **Model data flow**: Local Nimi routes keep inference on your machine. When using a Cloud model route configured in Nimi, only the prompt, retrieved excerpts, or attachments needed for that turn are sent to your chosen provider.
 - **Version display**: The in-App About badge reflects the upstream DeepTutor core version (`1.7.4`), while Nimi Home displays the Nimi App package version (`1.6.20`).
-- **Optional external tools**: Web search providers, optional local CLI subagents and Manim/FFmpeg rendering remain user-configured on the PC and are unavailable until configured there.
-
-## Android development preview
-
-The local Android preview connects to the same PC workspace (`deeptutor.workspace.v3`) and requires both the PC App (`1.6.20` or later) and its configured local HTTPS service to stay running. Sign in through the system browser, return to DeepTutor, and approve the Android source and Integration access in Nimi Home. Saved conversations, Markdown export via Android's system Save picker and explicit attachment handoff are supported; offline use, Android microphone capture and generated-media playback remain unverified.
+- **Optional external tools**: Web search providers, optional local CLI subagents, and Manim/FFmpeg rendering remain user-configured on your PC and are unavailable until set up there.
+- **Browser remote access status**: DeepTutor `1.6.20` prepares the PC workspace provider (`deeptutor.workspace.v3`) for future remote browser access, but hosted Web access is not yet publicly published as part of this native package release. Once hosted Web is separately released and admitted, it will require DeepTutor `1.6.20` or later running in Nimi Home on your PC under the same account, along with source confirmation and Integration approval in Nimi Home.
 
 ## Help and license
 
-DeepTutor is licensed under Apache-2.0, based on upstream https://github.com/HKUDS/DeepTutor and adapted for Nimi in https://github.com/nimiplatform/DeepTutor.
+DeepTutor is licensed under Apache-2.0, based on upstream [HKUDS/DeepTutor](https://github.com/HKUDS/DeepTutor) and adapted for Nimi in [nimiplatform/DeepTutor](https://github.com/nimiplatform/DeepTutor). Report issues and feedback at [GitHub Issues](https://github.com/nimiplatform/DeepTutor/issues).
