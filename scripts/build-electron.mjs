@@ -9,7 +9,15 @@ await build({
   packages: "external", external: ["electron"],
   define: { __NIMI_ELECTRON_PRODUCTION__: "false" },
 });
-await build({
+const preloadResult = await build({
   absWorkingDir: root, entryPoints: ["electron/preload.cts"], outfile: "dist-electron/preload.cjs",
   bundle: true, platform: "node", target: "node22", format: "cjs", external: ["electron"],
+  metafile: true,
 });
+for (const output of Object.values(preloadResult.metafile?.outputs || {})) {
+  for (const imp of output.imports || []) {
+    if (imp.external && imp.path.startsWith('@nimiplatform/')) {
+      throw new Error(`Electron preload bundle must not retain external Nimi import: ${imp.path}`);
+    }
+  }
+}

@@ -65,8 +65,8 @@
     "remark-gfm": "^4.0.0",
     "remark-math": "^6.0.0",
     "tailwind-merge": "^3.4.0",
-    "@nimiplatform/sdk": "^0.24.0-rc.10",
-    "@nimiplatform/kit": "^0.24.0-rc.16"
+    "@nimiplatform/sdk": "^0.24.0-rc.11",
+    "@nimiplatform/kit": "^0.24.0-rc.18"
   },
   "overrides": {
     "epubjs": {

@@ -92,7 +92,7 @@ jobs:
         id: matrix
         shell: bash
         run: |
-          matrix=$(jq -c '{include: [.targets[] | {target: ., runner: (if . == "windows-x86_64" then "windows-latest" elif . == "macos-aarch64" then "macos-15" else error("unsupported target") end)}]}' .nimi-targets.json)
+          matrix=$(jq -c '{include: [.targets[] | {target: ., runner: (if . == "desktop-universal" then "ubuntu-latest" elif . == "windows-x86_64" then "windows-latest" elif . == "macos-aarch64" then "macos-15" else error("unsupported target") end)}]}' .nimi-targets.json)
           test "$(jq '.include | length' <<<"$matrix")" -gt 0
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
   build-target:

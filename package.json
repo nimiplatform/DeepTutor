@@ -34,8 +34,8 @@
     "dev:mobile": "nimi-app dev --platform mobile"
   },
   "dependencies": {
-    "@nimiplatform/kit": "^0.24.0-rc.16",
-    "@nimiplatform/sdk": "^0.24.0-rc.10",
+    "@nimiplatform/kit": "^0.24.0-rc.18",
+    "@nimiplatform/sdk": "^0.24.0-rc.11",
     "ai": "^6.0.85",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -47,7 +47,7 @@
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
-    "@nimiplatform/app-tools": "^0.16.0-rc.12",
+    "@nimiplatform/app-tools": "^0.16.0-rc.14",
     "@nimiplatform/nimi-coding": "0.7.0",
     "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^24.13.3",
