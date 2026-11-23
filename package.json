@@ -1,6 +1,6 @@
 {
   "name": "nimiapp-deeptutor",
-  "version": "1.6.20",
+  "version": "1.6.21",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -47,7 +47,7 @@
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
-    "@nimiplatform/app-tools": "^0.16.0-rc.14",
+    "@nimiplatform/app-tools": "^0.16.0-rc.15",
     "@nimiplatform/nimi-coding": "0.7.0",
     "@tailwindcss/cli": "^4.3.3",
     "@types/node": "^24.13.3",
