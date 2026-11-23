@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packager } from '@electron/packager';
 import { build } from 'esbuild';
-import { verifyNextStandalone } from './verify-next-standalone.mjs';
+import { verifyFrozenBackend, verifyNextStandalone } from './verify-next-standalone.mjs';
 
 const APP_EXECUTABLE_NAME = 'deeptutor-shell';
 const APP_PRODUCT_NAME = 'DeepTutor';
@@ -205,6 +205,8 @@ try {
     ? path.join(expectedPackageRoot, `${APP_EXECUTABLE_NAME}.app`, 'Contents', 'Resources')
     : path.join(expectedPackageRoot, 'resources');
   await assertCleanAppBundle(resourcesRoot);
+  await verifyNextStandalone(path.join(resourcesRoot, 'deeptutor-web'));
+  await verifyFrozenBackend(path.join(resourcesRoot, 'deeptutor-backend'));
   packageCompleted = true;
   process.stdout.write(`[nimi-app] Electron production package: ${expectedPackageRoot}\n`);
 } finally {

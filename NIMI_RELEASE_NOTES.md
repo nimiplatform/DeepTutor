@@ -1,3 +1,8 @@
+# 1.6.22 — Frozen Python namespace-package fix, pure-main slimming & Deflate packaging
+
+- Fixes frozen PyInstaller builds (`scripts/deeptutor-backend.spec`) to enumerate PEP 420 namespace packages under `deeptutor/` (including `deeptutor/agents/research/request_config.py`) that `collect_submodules("deeptutor")` previously skipped, and adds an isolated `/health/ready` frozen-backend smoke gate during production packaging.
+- Retains the full upstream HKUDS/DeepTutor `v1.7.4` (`341af371b`) sync, Nimi 0.24 prerelease cohort (`@nimiplatform/app-tools` `0.16.0-rc.15`, `@nimiplatform/sdk` `0.24.0-rc.11`, `@nimiplatform/kit` `0.24.0-rc.18`, Electron 45), pure single-file Electron main bundle, deterministic bounded Deflate `.nimiapp` packaging, and bilingual storefront (`en` / `zh`).
+
 # 1.6.21 — Upstream 1.7.4 sync, pure-main slimming, Deflate packaging & bilingual storefront
 
 - Syncs upstream HKUDS/DeepTutor `v1.7.4` (`341af371b`) into the Nimi fork, bringing the updated workspace layout, Task Board (`/kanban`), Learning Journal, Calendar, Creations, and File Preview while retaining all Nimi AI/media boundaries (`text.generate`, `text.embed`, `audio.synthesize`, `audio.transcribe`, `image.generate`, `video.generate`).

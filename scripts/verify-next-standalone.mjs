@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { cp, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -66,6 +67,82 @@ export async function verifyNextStandalone(resourceRoot) {
       throw new Error('Refusing cleanup outside the owned renderer verification directory.');
     }
     await rm(isolated, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+  }
+}
+
+export async function verifyFrozenBackend(backendRoot) {
+  const temporaryRoot = await realpath(tmpdir());
+  const homeDir = await mkdtemp(path.join(temporaryRoot, 'deeptutor-backend-verify-'));
+  let child;
+  let reservation;
+  try {
+    const executable = await realpath(
+      path.join(backendRoot, process.platform === 'win32' ? 'deeptutor-backend.exe' : 'deeptutor-backend'),
+    );
+    reservation = createServer();
+    await new Promise((resolve, reject) => {
+      reservation.once('error', reject);
+      reservation.listen(0, '127.0.0.1', resolve);
+    });
+    const port = reservation.address().port;
+    await new Promise(resolve => reservation.close(resolve));
+    reservation = undefined;
+    const token = randomBytes(32).toString('hex');
+    child = spawn(executable, ['--port', String(port)], {
+      cwd: homeDir,
+      detached: true,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...childEnvironment(),
+        DEEPTUTOR_HOME: homeDir,
+        BACKEND_PORT: String(port),
+        FRONTEND_PORT: String(port + 1),
+      },
+    });
+    let failure;
+    let diagnostics = '';
+    child.once('error', error => { failure = error; });
+    const capture = chunk => { diagnostics = (diagnostics + chunk.toString('utf8')).slice(-16000); };
+    child.stdout.on('data', capture);
+    child.stderr.on('data', capture);
+    child.stdin.write(
+      JSON.stringify({
+        type: 'initialize',
+        apiToken: token,
+        rendererOrigin: `http://127.0.0.1:${port + 1}`,
+        generation: 1,
+      }) + '\n',
+      'utf8',
+    );
+    const deadline = Date.now() + 45000;
+    while (Date.now() < deadline) {
+      if (failure) throw failure;
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(`Packaged DeepTutor backend exited (${child.signalCode ?? child.exitCode}).\n${diagnostics}`);
+      }
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/health/ready`, {
+          headers: { Cookie: `deeptutor_host=${token}` },
+          signal: AbortSignal.timeout(1000),
+        });
+        const ok = response.ok;
+        await response.body?.cancel();
+        if (ok && child.exitCode === null && child.signalCode === null) {
+          process.stdout.write('[deeptutor-package] Frozen backend passed /health/ready verification.\n');
+          return;
+        }
+      } catch { /* The owned backend is still starting. */ }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    throw new Error(`Packaged DeepTutor backend did not pass /health/ready.\n${diagnostics}`);
+  } finally {
+    if (reservation?.listening) await new Promise(resolve => reservation.close(resolve));
+    await stopOwnedChild(child, 3000);
+    if (path.dirname(homeDir) !== temporaryRoot || !path.basename(homeDir).startsWith('deeptutor-backend-verify-')) {
+      throw new Error('Refusing cleanup outside the owned backend verification directory.');
+    }
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
   }
 }
 
